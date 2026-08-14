@@ -1,0 +1,42 @@
+name: Build SuperAgent V9.1
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild source
+        shell: bash
+        run: |
+          cat parts/part1.b64 parts/part2.b64 parts/part3.b64 parts/part4.b64 parts/part5.b64 parts/part6.b64 > payload.b64
+          base64 -d payload.b64 > payload.gz
+          gzip -dc payload.gz > SuperAgent_V9.1_Final_Fix.js
+          rm -f payload.b64 payload.gz
+
+      - name: Verify JavaScript
+        shell: bash
+        run: |
+          node --check SuperAgent_V9.1_Final_Fix.js
+          test "$(wc -c < SuperAgent_V9.1_Final_Fix.js)" -eq 217536
+          test "$(sha256sum SuperAgent_V9.1_Final_Fix.js | cut -d' ' -f1)" = "943a244d8563b5c2dc3e9378c341dc9bc7e5e064f49f750b9d480c76bcb5cbc4"
+
+      - name: Commit rebuilt file
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SuperAgent_V9.1_Final_Fix.js
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Build Super Agent V9.1 Final Fix"
+          git push
