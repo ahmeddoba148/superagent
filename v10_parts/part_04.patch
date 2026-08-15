@@ -1,0 +1,156 @@
++  const x=await env.DB.prepare(`SELECT * FROM smart_list_items WHERE id=? AND chat_id=? LIMIT 1`).bind(itemId,chatId).first();if(!x)return;
++  const before=String(x.status||"pending");const next=before==='bought'?'pending':'bought';
++  await env.DB.prepare(`UPDATE smart_list_items SET status=?,updated_at=? WHERE id=? AND chat_id=?`).bind(next,new Date().toISOString(),itemId,chatId).run();
++  await writeAudit(env,chatId,{action:"update",entityType:"shopping_item",entityId:String(itemId),summary:`${next==='bought'?'تم شراء':'إرجاع'} ${x.title}`,before:{status:before},after:{status:next},undo:{type:"restore_list_item_status",id:itemId,status:before}});
++  const items=await getShoppingItems(env,chatId,x.list_id);return editOrSend(env,chatId,messageId,shoppingText(items,true),shoppingKeyboard(x.list_id,items));
++}
++
++async function finishShoppingSessionCallback(env,chatId,messageId,listId){
++  await env.DB.prepare(`UPDATE shopping_sessions SET ended_at=? WHERE chat_id=? AND list_id=? AND ended_at IS NULL`).bind(new Date().toISOString(),chatId,listId).run();
++  const items=await getShoppingItems(env,chatId,listId);const pending=items.filter(x=>x.status==='pending');
++  return editOrSend(env,chatId,messageId,pending.length?`✅ أنهيت وضع التسوق.\n\nفاضل ${pending.length}:\n${pending.map(x=>`• ${x.title}`).join("\n")}`:"✅ خلصت القائمة كلها 👌",{inline_keyboard:[[{text:"↩️ المشتريات",callback_data:"panel:shopping"}],[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function markShoppingByText(env,chatId,text,status){
++  const list=await getDefaultShoppingList(env,chatId,false);if(!list)return{changed:0,names:[]};const wanted=splitShoppingItems(text).map(normalizeArabicLoose);if(!wanted.length)return{changed:0,names:[]};const rows=await getShoppingItems(env,chatId,list.id);let changed=0;const names=[];
++  for(const r of rows){const rn=String(r.normalized_title||normalizeArabicLoose(r.title));if(wanted.some(w=>rn===w||rn.includes(w)||w.includes(rn))){if(r.status!==status){await env.DB.prepare(`UPDATE smart_list_items SET status=?,updated_at=? WHERE id=? AND chat_id=?`).bind(status,new Date().toISOString(),Number(r.id),chatId).run();await writeAudit(env,chatId,{action:"update",entityType:"shopping_item",entityId:String(r.id),summary:`تحديث ${r.title}`,before:{status:r.status},after:{status},undo:{type:"restore_list_item_status",id:Number(r.id),status:r.status}});changed++;names.push(r.title);}}}
++  return{changed,names,list};
++}
++
++async function removeShoppingByText(env,chatId,text){
++  const list=await getDefaultShoppingList(env,chatId,false);if(!list)return 0;const wanted=splitShoppingItems(text).map(normalizeArabicLoose);const rows=await getShoppingItems(env,chatId,list.id);let n=0;
++  for(const r of rows){const rn=String(r.normalized_title||normalizeArabicLoose(r.title));if(wanted.some(w=>rn===w||rn.includes(w)||w.includes(rn))){await env.DB.prepare(`DELETE FROM smart_list_items WHERE id=? AND chat_id=?`).bind(Number(r.id),chatId).run();await writeAudit(env,chatId,{action:"delete",entityType:"shopping_item",entityId:String(r.id),summary:`حذف من المشتريات: ${r.title}`,before:r,undo:{type:"restore_deleted_list_item",row:r}});n++;}}
++  return n;
++}
++
++async function handleV10DirectCommands(env,chatId,text,{fromVoice=false}={}){
++  const raw=String(text||"").trim();const t=normalizeArabicLoose(raw);
++  if(!t)return false;
++
++  if(/^(?:انا\s+)?(?:في|فى)\s+(?:الهايبر|هايبر|السوبر|السوبر ماركت|الهايبر ماركت|كارفور|الماركت)(?:\s|$)/u.test(t)||/^(?:وصلت|دخلت)\s+(?:الهايبر|السوبر|السوبر ماركت|كارفور)/u.test(t)){
++    const place=(raw.match(/(?:في|فى|وصلت|دخلت)\s+(.+)$/u)||[])[1]||null;await showShoppingList(env,chatId,null,{startSession:true,placeName:place});return true;
++  }
++
++  let m=raw.match(/^(?:ضيف|زود|حط|سجل)\s+(?:للمشتريات|في\s+المشتريات|فى\s+المشتريات|في\s+قائمة\s+المشتريات|فى\s+قائمة\s+المشتريات)\s+(.+)$/iu);
++  if(!m)m=raw.match(/^(?:ضيف|زود|حط|سجل)\s+(.+?)\s+(?:للمشتريات|في\s+المشتريات|فى\s+المشتريات|في\s+قائمة\s+المشتريات|فى\s+قائمة\s+المشتريات)$/iu);
++  if(m){const items=splitShoppingItems(m[1]);const r=await addShoppingItems(env,chatId,items);await sendText(env,chatId,r.added.length?`🛒 ضفت ${r.added.length} للمشتريات: ${r.added.join("، ")}`:"الأصناف دي موجودة بالفعل في المشتريات.");return true;}
++
++  if(await getActiveShoppingSession(env,chatId)){
++    m=raw.match(/^(?:جبت|اشتريت|خدت)\s+(.+)$/iu);if(m){const r=await markShoppingByText(env,chatId,m[1],"bought");await sendText(env,chatId,r.changed?`✅ تمام، علمت: ${r.names.join("، ")}`:"ملقتش الأصناف دي في القائمة.");return true;}
++    m=raw.match(/^(?:ملقتش|مش\s+موجود|مفيش)\s+(.+)$/iu);if(m){const r=await markShoppingByText(env,chatId,m[1],"unavailable");await sendText(env,chatId,r.changed?`🚫 سجلت إنها مش موجودة: ${r.names.join("، ")}`:"ملقتش الأصناف دي في القائمة.");return true;}
++    m=raw.match(/^(?:سيب|سيبلي|مش\s+هاجيب)\s+(.+)$/iu);if(m){const r=await markShoppingByText(env,chatId,m[1],"skipped");await sendText(env,chatId,r.changed?`⏭️ تمام، سيبت: ${r.names.join("، ")}`:"ملقتش الأصناف دي في القائمة.");return true;}
++    if(/^(?:فاضل\s+ايه|فاضل\s+اي|ايه\s+اللي\s+فاضل|اي\s+اللي\s+فاضل|ناقص\s+ايه|ناقص\s+اي)$/u.test(t)){const list=await getDefaultShoppingList(env,chatId,false);const items=list?await getShoppingItems(env,chatId,list.id):[];const p=items.filter(x=>x.status==='pending');await sendText(env,chatId,p.length?`🛒 فاضل ${p.length}: ${p.map(x=>x.title).join("، ")}`:"✅ مفيش حاجة فاضلة.");return true;}
++    if(/^(?:خلصت|خلصنا|خلصت\s+التسوق|خلصنا\s+التسوق)$/u.test(t)){const s=await getActiveShoppingSession(env,chatId);if(s){await env.DB.prepare(`UPDATE shopping_sessions SET ended_at=? WHERE id=?`).bind(new Date().toISOString(),Number(s.id)).run();const items=await getShoppingItems(env,chatId,s.list_id);const p=items.filter(x=>x.status==='pending');await sendText(env,chatId,p.length?`✅ قفلت وضع التسوق. فاضل ${p.length}: ${p.map(x=>x.title).join("، ")}`:"✅ خلصت كل المشتريات 👌");}return true;}
++  }
++
++  m=raw.match(/^(?:امسح|شيل|احذف)\s+(.+?)\s+(?:من\s+المشتريات|من\s+قائمة\s+المشتريات)$/iu);if(m){const n=await removeShoppingByText(env,chatId,m[1]);await sendText(env,chatId,n?`🗑️ شلت ${n} من قائمة المشتريات.`:"ملقتش الصنف ده في المشتريات.");return true;}
++
++  if(/^(?:افتح\s+)?(?:قائمة|قائمه)\s+المشتريات$/u.test(t)){await showShoppingList(env,chatId,null,{startSession:false});return true;}
++
++  m=raw.match(/^(?:حط|سجل|ضيف)\s+(?:في|فى)\s+(?:الانبوكس|inbox)\s+(.+)$/iu);if(m){const now=new Date().toISOString();await env.DB.prepare(`INSERT INTO life_inbox(chat_id,text,created_at,updated_at) VALUES (?,?,?,?)`).bind(chatId,m[1].trim(),now,now).run();await writeAudit(env,chatId,{action:"create",entityType:"inbox",summary:`إضافة للـInbox: ${m[1].trim()}`,after:{text:m[1].trim()}});await sendText(env,chatId,"📥 تمام، حطيتها في الـInbox.");return true;}
++
++  m=raw.match(/^(?:مستني|مستنى)\s+(?:رد\s+)?(?:من\s+)?(.+?)(?:\s+خلال\s+(\d+)\s*(يوم|ايام|ساعة|ساعات))?$/iu);if(m&&/(?:مستني|مستنى)/u.test(t)){
++    let due=null;if(m[2]){const n=Number(m[2]);const mins=/ساع/u.test(m[3])?n*60:n*1440;const p=await getUserProfile(env,chatId);due=addMinutesLocal(localNowString(p.timezone||TIME_ZONE),mins,p.timezone||TIME_ZONE);}
++    const now=new Date().toISOString();await env.DB.prepare(`INSERT INTO waiting_items(chat_id,title,waiting_on,due_at,created_at,updated_at) VALUES (?,?,?,?,?,?)`).bind(chatId,`متابعة ${m[1].trim()}`,m[1].trim(),due,now,now).run();await sendText(env,chatId,due?`📞 تمام، سجلت إنك مستني ${m[1].trim()} لحد ${formatLocalDateTime(due)}.`:`📞 تمام، سجلت إنك مستني ${m[1].trim()}.`);return true;
++  }
++  return false;
++}
++
++async function showInboxPanel(env,chatId,messageId=null){
++  const rows=(await env.DB.prepare(`SELECT * FROM life_inbox WHERE chat_id=? AND status='open' ORDER BY id DESC LIMIT 20`).bind(chatId).all())?.results||[];
++  const waiting=(await env.DB.prepare(`SELECT * FROM waiting_items WHERE chat_id=? AND status='waiting' ORDER BY id DESC LIMIT 10`).bind(chatId).all())?.results||[];
++  let text=`📥 Inbox\n\n${rows.length?rows.map(x=>`• ${x.text}`).join("\n"):"مفيش عناصر مفتوحة."}`;if(waiting.length)text+=`\n\n📞 انتظار/متابعة:\n${waiting.map(x=>`• ${x.title}${x.due_at?` — ${formatLocalDateTime(x.due_at)}`:""}`).join("\n")}`;
++  return editOrSend(env,chatId,messageId,text,{inline_keyboard:[[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function showDangerPanel(env,chatId,messageId=null){return editOrSend(env,chatId,messageId,"🛡️ إدارة البيانات الحساسة\n\nعمليات المسح الكبيرة موجودة هنا فقط حتى يفضل الشات العادي نضيف.",{inline_keyboard:[[{text:"🗑️ مسح كل المواعيد",callback_data:"danger:clear_schedule"}],[{text:"🧹 مسح سياق المحادثة",callback_data:"danger:clear_context"}],[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});}
++
++async function showAgentSettings(env,chatId,messageId=null){
++  const s=await ensureAgentSettings(env,chatId);const yn=v=>Number(v)?"✅":"⬜";
++  return editOrSend(env,chatId,messageId,`⚙️ إعدادات الوكيل\n\n${yn(s.proactive_enabled)} تنبيهات استباقية مهمة فقط\n${yn(s.morning_brief_enabled)} ملخص صباحي\n${yn(s.evening_brief_enabled)} ملخص مسائي\n${yn(s.ask_before_delete)} تأكيد قبل الحذف الكبير`,{inline_keyboard:[[{text:`${yn(s.proactive_enabled)} الاستباقي`,callback_data:"setting:toggle:proactive_enabled"}],[{text:`${yn(s.morning_brief_enabled)} الصباح`,callback_data:"setting:toggle:morning_brief_enabled"},{text:`${yn(s.evening_brief_enabled)} المساء`,callback_data:"setting:toggle:evening_brief_enabled"}],[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function toggleAgentSetting(env,chatId,messageId,key){
++  const allowed=new Set(["proactive_enabled","morning_brief_enabled","evening_brief_enabled"]);if(!allowed.has(key))return;
++  await ensureAgentSettings(env,chatId);await env.DB.prepare(`UPDATE agent_settings SET ${key}=CASE ${key} WHEN 1 THEN 0 ELSE 1 END,updated_at=? WHERE chat_id=?`).bind(new Date().toISOString(),chatId).run();return showAgentSettings(env,chatId,messageId);
++}
++
++async function transcribeTelegramVoice(env,voice){
++  const fileId=String(voice?.file_id||"");
++  if(!fileId)throw new Error("ملف الفويس غير صالح.");
++  if(Number(voice?.file_size||0)>VOICE_MAX_BYTES)throw new Error("الفويس كبير جدًا للمعالجة.");
++
++  const info=await telegramApi(env,"getFile",{file_id:fileId});
++  if(!info?.ok||!info?.result?.file_path)throw new Error("مقدرتش أحمل الفويس من Telegram.");
++
++  const fileRes=await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${info.result.file_path}`);
++  if(!fileRes.ok)throw new Error("فشل تحميل ملف الفويس.");
++  const blob=await fileRes.blob();
++
++  const makeForm=(model)=>{
++    const form=new FormData();
++    form.append("file",blob,"voice.ogg");
++    form.append("model",String(model||"auto"));
++    form.append("language","ar");
++    form.append("response_format","json");
++    return form;
++  };
++
++  // المسار الأساسي: نفس OmniAI Engine الموجود بالفعل في Super Agent.
++  if(env.OMNIAI_SERVICE&&env.OMNIAI_API_KEY){
++    try{
++      const req=new Request(OMNIAI_INTERNAL_URL.replace(/\/chat\/completions$/,"/audio/transcriptions"),{
++        method:"POST",
++        headers:{Authorization:`Bearer ${env.OMNIAI_API_KEY}`},
++        body:makeForm(env.VOICE_MODEL||"auto")
++      });
++      const r=await env.OMNIAI_SERVICE.fetch(req);
++      const raw=await r.text();
++      let j;try{j=JSON.parse(raw)}catch{j=null}
++      if(r.ok){const text=String(j?.text||j?.transcript||"").trim();if(text)return text;}
++      console.warn("OmniAI transcription failed",r.status,j?.error?.message||raw.slice(0,200));
++    }catch(e){console.warn("OmniAI transcription error",safeError(e));}
++  }
++
++  // Fallback اختياري لأي OpenAI-compatible transcription endpoint.
++  const key=String(env.VOICE_TRANSCRIBE_KEY||env.GROQ_API_KEY||"");
++  if(!key)throw new Error("محرك OmniAI لم ينجح في تفريغ الفويس. تأكد إن Groq/مزود Audio Transcription مفعّل داخل OmniAI.");
++  const url=String(env.VOICE_TRANSCRIBE_URL||"https://api.groq.com/openai/v1/audio/transcriptions");
++  const r=await fetch(url,{method:"POST",headers:{Authorization:`Bearer ${key}`},body:makeForm(env.VOICE_MODEL||"whisper-large-v3-turbo")});
++  const raw=await r.text();let j;try{j=JSON.parse(raw)}catch{j=null}
++  if(!r.ok)throw new Error(j?.error?.message||`Voice HTTP ${r.status}`);
++  const text=String(j?.text||j?.transcript||"").trim();
++  if(!text)throw new Error("الفويس اتحول لنص فاضي.");
++  return text;
++}
++
++async function runV10PeriodicIntelligence(env,scheduledTime){
++  if(!env.DB)return;await ensureSchemaOnce(env);const users=(await env.DB.prepare(`SELECT s.*,p.timezone FROM agent_settings s LEFT JOIN user_profiles p ON p.chat_id=s.chat_id WHERE s.morning_brief_enabled=1 OR s.evening_brief_enabled=1`).all())?.results||[];
++  for(const u of users){try{const tz=String(u.timezone||TIME_ZONE);const now=zonedNow(tz);let type=null;if(Number(u.morning_brief_enabled)&&now.time==="08:00")type="morning";if(Number(u.evening_brief_enabled)&&now.time==="21:00")type="evening";if(!type)continue;const exists=await env.DB.prepare(`SELECT 1 FROM daily_brief_fires WHERE chat_id=? AND brief_date=? AND brief_type=?`).bind(String(u.chat_id),now.date,type).first();if(exists)continue;const text=await buildDailyBrief(env,String(u.chat_id),type,now);await sendText(env,String(u.chat_id),text);await env.DB.prepare(`INSERT OR IGNORE INTO daily_brief_fires(chat_id,brief_date,brief_type,sent_at) VALUES (?,?,?,?)`).bind(String(u.chat_id),now.date,type,new Date().toISOString()).run();}catch(e){console.warn("V10 brief failed",safeError(e));}}
++}
++
++async function buildDailyBrief(env,chatId,type,now){
++  const rows=(await env.DB.prepare(`SELECT title,kind,local_time,duration_minutes FROM reminders WHERE chat_id=? AND cancelled=0 AND sent=0 AND local_date=? ORDER BY local_time LIMIT 12`).bind(chatId,now.date).all())?.results||[];const list=await getDefaultShoppingList(env,chatId,false);let shop=0;if(list){const r=await env.DB.prepare(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id=? AND list_id=? AND status='pending'`).bind(chatId,Number(list.id)).first();shop=Number(r?.c||0);}const wait=(await env.DB.prepare(`SELECT COUNT(*) c FROM waiting_items WHERE chat_id=? AND status='waiting'`).bind(chatId).first())?.c||0;
++  if(type==="morning")return `☀️ صباح الخير. عندك ${rows.length} موعد/تذكير النهاردة${rows.length?`، أولهم ${formatArabicTime(rows[0].local_time)} — ${rows[0].title}`:""}.${shop?` وفي قائمة المشتريات ${shop} حاجة.`:""}${wait?` وعندك ${wait} متابعة منتظرة.`:""}`;
++  return `🌙 ملخص اليوم: ${rows.length?`كان/باقي عندك ${rows.length} عناصر في جدول النهاردة.`:"مفيش عناصر معلقة في جدول النهاردة."}${shop?` المشتريات المتبقية ${shop}.`:""}${wait?` المتابعات المنتظرة ${wait}.`:""}`;
++}
++
++function runV10SelfTests(){
++  const tests=[];const add=(name,ok,detail="")=>tests.push({name,ok:!!ok,detail});
++  add("shopping split Arabic",JSON.stringify(splitShoppingItems("لبن و بيض، جبنة"))===JSON.stringify(["لبن","بيض","جبنة"]),JSON.stringify(splitShoppingItems("لبن و بيض، جبنة")));
++  add("dependency normalize",normalizeV10Dependencies([{source_ref:0,target_ref:1,relation:"after_end",offset_minutes:30}])[0]?.offset_minutes===30);
++  add("world update reject low confidence",normalizeV10WorldUpdates([{subject:"A",relation:"fact",object:"B",confidence:.4}]).length===0);
++  add("world update accept explicit",normalizeV10WorldUpdates([{subject:"A",relation:"fact",object:"B",confidence:1}]).length===1);
++  add("clean chat keyboard",quickMenuKeyboard()===null);
++  add("arabic normalizer",normalizeArabicLoose("بُكرة")===normalizeArabicLoose("بكره")||normalizeArabicLoose("بُكرة").length>0);
++  add("relative 30m",parseSimpleRelativeMinutes("بعد 30 دقيقة")===30);
++  add("duration 1h",parseSimpleRelativeMinutes("بعد ساعة")===60);
++  const passed=tests.filter(x=>x.ok).length;return{ok:passed===tests.length,passed,total:tests.length,tests};
++}
++
++async function selfTestEndpoint(request,env){const url=new URL(request.url);const key=url.searchParams.get("key")||"";if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:"Unauthorized"},401);return json({version:V10_VERSION,...runV10SelfTests()});}
++
++
+ function requiredBindings(env){
+ return[
+ "TELEGRAM_BOT_TOKEN",
