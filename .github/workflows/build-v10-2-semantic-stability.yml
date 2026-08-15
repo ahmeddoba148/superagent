@@ -36,19 +36,15 @@ jobs:
           from pathlib import Path
           p=Path('SuperAgent_V10_2_Semantic_Stability.js')
           s=p.read_text()
-          old='''  let dependencyOffset=explicitOffset;
-          if(targetIndex<0){
-            let at=`${source.date} ${source.time}`;if(Number.isFinite(explicitOffset)){
-              let delta=Number(explicitOffset||0);if(relation==="before_start")delta=-delta;else if(relation==="after_end")delta+=Number(source.duration_minutes||0);at=addMinutesLocal(at,delta,timeZone);
-            }'''
-          new='''  let dependencyOffset=explicitOffset;
-          if(targetIndex<0){
-            if(!Number.isFinite(dependencyOffset)&&relation==="before_start")dependencyOffset=60;
-            let at=`${source.date} ${source.time}`;if(Number.isFinite(dependencyOffset)){
-              let delta=Number(dependencyOffset||0);if(relation==="before_start")delta=-delta;else if(relation==="after_end")delta+=Number(source.duration_minutes||0);at=addMinutesLocal(at,delta,timeZone);
-            }'''
-          if old not in s: raise SystemExit('V10.2 before-offset hotfix target not found')
-          p.write_text(s.replace(old,new,1))
+          start=s.index('function ensureV102LinkedTarget')
+          end=s.index('function repairV102LinkedEventIntent',start)
+          chunk=s[start:end]
+          needle='if(targetIndex<0){'
+          if needle not in chunk: raise SystemExit('V10.2 target branch not found')
+          chunk=chunk.replace(needle,needle+'\n    if(!Number.isFinite(dependencyOffset)&&relation==="before_start")dependencyOffset=60;',1)
+          chunk=chunk.replace('Number.isFinite(explicitOffset)','Number.isFinite(dependencyOffset)',1)
+          chunk=chunk.replace('Number(explicitOffset||0)','Number(dependencyOffset||0)',1)
+          p.write_text(s[:start]+chunk+s[end:])
           PY
 
       - name: Verify exact source integrity
