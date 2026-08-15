@@ -1,7 +1,7 @@
 import fs from 'fs';
 let src=fs.readFileSync('./SuperAgent_V10_Final_Stability.js','utf8');
 src += `\nexport {analyzeActionReferenceShape,buildDeterministicActionReferenceIntent,estimateMinimumItemsSemantic,parseMultiRecurringPrayerAnchors,normalizeV10Dependencies,dependencyGraphHasCycle,splitShoppingItems,parseSimpleRelativeMinutes,quickMenuKeyboard,clarificationKeyboard};\n`;
-fs.writeFileSync('./v10_stress_exposed.mjs',src);
+fs.writeFileSync('./tests/v10_stress_exposed.mjs',src);
 const m=await import(new URL('./v10_stress_exposed.mjs?x='+Date.now(), import.meta.url).href);
 let passed=0,failed=0;const failures=[];
 function a(name,cond,detail=''){if(cond)passed++;else{failed++;if(failures.length<20)failures.push({name,detail})}}
