@@ -1,4 +1,4 @@
-const V10_VERSION="10.3";const V10_NAME="Super Agent V10 — Life OS · Reliability Lock";const RELIABILITY_RECEIPT_TTL_MINUTES=10;const RUNTIME_FAILURE_RETENTION_DAYS=30;const VOICE_MAX_BYTES=25*1024*1024;const V10_AUDIT_LIMIT=100;const V10_WORLD_CONTEXT_LIMIT=50;const V10_MAX_SHOP_ITEMS=80;const TIME_ZONE="Africa/Cairo";const PENDING_TTL_MINUTES=30;const CONFLICT_TTL_MINUTES=20;const TOTAL_AI_BUDGET_MS=25000;const AI_RATE_LIMIT_PER_MINUTE=15;const CONVERSATION_MEMORY_LIMIT=24;const CONTEXT_DAYS=365;const CONTEXT_NEAR_LIMIT=160;const CONTEXT_RELEVANT_LIMIT=80;const CONTEXT_RULE_LIMIT=120;const FREE_PERIOD_HORIZON_DAYS=180;const FREE_SLOT_HORIZON_DAYS=60;const CONFLICT_LOOKAHEAD_DAYS=60;const MAX_RULE_OCCURRENCES=5000;const SCHEDULER_MAX_CATCHUP_MINUTES=1440;const MAX_ADVANCE_ALERT_MINUTES=10080;const SHOW_MODEL_USED_TO_ADMIN=false;const LIVE_NEWS_MAX=8;const LIVE_NEWS_TTL_MINUTES=5;const LIVE_WATCH_BATCH_SIZE=8;const PRAYER_CACHE_TTL_MINUTES=720;const HOLIDAY_CACHE_TTL_MINUTES=720;const DEFAULT_COUNTRY_CODE="EG";const DEFAULT_CITY="Cairo";const DEFAULT_COUNTRY="Egypt";const OMNIAI_INTERNAL_URL="https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions";const REMINDER_MODELS=[{short:"G3.5-L",name:"Gemini 3.5 Flash-Lite",id:"gemini::gemini-3.5-flash-lite",timeoutMs:4200},{short:"G3.6-F",name:"Gemini 3.6 Flash",id:"gemini::gemini-3.6-flash",timeoutMs:3600},{short:"G3.1-L",name:"Gemini 3.1 Flash-Lite",id:"gemini::gemini-3.1-flash-lite",timeoutMs:3000},{short:"G3.5-F",name:"Gemini 3.5 Flash",id:"gemini::gemini-3.5-flash",timeoutMs:2600},{short:"G2.5-L",name:"Gemini 2.5 Flash-Lite",id:"gemini::gemini-2.5-flash-lite",timeoutMs:2300},{short:"G2.5-F",name:"Gemini 2.5 Flash",id:"gemini::gemini-2.5-flash",timeoutMs:2100},{short:"OSS120",name:"GPT OSS 120B — Groq",id:"groq::openai/gpt-oss-120b",timeoutMs:1900},{short:"Qwen3.6",name:"Qwen 3.6 27B — Groq",id:"groq::qwen/qwen3.6-27b",timeoutMs:1700},{short:"MistralS",name:"Mistral Small 2603",id:"mistral::mistral-small-2603",timeoutMs:1500},{short:"DS-V4F",name:"DeepSeek V4 Flash — NVIDIA",id:"nvidia::deepseek-ai/deepseek-v4-flash",timeoutMs:1500},];
+const V10_VERSION="10.3.1";const V10_NAME="Super Agent V10 — Life OS · Reliability Lock · Diagnostics";const RELIABILITY_RECEIPT_TTL_MINUTES=10;const RUNTIME_FAILURE_RETENTION_DAYS=30;const VOICE_MAX_BYTES=25*1024*1024;const V10_AUDIT_LIMIT=100;const V10_WORLD_CONTEXT_LIMIT=50;const V10_MAX_SHOP_ITEMS=80;const TIME_ZONE="Africa/Cairo";const PENDING_TTL_MINUTES=30;const CONFLICT_TTL_MINUTES=20;const TOTAL_AI_BUDGET_MS=25000;const AI_RATE_LIMIT_PER_MINUTE=15;const CONVERSATION_MEMORY_LIMIT=24;const CONTEXT_DAYS=365;const CONTEXT_NEAR_LIMIT=160;const CONTEXT_RELEVANT_LIMIT=80;const CONTEXT_RULE_LIMIT=120;const FREE_PERIOD_HORIZON_DAYS=180;const FREE_SLOT_HORIZON_DAYS=60;const CONFLICT_LOOKAHEAD_DAYS=60;const MAX_RULE_OCCURRENCES=5000;const SCHEDULER_MAX_CATCHUP_MINUTES=1440;const MAX_ADVANCE_ALERT_MINUTES=10080;const SHOW_MODEL_USED_TO_ADMIN=false;const LIVE_NEWS_MAX=8;const LIVE_NEWS_TTL_MINUTES=5;const LIVE_WATCH_BATCH_SIZE=8;const PRAYER_CACHE_TTL_MINUTES=720;const HOLIDAY_CACHE_TTL_MINUTES=720;const DEFAULT_COUNTRY_CODE="EG";const DEFAULT_CITY="Cairo";const DEFAULT_COUNTRY="Egypt";const OMNIAI_INTERNAL_URL="https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions";const REMINDER_MODELS=[{short:"G3.5-L",name:"Gemini 3.5 Flash-Lite",id:"gemini::gemini-3.5-flash-lite",timeoutMs:4200},{short:"G3.6-F",name:"Gemini 3.6 Flash",id:"gemini::gemini-3.6-flash",timeoutMs:3600},{short:"G3.1-L",name:"Gemini 3.1 Flash-Lite",id:"gemini::gemini-3.1-flash-lite",timeoutMs:3000},{short:"G3.5-F",name:"Gemini 3.5 Flash",id:"gemini::gemini-3.5-flash",timeoutMs:2600},{short:"G2.5-L",name:"Gemini 2.5 Flash-Lite",id:"gemini::gemini-2.5-flash-lite",timeoutMs:2300},{short:"G2.5-F",name:"Gemini 2.5 Flash",id:"gemini::gemini-2.5-flash",timeoutMs:2100},{short:"OSS120",name:"GPT OSS 120B — Groq",id:"groq::openai/gpt-oss-120b",timeoutMs:1900},{short:"Qwen3.6",name:"Qwen 3.6 27B — Groq",id:"groq::qwen/qwen3.6-27b",timeoutMs:1700},{short:"MistralS",name:"Mistral Small 2603",id:"mistral::mistral-small-2603",timeoutMs:1500},{short:"DS-V4F",name:"DeepSeek V4 Flash — NVIDIA",id:"nvidia::deepseek-ai/deepseek-v4-flash",timeoutMs:1500},];
 
 export default{
 async fetch(request,env,ctx){
@@ -7,6 +7,7 @@ if(request.method==="GET"&&url.pathname==="/"){
 return json({ok:true,service:V10_NAME,version:V10_VERSION,status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),life_os:true,personal_world_model:true,memory_graph:true,event_dependencies:true,planner_executor_verifier:true,shadow_safety:true,smart_lists:true,interactive_shopping:true,voice_first:true,audit_undo:true,permission_levels:true,context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,deterministic_relationships:true,multi_prayer_rules_safe:true,action_reference_time_safe:true,semantic_item_count_safe:true,telegram_idempotency:true,dependency_cycle_guard:true,clean_chat_strict:true,semantic_grounding_v2:true,compound_voice_safe:true,dependency_repair:true,reliability_lock:true,operation_receipts:true,runtime_failure_log:true,health_db_probe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
 }
 if(request.method==="GET"&&url.pathname==="/health")return reliabilityHealth(env);
+if(request.method==="GET"&&url.pathname==="/diagnostics")return reliabilityDiagnostics(request,env);
 if(request.method==="GET"&&url.pathname==="/setup")return setup(request,env);
 if(request.method==="GET"&&url.pathname==="/selftest")return selfTestEndpoint(request,env);
 if(request.method==="POST"&&url.pathname==="/telegram"){
@@ -525,6 +526,38 @@ async function getRecentOperationReceipt(env,chatId,fingerprint){const cutoff=ne
 async function saveOperationReceipt(env,chatId,fingerprint,action,responseText){const now=new Date().toISOString();await env.DB.prepare(`INSERT INTO operation_receipts(chat_id,fingerprint,action,state,response_text,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`).bind(String(chatId),String(fingerprint),String(action),"committed",String(responseText||"").slice(0,12000),now,now).run();}
 async function cleanupReliabilityData(env){try{const cutoff=new Date(Date.now()-RUNTIME_FAILURE_RETENTION_DAYS*86400000).toISOString();const receipts=new Date(Date.now()-86400000).toISOString();await env.DB.batch([env.DB.prepare(`DELETE FROM runtime_failures WHERE created_at<?`).bind(cutoff),env.DB.prepare(`DELETE FROM operation_receipts WHERE created_at<?`).bind(receipts)]);}catch(e){console.warn("Reliability cleanup failed",safeError(e));}}
 async function reliabilityHealth(env){const base={ok:true,version:V10_VERSION,now:cairoNow(),db:false,omniai_service:!!env.OMNIAI_SERVICE,life_os:true,reliability_lock:true,voice:!!((env.OMNIAI_SERVICE&&env.OMNIAI_API_KEY)||env.GROQ_API_KEY||env.VOICE_TRANSCRIBE_URL)};if(!env.DB)return json({...base,ok:false,error:"DB binding missing"},503);try{await ensureSchemaOnce(env);const probe=await env.DB.prepare(`SELECT 1 AS ok`).first();const since=new Date(Date.now()-3600000).toISOString();const f=await env.DB.prepare(`SELECT COUNT(*) AS c FROM runtime_failures WHERE created_at>=?`).bind(since).first();return json({...base,db:Number(probe?.ok||0)===1,recent_failures_1h:Number(f?.c||0)});}catch(e){const incident=await recordRuntimeFailure(env,{scope:"health_db_probe",error:e});return json({...base,ok:false,error:"DB probe failed",incident_id:incident},503);}}
+
+function redactDiagnosticText(value){
+  let s=String(value??"");
+  s=s.replace(/Bearer\s+[A-Za-z0-9._~+\/-]{8,}/gi,"Bearer [REDACTED]");
+  s=s.replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g,"[TELEGRAM_TOKEN_REDACTED]");
+  s=s.replace(/([?&](?:key|token|secret|api[_-]?key)=)[^&\s]+/gi,"$1[REDACTED]");
+  s=s.replace(/((?:authorization|api[_-]?key|token|secret)\s*[:=]\s*)["']?[^\s,"'}]{8,}/gi,"$1[REDACTED]");
+  return s.slice(0,6000);
+}
+function safeDiagnosticContext(raw){
+  try{return JSON.parse(redactDiagnosticText(raw||"{}"));}catch{return{raw:redactDiagnosticText(raw||"")};}
+}
+async function reliabilityDiagnostics(request,env){
+  const url=new URL(request.url);const key=url.searchParams.get("key")||"";
+  if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:"Unauthorized"},401);
+  try{
+    await ensureSchemaOnce(env);
+    const incident=String(url.searchParams.get("incident")||"").trim();
+    const limit=clamp(Math.trunc(Number(url.searchParams.get("limit")||10)),1,20);
+    let rows=[];
+    if(incident){
+      const row=await env.DB.prepare(`SELECT incident_id,scope,error_text,context_json,created_at FROM runtime_failures WHERE incident_id=? LIMIT 1`).bind(incident).first();
+      if(row)rows=[row];
+    }else{
+      rows=(await env.DB.prepare(`SELECT incident_id,scope,error_text,context_json,created_at FROM runtime_failures ORDER BY id DESC LIMIT ?`).bind(limit).all())?.results||[];
+    }
+    return json({ok:true,version:V10_VERSION,count:rows.length,incidents:rows.map(r=>({incident_id:r.incident_id,scope:r.scope,error:redactDiagnosticText(r.error_text),context:safeDiagnosticContext(r.context_json),created_at:r.created_at}))});
+  }catch(e){
+    const id=await recordRuntimeFailure(env,{scope:"diagnostics_endpoint",error:e});
+    return json({ok:false,error:"Diagnostics query failed",incident_id:id},500);
+  }
+}
 
 async function claimTelegramUpdate(env,update){
 const raw=update?.update_id;

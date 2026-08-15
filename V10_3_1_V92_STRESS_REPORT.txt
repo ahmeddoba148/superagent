@@ -1,0 +1,6 @@
+{
+  "total": 33006,
+  "passed": 33006,
+  "failed": 0,
+  "failures": []
+}

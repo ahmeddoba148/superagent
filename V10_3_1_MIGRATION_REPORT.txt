@@ -1,0 +1,39 @@
+{
+  "pass": 8,
+  "fail": 0,
+  "total": 8,
+  "tests": [
+    {
+      "name": "ensureSchema on legacy DB",
+      "ok": true
+    },
+    {
+      "name": "legacy reminder preserved",
+      "ok": true
+    },
+    {
+      "name": "legacy reminder duration added",
+      "ok": true
+    },
+    {
+      "name": "legacy reminder timezone added",
+      "ok": true
+    },
+    {
+      "name": "legacy recurring migrated once",
+      "ok": true
+    },
+    {
+      "name": "legacy recurring source cleared",
+      "ok": true
+    },
+    {
+      "name": "second schema run no duplicate",
+      "ok": true
+    },
+    {
+      "name": "V10 tables added on migration",
+      "ok": true
+    }
+  ]
+}
