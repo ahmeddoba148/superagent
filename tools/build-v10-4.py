@@ -11,14 +11,12 @@ s=s.replace('shopping_delete_undo:true,reliability_lock:true',
 s=s.replace('message:"Super Agent V10.3.4 Atomic Direct is ready"',
             'message:"Super Agent V10.4 Zero Known Bugs is ready"',1)
 
-# Replace natural shopping parser with a multi-clause version that preserves original wording.
 start=s.find('function extractNaturalShoppingItemsV1034(raw){')
 end=s.find('\nasync function tryDirectTimedPurchaseReminderV1034(',start)
 if start<0 or end<0: raise SystemExit('natural shopping parser block not found')
 new_parser=r'''function parseSingleNaturalShoppingClauseV104(raw){
   const original=String(raw||"").replace(/[؟?!.,،؛;]+/gu," ").replace(/\s+/g," ").trim();
   if(!original)return null;
-  const t=normalizeArabicLoose(original);
   const m=original.match(/^(?:(?:النهارده|النهاردة|بكره|بكرة|غدا)\s+)?(?:ممكن\s+)?(?:(?:فكرني|فكرنى|تفكرني|ذكرني|ذكرنى|نبهني|نبهنى|تنبهني|افتكرني|متنسانيش|ماتنسانيش|ما\s+تنسانيش)\s+)?(?:(?:انا\s+)?(?:عاوز|عايز|محتاج|لازم|حابب|نفسي|نفسى)\s+)?(?:اني\s+)?(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+(.+)$/iu);
   if(!m)return null;
   let tail=String(m[1]||"").trim();
@@ -30,10 +28,8 @@ new_parser=r'''function parseSingleNaturalShoppingClauseV104(raw){
 function extractNaturalShoppingItemsV1034(raw){
   const original=String(raw||"").trim();if(!original)return null;
   const t=normalizeArabicLoose(normalizeDigits(original));
-  // Explicit time/recurrence means reminder semantics, never shopping-shortcut semantics.
   if(/(?:^|\s)(?:الساعه|الساعة|صباح|مساء|الظهر|العصر|بالليل|الليل)(?:\s|$)|\d{1,2}:\d{2}|(?:بعد|قبل)\s+\d+\s*(?:دقيقه|دقيقة|دقايق|ساعه|ساعة)|(?:^|\s)كل\s+(?:يوم|اسبوع|أسبوع)(?:\s|$)/u.test(t))return null;
   if(/(?:معلومه|معلومة|معلومات|خبر|اخبار|أخبار|سعر|اسعار|أسعار|رابط|لينك|صوره|صورة|كود|نتيجه|نتيجة)/u.test(t))return null;
-  // Preserve separate natural commands even when pasted in one Telegram message.
   let marked=original.replace(/[\r\n]+/g,' ␞ ');
   marked=marked.replace(/\s+(?=(?:(?:فكرني|فكرنى|تفكرني|ذكرني|ذكرنى|نبهني|نبهنى|تنبهني|افتكرني|متنسانيش|ماتنسانيش)\s+|(?:انا\s+)?(?:عاوز|عايز|محتاج|لازم|حابب|نفسي|نفسى)\s+)(?:(?:اني\s+)?(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+|(?:عاوز|عايز|محتاج)\s+))/giu,' ␞ ');
   const parts=marked.split('␞').map(x=>x.trim()).filter(Boolean);
@@ -44,7 +40,6 @@ function extractNaturalShoppingItemsV1034(raw){
 '''
 s=s[:start]+new_parser+s[end:]
 
-# Add deterministic relative reschedule before AI.
 anchor='async function handleV10DirectCommands(env,chatId,text,{fromVoice=false}={}){'
 pos=s.find(anchor)
 if pos<0: raise SystemExit('direct commands anchor missing')
@@ -55,21 +50,33 @@ helper=r'''function parseShiftMinutesV104(raw){
   else if(/(?:ساعه|ساعة)\s+ونص/u.test(n)){total+=90;matched=true;}
   else if(/(?:ساعه|ساعة)\s+وربع/u.test(n)){total+=75;matched=true;}
   else {
-    const h=n.match(/(\d+)\s*(?:ساعه|ساعة|ساعات)/u);if(h){total+=Number(h[1])*60;matched=true;}
-    else if(/(?:^|\s)(?:ساعه|ساعة)(?:\s|$|\s+و)/u.test(n)){total+=60;matched=true;}
+    const h=n.match(/^(\d+)\s*(?:ساعه|ساعة|ساعات)(?:\s|$)/u);if(h){total+=Number(h[1])*60;matched=true;}
+    else if(/^(?:ساعه|ساعة)(?:\s|$|\s+و)/u.test(n)){total+=60;matched=true;}
   }
   const m=n.match(/(\d+)\s*(?:دقيقه|دقيقة|دقايق|دقائق)/u);if(m){total+=Number(m[1]);matched=true;}
-  if(!matched&&/(?:نص\s+(?:ساعه|ساعة))/u.test(n)){total=30;matched=true;}
-  if(!matched&&/(?:ربع\s+(?:ساعه|ساعة))/u.test(n)){total=15;matched=true;}
+  if(!matched&&/^(?:نص\s+(?:ساعه|ساعة))/u.test(n)){total=30;matched=true;}
+  if(!matched&&/^(?:ربع\s+(?:ساعه|ساعة))/u.test(n)){total=15;matched=true;}
   return matched&&total>0&&total<=10080?total:0;
+}
+
+function extractShiftSuffixV104(n){
+  const patterns=[
+    /(?:ساعه|ساعة)\s+و\s*(?:نص|ربع|\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق))\s*$/u,
+    /ساعتين(?:\s+و\s*\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق))?\s*$/u,
+    /\d+\s+(?:ساعه|ساعة|ساعات)(?:\s+و\s*\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق))?\s*$/u,
+    /(?:ساعه|ساعة)\s*$/u,
+    /(?:نص|ربع)\s+(?:ساعه|ساعة)\s*$/u,
+    /\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق)\s*$/u
+  ];
+  for(const p of patterns){const m=n.match(p);if(m)return m;}
+  return null;
 }
 
 async function tryDirectRelativeRescheduleV104(env,chatId,raw){
   const original=String(raw||"").trim();const n=normalizeArabicLoose(normalizeDigits(original)).replace(/\s+/g," ").trim();
-  const a=n.match(/^(اجل|أجل|اخر|أخر|أخر|أجّل|قدم|قدّم)\s+(.+)$/u);if(!a)return false;
-  const minutes=parseShiftMinutesV104(n);if(!minutes)return false;
-  const dm=n.match(/((?:ساعتين|(?:\d+\s*)?(?:ساعه|ساعة|ساعات)(?:\s+و(?:نص|ربع|\s*\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق)))?|(?:نص|ربع)\s*(?:ساعه|ساعة)|\d+\s*(?:دقيقه|دقيقة|دقايق|دقائق)))\s*$/u);
-  if(!dm)return false;
+  const a=n.match(/^(اجل|أجل|اخر|أخر|أجّل|قدم|قدّم)\s+(.+)$/u);if(!a)return false;
+  const dm=extractShiftSuffixV104(n);if(!dm)return false;
+  const minutes=parseShiftMinutesV104(dm[0]);if(!minutes)return false;
   let target=n.slice(a[1].length,dm.index).trim().replace(/^(?:موعد|ميعاد|اجتماع|مكالمة|مكالمه|دكتور|كشف)\s+/u,"").trim();if(!target)return false;
   const rows=(await env.DB.prepare(`SELECT * FROM reminders WHERE chat_id=? AND cancelled=0 AND sent=0 ORDER BY local_date,local_time,id LIMIT 200`).bind(chatId).all())?.results||[];
   const scored=rows.map(r=>{const title=normalizeArabicLoose(r.title||"");const stripped=title.replace(/^(?:موعد|ميعاد|اجتماع|مكالمة|مكالمه|دكتور|كشف)\s+/u,"");let score=0;if(stripped===target||title===target)score=4;else if(stripped.includes(target)||target.includes(stripped))score=3;else{const toks=target.split(/\s+/).filter(x=>x.length>1);if(toks.length&&toks.every(x=>title.includes(x)))score=2;}return{r,score};}).filter(x=>x.score>0).sort((x,y)=>y.score-x.score);
@@ -89,7 +96,6 @@ route2='''  if(!t)return false;\n  if(await tryDirectRelativeRescheduleV104(env,
 if route not in s: raise SystemExit('direct route anchor missing')
 s=s.replace(route,route2,1)
 
-# Guard against false "updated" responses when an AI update resolves to exactly the current values.
 needle='''if(!next.title||isPastLocal(next.date,next.time,String(current.timezone||intent._timezone||TIME_ZONE))){\nthrow new Error("التعديل غير صالح أو هيخلي الموعد في الماضي.");\n}\n\nif(!options.skipConflictCheck){'''
 replacement='''if(!next.title||isPastLocal(next.date,next.time,String(current.timezone||intent._timezone||TIME_ZONE))){\nthrow new Error("التعديل غير صالح أو هيخلي الموعد في الماضي.");\n}\nconst currentAlerts=sanitizeAdvanceAlerts(parseJsonArray(current.advance_alerts_json));\nconst sameUpdate=next.title===current.title&&next.kind===current.kind&&next.date===current.local_date&&next.time===current.local_time&&Number(next.duration_minutes||0)===Number(current.duration_minutes||0)&&JSON.stringify(next.advance_alerts)===JSON.stringify(currentAlerts);\nif(sameUpdate){const msg=`ℹ️ الموعد بالفعل بنفس البيانات، مفيش تغيير اتعمل:\n${formatEventWhen(current.local_date,current.local_time,Number(current.duration_minutes||0),String(current.timezone||TIME_ZONE))} — ${current.title}`;await sendText(env,chatId,msg);await saveConversationMessage(env,chatId,"assistant",msg);return;}\n\nif(!options.skipConflictCheck){'''
 if needle not in s: raise SystemExit('no-op guard anchor missing')
