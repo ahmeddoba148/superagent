@@ -22,6 +22,6 @@ try{
  await wh(id++,'/undo');r=await items();ok('undo item',r.some(x=>x.title==='لبن'),JSON.stringify(r));
  const before=r.length;await wh(id++,'احذف قائمة المشتريات');const c1=await env.DB.prepare(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='77'`).first();ok('delete list',Number(c1?.c||0)===0,JSON.stringify(c1));
  await wh(id++,'/undo');r=await items();ok('undo list',r.length===before,JSON.stringify(r));
- await wh(id++,'فكرني الساعة 5 اجيب الدوا');const shopDrug=(await env.DB.prepare(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='77' AND normalized_title LIKE '%دوا%'`).first())?.c||0;const timed=(await env.DB.prepare(`SELECT title,local_time FROM reminders WHERE chat_id='77' ORDER BY id DESC LIMIT 1`).first());ok('clock stays reminder not shopping',Number(shopDrug)===0&&!!timed&&timed.local_time==='17:00',JSON.stringify({shopDrug,timed}));
+ await wh(id++,'فكرني بكرة الساعة 5 اجيب الدوا');const shopDrug=(await env.DB.prepare(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='77' AND normalized_title LIKE '%دوا%'`).first())?.c||0;const timed=(await env.DB.prepare(`SELECT title,local_time FROM reminders WHERE chat_id='77' ORDER BY id DESC LIMIT 1`).first());ok('dated clock stays reminder not shopping',Number(shopDrug)===0&&!!timed&&timed.local_time==='17:00',JSON.stringify({shopDrug,timed}));
 }catch(e){fail++;errors.push({n:'unexpected',d:String(e.stack||e)})}
 console.log(JSON.stringify({pass,fail,total:pass+fail,errors},null,2));py.stdin.write(JSON.stringify({mode:'close'})+'\n');setTimeout(()=>process.exit(fail?1:0),30);
