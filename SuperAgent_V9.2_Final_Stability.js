@@ -4,7 +4,7 @@ export default{
 async fetch(request,env,ctx){
 const url=new URL(request.url);
 if(request.method==="GET"&&url.pathname==="/"){
-return json({ok:true,service:"Super Agent — Universal Secretary",version:"9.2",status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,multi_prayer_anchors:true,reference_clock_safety:true,semantic_role_safety:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,hidden_model_debug:true,deterministic_relationships:true,composite_duration_safe:true,max_occurrence_safe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
+return json({ok:true,service:"Super Agent — Universal Secretary",version:"9.2",status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,hidden_model_debug:true,multi_prayer_rules_safe:true,action_reference_time_safe:true,semantic_item_count_safe:true,deterministic_relationships:true,composite_duration_safe:true,max_occurrence_safe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
 }
 if(request.method==="GET"&&url.pathname==="/health"){
 return json({ok:true,version:"9.2",now:cairoNow(),db:!!env.DB,omniai_service:!!env.OMNIAI_SERVICE,live_reality:true});
@@ -70,7 +70,7 @@ await telegramApiWithRetry(env,"setMyCommands",{commands:[
 {command:"memory",description:"ذاكرتي المحفوظة"},
 {command:"live",description:"ملخص الواقع الحالي"}
 ]},1);
-return json({ok:true,message:"Super Agent V9.2 Semantic Prayer Stability is ready",webhook:webhookUrl,webhook_status:webhookStatus,allowed_updates:desiredUpdates,timezone:TIME_ZONE,public_mode:isPublicMode(env),universal_recurrence:true,safety_grounding:true,live_reality:true,prayer_awareness:true,multi_prayer_anchors:true,reference_clock_safety:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,duration_conflicts:true,safe_live_watch_batching:true,schema_cached_per_isolate:true,fallback_models:REMINDER_MODELS.length});
+return json({ok:true,message:"Super Agent V9.2 Semantic & Prayer Stability Fix is ready",webhook:webhookUrl,webhook_status:webhookStatus,allowed_updates:desiredUpdates,timezone:TIME_ZONE,public_mode:isPublicMode(env),universal_recurrence:true,safety_grounding:true,live_reality:true,prayer_awareness:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,duration_conflicts:true,safe_live_watch_batching:true,schema_cached_per_isolate:true,multi_prayer_rules_safe:true,action_reference_time_safe:true,semantic_item_count_safe:true,fallback_models:REMINDER_MODELS.length});
 }
 
 async function ensureSchema(env){
@@ -415,6 +415,12 @@ console.error("Failed to send error:",sendError);
 }
 
 async function processFreshAgentText(env,chatId,text,history){
+const profile=await getUserProfile(env,chatId);
+const fastActionReference=buildDeterministicActionReferenceIntent(text,profile.timezone);
+if(fastActionReference){
+await executeIntent(env,chatId,fastActionReference);
+return;
+}
 const localNeed=analyzeHardAmbiguity(text);
 if(localNeed){
 await savePendingDialog(env,chatId,{baseText:text,context:[],question:localNeed.question,questionType:localNeed.type,questionMeta:localNeed.meta||{}});
@@ -424,7 +430,6 @@ await saveConversationMessage(env,chatId,"assistant",answer);
 return;
 }
 await enforceAiRateLimit(env,chatId);
-const profile=await getUserProfile(env,chatId);
 const memories=await getUserMemories(env,chatId,30);
 const reality=await buildLiveRealityContext(env,chatId,text,profile);
 const fastPrayer=buildOneTimePrayerIntent(text,reality,profile.timezone);
@@ -4822,8 +4827,6 @@ return`
 7) التنبيه المركب وحدة واحدة: «قبلها بساعة و20 دقيقة»=[80]. ولو «وكمان قبلها 10 دقايق»=[80,10].
 8) العلاقات: «بعد الدكتور بنص ساعة» = نهاية الدكتور +30 إن كان له مدة؛ «قبل X بربع ساعة» = وقت X -15.
 9) الصلاة: استخدم أوقات الصلاة الحية في الواقع المرسل. «قبل أذان العشاء بربع ساعة» = Isha-15. لا تسأل عن وقت وجبة العشاء.
-9.1) لو المستخدم طلب عدة تذكيرات صلاة في جملة واحدة، استخرج كل Anchor مستقل ولا تسقط أي واحد.
-9.2) فرّق بين وقت تنفيذ التذكير ووقت مذكور كسبب أو مرجع: «الساعة 5 مساء فكرني أكلم الممرضة عشان تيجي الساعة 6» = تذكير واحد الساعة 17:00؛ الساعة 6 معلومة داخل معنى التذكير وليست موعدًا مستقلًا إلا لو طلب المستخدم حفظها صراحة.
 10) التكرار يدعم دقائق/ساعات/أيام/أسابيع/شهور/سنين وأيام أسبوع وordinal weekdays وآخر يوم بالشهر.
 11) max_occurrences حد حقيقي لا يُتجاوز.
 12) لا تفترض مدة أو تنبيه مسبق لم يطلبهما المستخدم.
@@ -4831,6 +4834,8 @@ return`
 14) أي طلب مواعيد متعدد: لا تسقط أي عنصر.
 15) التعارض يترك للسيرفر؛ استخرج الطلب ولا ترفضه.
 16) استخدم جدول المستخدم وذاكرته والواقع الحي لحل المراجع بدل الأسئلة الزائدة.
+17) فرّق بين وقت تنفيذ التذكير ووقت مذكور كسبب/مرجع داخل نصه: «الساعة 5 مساء فكرني أكلم الممرضة علشان تيجي الساعة 6» = تذكير واحد الساعة 5 فقط، والساعة 6 جزء من محتوى التذكير وليست موعدًا ثانيًا إلا لو طلب المستخدم تسجيلها صراحة.
+18) لو المستخدم طلب عدة تذكيرات صلاة يومية مرتبطة بمواقيت مختلفة، فكل علاقة صلاة قاعدة مستقلة ولا تسقط أي واحدة؛ الوقت يُحسب يوميًا من Prayer Anchor وليس ساعة ثابتة.
 `.trim();
 }
 
@@ -5754,8 +5759,6 @@ intent,
 base,
 context?.timezone||intent._timezone||TIME_ZONE
 );
-
-applyReferenceClockSafety(intent,base);
 }
 
 if(intent.action==="update"){
@@ -7323,7 +7326,7 @@ throw new Error(
 
 if(intent.action==="create"){
 const expected=
-estimateMinimumItems(
+estimateMinimumItemsSemantic(
 base
 );
 
@@ -7757,12 +7760,11 @@ looksLikeCreateRequest(t)||
 function analyzeHardAmbiguity(
 originalText
 ){
+const ambiguitySource=stripReferenceOnlyTailForAmbiguity(String(originalText||""));
 const text=
 normalizeTimeWords(
 normalizeDigits(
-String(
-originalText||""
-)
+ambiguitySource
 )
 ).trim();
 
@@ -7788,7 +7790,7 @@ return null;
 const ambiguous=
 findAmbiguous12HourTimesDetailed(
 text
-).filter(x=>!isReferenceOnlyClock(text,x));
+);
 
 if(
 ambiguous.length===1
@@ -8067,6 +8069,97 @@ return(
 );
 }
 
+function stripReferenceOnlyTailForAmbiguity(text){
+const raw=String(text||"");
+const cause=raw.match(/(?:علشان|عشان|بحيث|لأن|لان|لكي)/iu);
+if(!cause||cause.index==null)return raw;
+const before=raw.slice(0,cause.index);
+const after=raw.slice(cause.index+cause[0].length);
+if(!/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu.test(before))return raw;
+if(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|سجل|احفظ|ضيف\s+موعد|اضف\s+موعد|موعد\s+تاني|ميعاد\s+تاني)/iu.test(after))return raw;
+return before;
+}
+
+function parseClockMentionsForSemantics(text){
+const s=normalizeTimeWords(normalizeDigits(String(text||"")));
+const re=/(?:الساعة|الساعه)\s*(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)?/giu;
+const out=[];let m;
+while((m=re.exec(s))!==null){
+const suffix=String(m[3]||"").replace(/\s+/g," ").trim();
+let minute=m[2]?Number(m[2]):/نص/u.test(suffix)?30:/ربع/u.test(suffix)?15:0;
+let hour=Number(m[1]);
+if(/إلا|الا/u.test(suffix)){hour=hour===1?12:hour-1;minute=45;}
+const period=String(m[4]||"");
+let code=null;
+if(/(?:صباح|الصبح|صبح|الفجر)/iu.test(period))code="AM";
+else if(/(?:ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء|المساء|بالليل|ليل)/iu.test(period))code="PM";
+out.push({index:m.index,end:re.lastIndex,hour,minute,period:code,label:m[0]});
+}
+return out;
+}
+
+function analyzeActionReferenceShape(text){
+const raw=String(text||"");
+const normalized=normalizeTimeWords(normalizeDigits(raw));
+const cause=normalized.match(/(?:علشان|عشان|بحيث|لأن|لان|لكي)/iu);
+if(!cause||cause.index==null)return null;
+const verb=normalized.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu);
+if(!verb||verb.index==null||verb.index>cause.index)return null;
+const tail=normalized.slice(cause.index+cause[0].length);
+if(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|سجل|احفظ|ضيف\s+موعد|اضف\s+موعد|موعد\s+تاني|ميعاد\s+تاني)/iu.test(tail))return null;
+const clocks=parseClockMentionsForSemantics(normalized);
+const before=clocks.filter(x=>x.index<cause.index);
+const after=clocks.filter(x=>x.index>cause.index);
+if(before.length!==1||after.length<1)return null;
+return{raw,normalized,cause,verb,actionClock:before[0],referenceClocks:after};
+}
+
+function resolveDeterministicReminderDate(text,hhmm,timeZone=TIME_ZONE){
+const n=normalizeArabicLoose(normalizeDigits(String(text||"")));
+const now=zonedNow(timeZone);
+if(/(?:بعد\s+بكره|بعد\s+بكرة)/u.test(n))return addDaysIso(now.date,2);
+if(/(?:بكره|بكرة|غدا|غدًا|غداً)/u.test(n))return addDaysIso(now.date,1);
+if(/(?:النهارده|النهاردة|اليوم)/u.test(n))return now.date;
+if(/\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/u.test(n)||/(?:يناير|فبراير|مارس|ابريل|مايو|يونيو|يوليو|اغسطس|سبتمبر|اكتوبر|نوفمبر|ديسمبر)/u.test(n))return null;
+const named=extractNamedWeekdays(n);
+if(named.length===1){
+for(let i=0;i<8;i++){
+const d=addDaysIso(now.date,i);
+if(isoWeekday(d)!==named[0])continue;
+if(i===0&&localDateTimeToEpoch(`${d} ${hhmm}`,timeZone)<Date.now()-60000)continue;
+return d;
+}
+}
+const todayAt=`${now.date} ${hhmm}`;
+return localDateTimeToEpoch(todayAt,timeZone)>=Date.now()-60000?now.date:addDaysIso(now.date,1);
+}
+
+function buildDeterministicActionReferenceIntent(text,timeZone=TIME_ZONE){
+const shape=analyzeActionReferenceShape(text);
+if(!shape)return null;
+const c=shape.actionClock;
+if(!c.period)return null;
+let hour=c.hour%12;
+if(c.period==="PM")hour+=12;
+const time=`${String(hour).padStart(2,"0")}:${String(c.minute).padStart(2,"0")}`;
+const date=resolveDeterministicReminderDate(text,time,timeZone);
+if(!date)return null;
+const raw=String(text||"");
+const verb=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu);
+if(!verb||verb.index==null)return null;
+let title=raw.slice(verb.index+verb[0].length).trim();
+title=title.replace(/^(?:الساعة|الساعه)\s*(?:1[0-2]|[1-9])(?:\s*[:٫.]\s*[0-5]?\d|\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(?:صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)?\s*/iu,"").trim();
+if(!title)title="التذكير المطلوب";
+return{action:"create",needs_clarification:false,question:"",reply:"",items:[{date,time,title:title.slice(0,500),kind:"reminder",duration_minutes:0,advance_alerts:[]}],recurring_items:[],_timezone:timeZone};
+}
+
+function estimateMinimumItemsSemantic(text){
+const prayers=parseMultiRecurringPrayerAnchors(text);
+if(prayers.length>=2)return prayers.length;
+if(analyzeActionReferenceShape(text))return 1;
+return estimateMinimumItems(text);
+}
+
 function estimateMinimumItems(text){
 const t=
 normalizeTimeWords(
@@ -8078,7 +8171,9 @@ text||""
 );
 
 const clocks=
-findAllClockMentionsDetailed(t).filter(x=>!isReferenceOnlyClock(t,x));
+t.match(
+/(?:الساعة|الساعه)\s*(?:\d{1,2}(?::\d{1,2})?)(?:\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?/giu
+)||[];
 
 const rel=
 t.match(
@@ -8093,35 +8188,6 @@ rel.length,
 20
 )
 );
-}
-
-
-function findAllClockMentionsDetailed(text){
-const t=normalizeTimeWords(normalizeDigits(String(text||"")));
-const re=/(?:الساعة|الساعه)\s*(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?(?:\s*(صباح(?:ًا|ا)?|الصبح|صبح|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل|الفجر|am|pm))?/giu;
-const out=[];let m;
-while((m=re.exec(t))!==null)out.push({index:m.index,end:re.lastIndex,hour:Number(m[1]),minute:m[2]?Number(m[2]):/نص/u.test(m[3]||"")?30:/ربع/u.test(m[3]||"")?15:0,period:String(m[4]||""),label:m[0]});
-return out;
-}
-function isReferenceOnlyClock(text,clock){
-const t=normalizeArabicLoose(normalizeDigits(String(text||""))),start=Math.max(0,Number(clock?.index||0)),before=t.slice(0,start),near=t.slice(Math.max(0,start-100),start),after=t.slice(Number(clock?.end||start),Math.min(t.length,Number(clock?.end||start)+90));
-const causal=/(?:عشان|علشان|لان|لأن|بحيث|علي شان|على شان)[^.!؟\n]{0,95}$/u.test(near);
-const purpose=/(?:عشان|علشان|لان|لأن|بحيث)[^.!؟\n]{0,130}(?:ييجي|تيجي|تجي|ياخد|تاخد|اخد|تدي|يدي|نعمل|اعمل|يعمل|تعمل|يكون|تبقي|تبقى)/u.test(`${near} ${after}`);
-const priorAction=/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|عندي|عندى|موعد|ميعاد|معاد)/u.test(before);
-return !!(priorAction&&(causal||purpose));
-}
-function resolveFirstActionClock(text){
-const t=normalizeTimeWords(normalizeDigits(String(text||""))),all=findAllClockMentionsDetailed(t);
-for(const c of all){if(isReferenceOnlyClock(t,c))continue;const around=t.slice(Math.max(0,c.index-35),Math.min(t.length,c.end+50));if(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|عندي|عندى|موعد|ميعاد|معاد)/iu.test(around))return c;}
-return all.find(c=>!isReferenceOnlyClock(t,c))||null;
-}
-function clockTo24(c){
-if(!c)return null;let h=Number(c.hour),m=Number(c.minute||0);const p=normalizeArabicLoose(c.period||"");if(/(?:مساء|المساء|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|بالليل|ليل|pm)/u.test(p)){if(h<12)h+=12;}else if(/(?:صباح|الصبح|صبح|الفجر|am)/u.test(p)){if(h===12)h=0;}else return null;return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
-}
-function applyReferenceClockSafety(intent,base){
-if(intent?.action!=="create"||!Array.isArray(intent.items)||intent.items.length<2)return;
-const refs=findAllClockMentionsDetailed(base).filter(c=>isReferenceOnlyClock(base,c));if(!refs.length)return;
-const primaryTime=clockTo24(resolveFirstActionClock(base));let keep=primaryTime?intent.items.find(x=>String(x.time)===primaryTime):null;if(!keep)keep=intent.items[0];intent.items=[keep];
 }
 
 function extractNamedWeekdays(text){
@@ -8909,23 +8975,16 @@ quickMenuKeyboard()
 return true;
 }
 
-const prayerBatch=parseRecurringPrayerAnchors(raw);
-if(prayerBatch.length>1){
-const profile=await getUserProfile(env,chatId);
-const now=zonedNow(profile.timezone);
-const ts=new Date().toISOString();
-const statements=prayerBatch.map(pr=>env.DB.prepare(`
-INSERT INTO prayer_rules(chat_id,title,prayer,offset_minutes,start_date,end_date,weekdays_json,max_occurrences,fired_count,active,paused_until,exceptions_json,created_at,updated_at) VALUES(?,?,?,?,?,NULL,?,?,0,1,NULL,'[]',?,?)
-`).bind(chatId,pr.title,pr.prayer,pr.offset,now.date,JSON.stringify(pr.weekdays),pr.max_occurrences,ts,ts));
-await env.DB.batch(statements);
-const lines=prayerBatch.map(pr=>`🕌 ${formatPrayerRule({...pr,start_date:now.date,active:1})}${pr.max_occurrences?` · ${pr.max_occurrences} مرات`:""} — ${pr.title}`);
-await sendText(env,chatId,`✅ تم حفظ ${prayerBatch.length} تذكيرات مرتبطة بمواقيت الصلاة اليومية:
-
-${lines.join("\n")}`,quickMenuKeyboard());
+const prayerBatch=parseMultiRecurringPrayerAnchors(raw);
+if(prayerBatch.length>=2){
+await saveMultiPrayerRules(env,chatId,prayerBatch);
 return true;
 }
 
-const pr=prayerBatch[0]||parseRecurringPrayerAnchor(raw);
+const pr=
+parseRecurringPrayerAnchor(
+raw
+);
 
 if(pr){
 const profile=
@@ -9960,19 +10019,53 @@ dir*offset
 };
 }
 
-
-function parseRecurringPrayerAnchors(text){
-const raw=String(text||""),n=normalizeArabicLoose(normalizeDigits(raw));
-const daily=/(?:كل\s+يوم|يوميا|يومياً|يوميًا|التذكيرات\s+اليوميه|التذكيرات\s+اليومية|يوميه|يومية)/u.test(n),named=extractNamedWeekdays(n);if(!daily&&!named.length)return[];
-let globalDur=null;const gd=n.match(/(?:قبل|بعد)\s+(?:اذان|الاذان|صلاه|صلاة)?\s*(?:الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)\s+(?:ب|بـ)?\s*([^،,.؛;\n]{1,28})/u);if(gd)globalDur=parseDurationValuePhrase(gd[1]);
-const clauseRe=/(قبل|بعد)\s+(?:اذان|الاذان|أذان|الأذان|صلاه|صلاة)?\s*(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)([^،,.؛;\n]*?)(?=(?:\s+و?قبل|\s+و?بعد|[،,.؛;\n]|$))/giu;
-const out=[];let m;
-while((m=clauseRe.exec(raw))!==null){const anchor=prayerNameFromArabic(m[2]);if(!anchor)continue;const tail=String(m[3]||"");let d=null;const dm=tail.match(/(?:ب|بـ)\s*((?:ربع|نص|نصف|تلت|ثلث|ساعه|ساعة|ساعتين|\d+|[\p{L}]+)(?:\s+(?:ساعه|ساعة|دقيقه|دقيقة|دقايق|دقائق))?)/u);if(dm)d=parseDurationValuePhrase(dm[1]);if(d==null)d=globalDur||0;const dir=m[1]==="قبل"?-1:1;
-let target=null;const tm=tail.match(/(?:اصلي|أصلي|صلي|صلّي|بال|بصلاه|بصلاة|صلاه|صلاة|نبهني\s+ب|فكرني\s+ب|ذكرني\s+ب)\s*(الفجر|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/iu);if(tm)target=prayerNameFromArabic(tm[1]);
-if(!target){const after=raw.slice(clauseRe.lastIndex,Math.min(raw.length,clauseRe.lastIndex+65)),tm2=after.match(/(?:نبهني|نبهنى|فكرني|فكرنى|ذكرني|ذكرنى)?\s*(?:ب|بصلاه|بصلاة)?\s*(الفجر|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/iu);if(tm2)target=prayerNameFromArabic(tm2[1]);}
-if(!target)continue;const title=`صلي ${arabicPrayerName(target)}`,key=`${anchor}|${dir*d}|${title}`;if(out.some(x=>x._key===key))continue;out.push({_key:key,title,prayer:anchor,offset:dir*d,weekdays:daily?[]:named,max_occurrences:parseExplicitOccurrenceCount(raw)});
+function parseMultiRecurringPrayerAnchors(text){
+const raw=String(text||"");
+const n=normalizeArabicLoose(normalizeDigits(raw));
+const recurring=/(?:كل\s+يوم|يوميا|يوميًا|التذكيرات?\s+اليوميه|تذكيرات?\s+يوميه|بشكل\s+يومي|لكل\s+الصلوات)/u.test(n);
+if(!recurring)return[];
+const re=/(?:^|\s)و?قبل\s+(?:صلاه\s+)?(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/gu;
+const matches=[...n.matchAll(re)];
+if(matches.length<2)return[];
+const candidates=[];
+for(let i=0;i<matches.length;i++){
+const m=matches[i];
+const end=i+1<matches.length?matches[i+1].index:n.length;
+const seg=n.slice(m.index,end).trim();
+const anchor=prayerNameFromArabic(m[1]);
+const action=seg.match(/(?:نبهني|نبهنى|فكرني|فكرنى|ذكرني|ذكرنى|ابعتلي\s+(?:تنبيه|تذكير)|ابعثلي\s+(?:تنبيه|تذكير))([\s\S]*)/u);
+if(!anchor||!action)continue;
+const actionIndex=action.index==null?seg.length:action.index;
+const beforeAction=seg.slice(m[0].trim().length,actionIndex).trim();
+let offset=parseDurationValuePhrase(beforeAction);
+let targetMatch=String(action[1]||"").match(/(?:اني\s+)?(?:اصلي\s+|صلي\s+|بصلاه\s+|بالصلاه\s+|ب)?(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/u);
+if(!targetMatch)targetMatch=String(action[1]||"").match(/(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/u);
+const target=targetMatch?prayerNameFromArabic(targetMatch[1]):null;
+if(!target)continue;
+candidates.push({anchor,target,offset});
 }
-return out.map(({_key,...x})=>x);
+if(candidates.length<2)return[];
+let fallback=candidates.find(x=>Number.isFinite(Number(x.offset))&&Number(x.offset)>0)?.offset??null;
+if(fallback==null){
+const firstNamed=matches[0]?.index??n.length;
+const ds=extractDurationMentionsMinutes(n.slice(0,firstNamed));
+fallback=ds.find(x=>x>0)??0;
+}
+const weekdays=extractNamedWeekdays(n);
+const maxOccurrences=parseExplicitOccurrenceCount(raw);
+const mapped=candidates.map(x=>({title:`صلي ${arabicPrayerName(x.target)}`,prayer:x.anchor,offset:-Math.abs(Number(x.offset??fallback??0)),weekdays,max_occurrences:maxOccurrences}));
+const seen=new Set();
+return mapped.filter(r=>{const key=`${r.prayer}|${r.offset}|${r.title}|${r.weekdays.join(",")}|${r.max_occurrences??""}`;if(seen.has(key))return false;seen.add(key);return true;});
+}
+
+async function saveMultiPrayerRules(env,chatId,rules){
+const profile=await getUserProfile(env,chatId);
+const now=zonedNow(profile.timezone);
+const ts=new Date().toISOString();
+const statements=rules.map(r=>env.DB.prepare(`INSERT INTO prayer_rules(chat_id,title,prayer,offset_minutes,start_date,end_date,weekdays_json,max_occurrences,fired_count,active,paused_until,exceptions_json,created_at,updated_at) VALUES(?,?,?,?,?,NULL,?,?,0,1,NULL,'[]',?,?)`).bind(chatId,r.title,r.prayer,Number(r.offset||0),now.date,JSON.stringify(r.weekdays||[]),r.max_occurrences??null,ts,ts));
+await env.DB.batch(statements);
+const lines=rules.map(r=>`🕌 ${formatPrayerRule({...r,start_date:now.date,active:1})} — ${r.title}`);
+await sendText(env,chatId,`✅ تم حفظ ${rules.length} تذكيرات صلاة متكررة:\n\n${lines.join("\n")}\n\n⏱️ المواعيد هتتحسب يوميًا من وقت الصلاة الفعلي حسب موقعك، مش كساعة ثابتة.`,quickMenuKeyboard());
 }
 
 function parseRecurringPrayerAnchor(text){
@@ -9989,7 +10082,7 @@ raw
 );
 
 const daily=
-/(?:كل\s+يوم|يوميا|يوميًا)/u.test(n);
+/(?:كل\s+يوم|يوميا|يوميًا|التذكيرات?\s+اليوميه|تذكيرات?\s+يوميه|بشكل\s+يومي)/u.test(n);
 
 const named=
 extractNamedWeekdays(n);
