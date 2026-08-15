@@ -5,6 +5,7 @@ on:
     paths:
       - 'tools/build-v10-3-4.py'
       - 'tests/v10-3-4-atomic-direct-e2e.mjs'
+      - 'tests/v10-3-4-natural-shopping.mjs'
       - '.github/workflows/verify-v10-3-4.yml'
   workflow_dispatch:
 permissions:
@@ -22,6 +23,8 @@ jobs:
           node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_3_4_Atomic_Direct.js
       - name: Atomic direct E2E
         run: node tests/v10-3-4-atomic-direct-e2e.mjs
+      - name: Natural shopping and delete E2E
+        run: node tests/v10-3-4-natural-shopping.mjs
       - name: V10.3.3 chain regression
         run: |
           cp SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js
@@ -60,6 +63,9 @@ jobs:
           Compound conflict atomic rollback/replay: PASS
           Deterministic recurring delete with AI unavailable: PASS
           Ambiguous recurring delete asks instead of guessing: PASS
+          Natural shopping language: PASS
+          Delete shopping item + undo: PASS
+          Delete whole shopping list + undo: PASS
           Relation-derived duplicate alerts removed: PASS
           V10.3.3 chain regression: PASS
           Cycle canonicalization regression: PASS
