@@ -1,0 +1,11 @@
+Super Agent V10.1 Final Stability
+Syntax: PASS
+Exact source SHA256: fac108bb0acc18c38113f442f8e76527750b5c8b2579267ad0d03aa69535bfef
+Exact bytes: 284357
+Stress assertions: 15280 passed / 0 failed
+Telegram + Voice + Shopping E2E: 14 passed / 0 failed
+Legacy DB migration: 8 passed / 0 failed
+V9.2 semantic/prayer fixes: integrated
+Telegram update idempotency: enabled
+Dependency cycle protection + rollback: enabled
+Strict clean-chat mode: enabled
