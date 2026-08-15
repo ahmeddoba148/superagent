@@ -14,5 +14,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Fix stress harness dependency insert
+        run: python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/v10-4-1-ultra-direct-stress.mjs')
+          s=p.read_text()
+          old="VALUES (?,'reminder',?,'reminder',?,?,?,?,1,?,?)"
+          new="VALUES (?,'reminder',?,'reminder',?,?,?,1,?,?)"
+          if old not in s:
+              raise SystemExit('stress harness SQL anchor missing')
+          p.write_text(s.replace(old,new,1))
+          PY
       - name: Ultra deterministic stress
         run: node tests/v10-4-1-ultra-direct-stress.mjs
