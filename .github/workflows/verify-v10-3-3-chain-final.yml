@@ -1,0 +1,78 @@
+name: Verify SuperAgent V10.3.3 Chain Final
+on:
+  push:
+    branches: [superagent-v10-3-3-chain-final]
+    paths:
+      - 'tools/build-v10-3-3.py'
+      - 'tests/v10-3-3-chain-e2e.mjs'
+      - '.github/workflows/verify-v10-3-3-chain-final.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.3.3
+        run: python tools/build-v10-3-3.py
+      - name: Syntax and IntelliSense
+        run: |
+          node --check SuperAgent_V10_3_3_Chain_Final.js
+          node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_3_3_Chain_Final.js
+      - name: Full chain production E2E
+        run: node tests/v10-3-3-chain-e2e.mjs
+      - name: Cycle canonicalization regression
+        run: |
+          cp SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js
+          node tests/v10-3-2-cycle-regression.mjs
+      - name: Reliability regression
+        run: |
+          cp SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-reliability.mjs
+      - name: Semantic regression
+        run: node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V9.2 stress regression
+        run: node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V10 stress E2E migration
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs
+          node tests/v10-final-e2e.mjs
+          node tests/v10-final-migration.mjs
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+      - name: Protected diagnostics
+        run: |
+          cp SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-1-diagnostics.mjs
+      - name: Write report
+        run: |
+          BYTES=$(wc -c < SuperAgent_V10_3_3_Chain_Final.js)
+          SHA=$(sha256sum SuperAgent_V10_3_3_Chain_Final.js | cut -d' ' -f1)
+          cat > V10_3_3_FINAL_REPORT.txt <<REPORT
+          Super Agent V10.3.3 Chain Final
+          Syntax + IntelliSense: PASS
+          Full create -> move -> restore chain E2E: PASS
+          Both linked reminders propagate: PASS
+          Relation-derived duplicate alerts removed: PASS
+          Existing shopping item explanation: PASS
+          Cycle canonicalization regression: PASS
+          Reliability failure injection: PASS
+          Semantic regression: PASS
+          V9.2 stress regression: PASS
+          V10 stress/E2E/migration: PASS
+          Protected diagnostics: PASS
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
+          VERIFIED
+          REPORT
+      - name: Commit verified source and report
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -- SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js SuperAgent_V10_3_2_Dependency_Canonical.js || true
+          git add SuperAgent_V10_3_3_Chain_Final.js V10_3_3_FINAL_REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Verify V10.3.3 chain final full regression'
+          git push
