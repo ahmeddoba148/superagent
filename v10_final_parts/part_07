@@ -1,0 +1,38 @@
+g_brief_enabled=1`).all())?.results||[];
+   for(const u of users){try{const tz=String(u.timezone||TIME_ZONE);const now=zonedNow(tz);let type=null;if(Number(u.morning_brief_enabled)&&now.time==="08:00")type="morning";if(Number(u.evening_brief_enabled)&&now.time==="21:00")type="evening";if(!type)continue;const exists=await env.DB.prepare(`SELECT 1 FROM daily_brief_fires WHERE chat_id=? AND brief_date=? AND brief_type=?`).bind(String(u.chat_id),now.date,type).first();if(exists)continue;const text=await buildDailyBrief(env,String(u.chat_id),type,now);await sendText(env,String(u.chat_id),text);await env.DB.prepare(`INSERT OR IGNORE INTO daily_brief_fires(chat_id,brief_date,brief_type,sent_at) VALUES (?,?,?,?)`).bind(String(u.chat_id),now.date,type,new Date().toISOString()).run();}catch(e){console.warn("V10 brief failed",safeError(e));}}
+ }
+ 
+@@ -13606,17 +13787,31 @@
+ 
+ function runV10SelfTests(){
+   const tests=[];const add=(name,ok,detail="")=>tests.push({name,ok:!!ok,detail});
+-  add("shopping split Arabic",JSON.stringify(splitShoppingItems("لبن و بيض، جبنة"))===JSON.stringify(["لبن","بيض","جبنة"]),JSON.stringify(splitShoppingItems("لبن و بيض، جبنة")));
++  const eq=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
++  add("shopping split Arabic",eq(splitShoppingItems("لبن و بيض، جبنة"),["لبن","بيض","جبنة"]),JSON.stringify(splitShoppingItems("لبن و بيض، جبنة")));
+   add("dependency normalize",normalizeV10Dependencies([{source_ref:0,target_ref:1,relation:"after_end",offset_minutes:30}])[0]?.offset_minutes===30);
++  add("dependency duplicate dedupe",normalizeV10Dependencies([{source_ref:0,target_ref:1,relation:"after_start",offset_minutes:0},{source_ref:0,target_ref:1,relation:"after_start",offset_minutes:3}]).length===1);
++  add("dependency cycle detects",dependencyGraphHasCycle([{source_ref:0,target_ref:1},{source_ref:1,target_ref:0}])===true);
++  add("dependency acyclic",dependencyGraphHasCycle([{source_ref:0,target_ref:1},{source_ref:1,target_ref:2}])===false);
+   add("world update reject low confidence",normalizeV10WorldUpdates([{subject:"A",relation:"fact",object:"B",confidence:.4}]).length===0);
+   add("world update accept explicit",normalizeV10WorldUpdates([{subject:"A",relation:"fact",object:"B",confidence:1}]).length===1);
+-  add("clean chat keyboard",quickMenuKeyboard()===null);
+-  add("arabic normalizer",normalizeArabicLoose("بُكرة")===normalizeArabicLoose("بكره")||normalizeArabicLoose("بُكرة").length>0);
++  add("clean chat quick keyboard",quickMenuKeyboard()===null);
++  add("clean chat clarification keyboard",clarificationKeyboard("meridiem_single")===null);
++  add("arabic normalizer",normalizeArabicLoose("بُكرة").length>0);
+   add("relative 30m",parseSimpleRelativeMinutes("بعد 30 دقيقة")===30);
+   add("duration 1h",parseSimpleRelativeMinutes("بعد ساعة")===60);
++  const ref="بكرة الساعة 5 مساء فكرني اكلم الممرضة علشان تيجي الساعة 6 مساء";
++  const shape=analyzeActionReferenceShape(ref);
++  add("reference-time shape",!!shape&&shape.actionClock?.hour===5&&shape.referenceClocks?.length===1,JSON.stringify(shape));
++  add("reference-only ambiguity stripped",findAmbiguous12HourTimesDetailed(stripReferenceOnlyTailForAmbiguity(ref)).length===0);
++  add("semantic item count reference",estimateMinimumItemsSemantic(ref)===1,String(estimateMinimumItemsSemantic(ref)));
++  const multiPrayer="كل يوم قبل الفجر بنص ساعة فكرني اصلي الفجر وقبل الظهر بنص ساعة فكرني اصلي الظهر";
++  const prayers=parseMultiRecurringPrayerAnchors(multiPrayer);
++  add("multi prayer count",prayers.length===2,JSON.stringify(prayers));
++  add("multi prayer anchors",prayers[0]?.prayer==="Fajr"&&prayers[1]?.prayer==="Dhuhr",JSON.stringify(prayers));
++  add("semantic item count prayers",estimateMinimumItemsSemantic(multiPrayer)===2,String(estimateMinimumItemsSemantic(multiPrayer)));
+   const passed=tests.filter(x=>x.ok).length;return{ok:passed===tests.length,passed,total:tests.length,tests};
+ }
+-
+ async function selfTestEndpoint(request,env){const url=new URL(request.ur
