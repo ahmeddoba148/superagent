@@ -1,0 +1,297 @@
+--- SuperAgent_V9.1_Final_Fix.js	2026-08-15 15:14:34.771150343 +0000
++++ SuperAgent_V10_LifeOS.js	2026-08-15 15:25:06.703150343 +0000
+@@ -1,15 +1,16 @@
+-const TIME_ZONE="Africa/Cairo";const PENDING_TTL_MINUTES=30;const CONFLICT_TTL_MINUTES=20;const TOTAL_AI_BUDGET_MS=25000;const AI_RATE_LIMIT_PER_MINUTE=15;const CONVERSATION_MEMORY_LIMIT=24;const CONTEXT_DAYS=365;const CONTEXT_NEAR_LIMIT=160;const CONTEXT_RELEVANT_LIMIT=80;const CONTEXT_RULE_LIMIT=120;const FREE_PERIOD_HORIZON_DAYS=180;const FREE_SLOT_HORIZON_DAYS=60;const CONFLICT_LOOKAHEAD_DAYS=60;const MAX_RULE_OCCURRENCES=5000;const SCHEDULER_MAX_CATCHUP_MINUTES=1440;const MAX_ADVANCE_ALERT_MINUTES=10080;const SHOW_MODEL_USED_TO_ADMIN=false;const LIVE_NEWS_MAX=8;const LIVE_NEWS_TTL_MINUTES=5;const LIVE_WATCH_BATCH_SIZE=8;const PRAYER_CACHE_TTL_MINUTES=720;const HOLIDAY_CACHE_TTL_MINUTES=720;const DEFAULT_COUNTRY_CODE="EG";const DEFAULT_CITY="Cairo";const DEFAULT_COUNTRY="Egypt";const OMNIAI_INTERNAL_URL="https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions";const REMINDER_MODELS=[{short:"G3.5-L",name:"Gemini 3.5 Flash-Lite",id:"gemini::gemini-3.5-flash-lite",timeoutMs:4200},{short:"G3.6-F",name:"Gemini 3.6 Flash",id:"gemini::gemini-3.6-flash",timeoutMs:3600},{short:"G3.1-L",name:"Gemini 3.1 Flash-Lite",id:"gemini::gemini-3.1-flash-lite",timeoutMs:3000},{short:"G3.5-F",name:"Gemini 3.5 Flash",id:"gemini::gemini-3.5-flash",timeoutMs:2600},{short:"G2.5-L",name:"Gemini 2.5 Flash-Lite",id:"gemini::gemini-2.5-flash-lite",timeoutMs:2300},{short:"G2.5-F",name:"Gemini 2.5 Flash",id:"gemini::gemini-2.5-flash",timeoutMs:2100},{short:"OSS120",name:"GPT OSS 120B — Groq",id:"groq::openai/gpt-oss-120b",timeoutMs:1900},{short:"Qwen3.6",name:"Qwen 3.6 27B — Groq",id:"groq::qwen/qwen3.6-27b",timeoutMs:1700},{short:"MistralS",name:"Mistral Small 2603",id:"mistral::mistral-small-2603",timeoutMs:1500},{short:"DS-V4F",name:"DeepSeek V4 Flash — NVIDIA",id:"nvidia::deepseek-ai/deepseek-v4-flash",timeoutMs:1500},];
++const V10_VERSION="10.0";const V10_NAME="Super Agent V10 — Life OS";const VOICE_MAX_BYTES=25*1024*1024;const V10_AUDIT_LIMIT=100;const V10_WORLD_CONTEXT_LIMIT=50;const V10_MAX_SHOP_ITEMS=80;const TIME_ZONE="Africa/Cairo";const PENDING_TTL_MINUTES=30;const CONFLICT_TTL_MINUTES=20;const TOTAL_AI_BUDGET_MS=25000;const AI_RATE_LIMIT_PER_MINUTE=15;const CONVERSATION_MEMORY_LIMIT=24;const CONTEXT_DAYS=365;const CONTEXT_NEAR_LIMIT=160;const CONTEXT_RELEVANT_LIMIT=80;const CONTEXT_RULE_LIMIT=120;const FREE_PERIOD_HORIZON_DAYS=180;const FREE_SLOT_HORIZON_DAYS=60;const CONFLICT_LOOKAHEAD_DAYS=60;const MAX_RULE_OCCURRENCES=5000;const SCHEDULER_MAX_CATCHUP_MINUTES=1440;const MAX_ADVANCE_ALERT_MINUTES=10080;const SHOW_MODEL_USED_TO_ADMIN=false;const LIVE_NEWS_MAX=8;const LIVE_NEWS_TTL_MINUTES=5;const LIVE_WATCH_BATCH_SIZE=8;const PRAYER_CACHE_TTL_MINUTES=720;const HOLIDAY_CACHE_TTL_MINUTES=720;const DEFAULT_COUNTRY_CODE="EG";const DEFAULT_CITY="Cairo";const DEFAULT_COUNTRY="Egypt";const OMNIAI_INTERNAL_URL="https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions";const REMINDER_MODELS=[{short:"G3.5-L",name:"Gemini 3.5 Flash-Lite",id:"gemini::gemini-3.5-flash-lite",timeoutMs:4200},{short:"G3.6-F",name:"Gemini 3.6 Flash",id:"gemini::gemini-3.6-flash",timeoutMs:3600},{short:"G3.1-L",name:"Gemini 3.1 Flash-Lite",id:"gemini::gemini-3.1-flash-lite",timeoutMs:3000},{short:"G3.5-F",name:"Gemini 3.5 Flash",id:"gemini::gemini-3.5-flash",timeoutMs:2600},{short:"G2.5-L",name:"Gemini 2.5 Flash-Lite",id:"gemini::gemini-2.5-flash-lite",timeoutMs:2300},{short:"G2.5-F",name:"Gemini 2.5 Flash",id:"gemini::gemini-2.5-flash",timeoutMs:2100},{short:"OSS120",name:"GPT OSS 120B — Groq",id:"groq::openai/gpt-oss-120b",timeoutMs:1900},{short:"Qwen3.6",name:"Qwen 3.6 27B — Groq",id:"groq::qwen/qwen3.6-27b",timeoutMs:1700},{short:"MistralS",name:"Mistral Small 2603",id:"mistral::mistral-small-2603",timeoutMs:1500},{short:"DS-V4F",name:"DeepSeek V4 Flash — NVIDIA",id:"nvidia::deepseek-ai/deepseek-v4-flash",timeoutMs:1500},];
+ 
+ export default{
+ async fetch(request,env,ctx){
+ const url=new URL(request.url);
+ if(request.method==="GET"&&url.pathname==="/"){
+-return json({ok:true,service:"Super Agent — Universal Secretary",version:"9.1",status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,hidden_model_debug:true,deterministic_relationships:true,composite_duration_safe:true,max_occurrence_safe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
++return json({ok:true,service:V10_NAME,version:V10_VERSION,status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),life_os:true,personal_world_model:true,memory_graph:true,event_dependencies:true,planner_executor_verifier:true,shadow_safety:true,smart_lists:true,interactive_shopping:true,voice_first:true,audit_undo:true,permission_levels:true,context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,deterministic_relationships:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
+ }
+ if(request.method==="GET"&&url.pathname==="/health"){
+-return json({ok:true,version:"9.1",now:cairoNow(),db:!!env.DB,omniai_service:!!env.OMNIAI_SERVICE,live_reality:true});
++return json({ok:true,version:V10_VERSION,now:cairoNow(),db:!!env.DB,omniai_service:!!env.OMNIAI_SERVICE,life_os:true,voice:!!((env.OMNIAI_SERVICE&&env.OMNIAI_API_KEY)||env.GROQ_API_KEY||env.VOICE_TRANSCRIBE_URL)});
+ }
+ if(request.method==="GET"&&url.pathname==="/setup")return setup(request,env);
++if(request.method==="GET"&&url.pathname==="/selftest")return selfTestEndpoint(request,env);
+ if(request.method==="POST"&&url.pathname==="/telegram"){
+ const secret=request.headers.get("X-Telegram-Bot-Api-Secret-Token")||"";
+ if(!env.TELEGRAM_WEBHOOK_SECRET||secret!==env.TELEGRAM_WEBHOOK_SECRET)return new Response("Unauthorized",{status:401});
+@@ -21,7 +22,7 @@
+ return new Response("Not Found",{status:404});
+ },
+ async scheduled(controller,env,ctx){
+-ctx.waitUntil(deliverDueReminders(env,controller?.scheduledTime));
++ctx.waitUntil(Promise.all([deliverDueReminders(env,controller?.scheduledTime),runV10PeriodicIntelligence(env,controller?.scheduledTime)]));
+ }
+ };
+ 
+@@ -68,9 +69,12 @@
+ {command:"recurring",description:"إدارة التكرارات"},
+ {command:"where",description:"موقعي ووقتي الحالي"},
+ {command:"memory",description:"ذاكرتي المحفوظة"},
++{command:"shopping",description:"قائمة المشتريات"},
++{command:"audit",description:"سجل التغييرات"},
++{command:"undo",description:"تراجع عن آخر عملية"},
+ {command:"live",description:"ملخص الواقع الحالي"}
+ ]},1);
+-return json({ok:true,message:"Super Agent V9.1 Final Fix is ready",webhook:webhookUrl,webhook_status:webhookStatus,allowed_updates:desiredUpdates,timezone:TIME_ZONE,public_mode:isPublicMode(env),universal_recurrence:true,safety_grounding:true,live_reality:true,prayer_awareness:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,duration_conflicts:true,safe_live_watch_batching:true,schema_cached_per_isolate:true,fallback_models:REMINDER_MODELS.length});
++return json({ok:true,message:"Super Agent V10 Life OS is ready",webhook:webhookUrl,webhook_status:webhookStatus,allowed_updates:desiredUpdates,timezone:TIME_ZONE,public_mode:isPublicMode(env),life_os:true,world_model:true,dependency_engine:true,planner_executor_verifier:true,smart_lists:true,interactive_shopping:true,voice_first:true,audit_undo:true,clean_chat:true,universal_recurrence:true,safety_grounding:true,live_reality:true,long_term_memory:true,fallback_models:REMINDER_MODELS.length});
+ }
+ 
+ async function ensureSchema(env){
+@@ -280,6 +284,172 @@
+ updated_at TEXT NOT NULL
+ )`).run();
+ 
++/* ========================= V10 LIFE OS SCHEMA ========================= */
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS life_entities (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++entity_type TEXT NOT NULL DEFAULT 'concept',
++name TEXT NOT NULL,
++normalized_name TEXT NOT NULL,
++data_json TEXT NOT NULL DEFAULT '{}',
++confidence REAL NOT NULL DEFAULT 1,
++source TEXT NOT NULL DEFAULT 'user_explicit',
++valid_from TEXT,
++valid_until TEXT,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL,
++UNIQUE(chat_id,entity_type,normalized_name)
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_life_entities_chat ON life_entities(chat_id,entity_type,normalized_name)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS life_edges (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++from_entity_id INTEGER NOT NULL,
++relation TEXT NOT NULL,
++to_entity_id INTEGER,
++object_value TEXT,
++confidence REAL NOT NULL DEFAULT 1,
++source TEXT NOT NULL DEFAULT 'user_explicit',
++valid_from TEXT,
++valid_until TEXT,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_life_edges_chat ON life_edges(chat_id,from_entity_id,relation)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS event_dependencies (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++source_type TEXT NOT NULL,
++source_id INTEGER NOT NULL,
++target_type TEXT NOT NULL,
++target_id INTEGER NOT NULL,
++relation TEXT NOT NULL,
++offset_minutes INTEGER NOT NULL DEFAULT 0,
++condition_json TEXT NOT NULL DEFAULT '{}',
++active INTEGER NOT NULL DEFAULT 1,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL,
++UNIQUE(chat_id,source_type,source_id,target_type,target_id,relation)
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_event_deps_source ON event_dependencies(chat_id,source_type,source_id,active)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS smart_lists (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++name TEXT NOT NULL,
++normalized_name TEXT NOT NULL,
++list_type TEXT NOT NULL DEFAULT 'generic',
++active INTEGER NOT NULL DEFAULT 1,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL,
++UNIQUE(chat_id,normalized_name)
++)`).run();
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS smart_list_items (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++list_id INTEGER NOT NULL,
++chat_id TEXT NOT NULL,
++title TEXT NOT NULL,
++normalized_title TEXT NOT NULL,
++quantity TEXT,
++status TEXT NOT NULL DEFAULT 'pending',
++position INTEGER NOT NULL DEFAULT 0,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_list_items_active ON smart_list_items(chat_id,list_id,status,position,id)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS shopping_sessions (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++list_id INTEGER NOT NULL,
++place_name TEXT,
++started_at TEXT NOT NULL,
++ended_at TEXT,
++created_at TEXT NOT NULL
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_shop_session_active ON shopping_sessions(chat_id,ended_at,id)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS life_inbox (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++text TEXT NOT NULL,
++status TEXT NOT NULL DEFAULT 'open',
++classified_as TEXT,
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS projects (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++title TEXT NOT NULL,
++status TEXT NOT NULL DEFAULT 'active',
++deadline TEXT,
++priority TEXT NOT NULL DEFAULT 'normal',
++progress INTEGER NOT NULL DEFAULT 0,
++data_json TEXT NOT NULL DEFAULT '{}',
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS project_tasks (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++project_id INTEGER NOT NULL,
++chat_id TEXT NOT NULL,
++title TEXT NOT NULL,
++status TEXT NOT NULL DEFAULT 'pending',
++due_at TEXT,
++priority TEXT NOT NULL DEFAULT 'normal',
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS waiting_items (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++title TEXT NOT NULL,
++waiting_on TEXT,
++due_at TEXT,
++status TEXT NOT NULL DEFAULT 'waiting',
++created_at TEXT NOT NULL,
++updated_at TEXT NOT NULL
++)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS action_audit (
++id INTEGER PRIMARY KEY AUTOINCREMENT,
++chat_id TEXT NOT NULL,
++action TEXT NOT NULL,
++entity_type TEXT NOT NULL,
++entity_id TEXT,
++summary TEXT NOT NULL,
++before_json TEXT NOT NULL DEFAULT '{}',
++after_json TEXT NOT NULL DEFAULT '{}',
++undo_json TEXT NOT NULL DEFAULT '{}',
++created_at TEXT NOT NULL,
++undone_at TEXT
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_chat ON action_audit(chat_id,id)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS agent_settings (
++chat_id TEXT PRIMARY KEY,
++permission_mode TEXT NOT NULL DEFAULT 'safe_auto',
++proactive_enabled INTEGER NOT NULL DEFAULT 1,
++morning_brief_enabled INTEGER NOT NULL DEFAULT 0,
++evening_brief_enabled INTEGER NOT NULL DEFAULT 0,
++ask_before_delete INTEGER NOT NULL DEFAULT 1,
++updated_at TEXT NOT NULL
++)`).run();
++
++await env.DB.prepare(`CREATE TABLE IF NOT EXISTS daily_brief_fires (
++chat_id TEXT NOT NULL,
++brief_date TEXT NOT NULL,
++brief_type TEXT NOT NULL,
++sent_at TEXT NOT NULL,
++PRIMARY KEY(chat_id,brief_date,brief_type)
++)`).run();
++/* ======================= END V10 LIFE OS SCHEMA ======================= */
++
+ await ensureColumn(env,"reminders","timezone","TEXT NOT NULL DEFAULT 'Africa/Cairo'");
+ await ensureColumn(env,"schedule_rules","timezone","TEXT NOT NULL DEFAULT 'Africa/Cairo'");
+ await migrateLegacyRules(env);
+@@ -335,32 +505,34 @@
+ await handleUserLocation(env,chatId,message.location);
+ return;
+ }
+-const text=typeof message.text==="string"?message.text.trim():"";
++let text=typeof message.text==="string"?message.text.trim():"";
++let fromVoice=false;
++if(!text&&(message.voice||message.audio)){
++fromVoice=true;
++await telegramApi(env,"sendChatAction",{chat_id:chatId,action:"typing"});
++text=await transcribeTelegramVoice(env,message.voice||message.audio);
++}
+ 
+ if(text==="/start"){
+ await clearPendingDialog(env,chatId);
+ await clearPendingConflict(env,chatId);
++await ensureAgentSettings(env,chatId);
+ await sendText(env,chatId,`👋 أهلاً بيك في Super Agent
+ 
+-🧠 مساعدك الشخصي اللي فاهم يومك وسياقك.
+-⏰ مواعيد وتذكيرات وتكرارات مرنة وتنبيهات مسبقة.
+-📅 تعارضات، أوقات فاضية، تعديل وتحريك وإيقاف وتخطي.
+-🌍 وقت وتاريخ ومناسبات وأخبار عالمية حية عند الحاجة.
+-🕌 فاهم الصلاة والأذان ورمضان والعيد والتاريخ الهجري.
+-📍 ابعت موقعك مرة واحدة علشان الوقت والصلاة يبقوا أدق.
+-💭 يقدر يفتكر المعلومات اللي تطلب منه يحفظها.
+-🇪🇬 وكلمه مصري براحتك وبأي صياغة طبيعية.
++مساعدك الشخصي لتنظيم يومك وحياتك من رسالة أو فويس واحد.
++📅 مواعيد وتذكيرات · ✅ مهام ومشتريات · 🧠 ذاكرة وسياق · ⚡ متابعة ذكية
+ 
+-اكتب اللي عايزه بطريقتك وأنا أرتبهولك.`,mainMenuKeyboard(env,chatId));
++اتكلم معايا بطبيعتك… وأنا أرتب الباقي.`);
+ return;
+ }
+ 
+ if(!text){
+-await sendText(env,chatId,"📍 لو دي رسالة موقع ابعتها من زر Location، أو ابعتلي كلامك عادي.",quickMenuKeyboard());
++await sendText(env,chatId,"ابعتلي رسالة أو فويس، أو استخدم /menu لفتح لوحة التحكم.");
+ return;
+ }
+ 
+ await telegramApi(env,"sendChatAction",{chat_id:chatId,action:"typing"});
++if(await handleV10DirectCommands(env,chatId,text,{fromVoice}))return;
+ if(await handleLifeDirectCommands(env,chatId,text))return;
+ 
+ const pendingConflict=await getPendingConflict(env,chatId);
+@@ -406,7 +578,7 @@
+ console.error("Telegram update error:",error);
+ try{
+ const msg=`⚠️ حصل خطأ: ${safeError(error)}`;
+-await sendText(env,chatId,msg,quickMenuKeyboard());
++await sendText(env,chatId,msg);
+ await saveConversationMessage(env,chatId,"assistant",msg);
+ }catch(sendError){
+ console.error("Failed to send error:",sendError);
+@@ -426,6 +598,7 @@
+ await enforceAiRateLimit(env,chatId);
+ const profile=await getUserProfile(env,chatId);
+ const memories=await getUserMemories(env,chatId,30);
++const worldContext=await buildWorldModelContext(env,chatId,V10_WORLD_CONTEXT_LIMIT);
+ const reality=await buildLiveRealityContext(env,chatId,text,profile);
+ const fastPrayer=buildOneTimePrayerIntent(text,reality,profile.timezone);
+ if(fastPrayer){
+@@ -439,11 +612,12 @@
+ history,
+ scheduleContext,
+ realityContext:reality.text,
+-memoryContext:memories.map(x=>x.memory).join("\n")
++memoryContext:[memories.map(x=>x.memory).join("\n"),worldContext].filter(Boolean).join("\n")
+ });
+ const intent=await parseIntentWithFallback(env,userPayload,{baseText:text,clarifications:[],timezone:profile.timezone});
+ intent._timezone=profile.timezone;
+ intent._reality=reality;
++intent._base_text=text;
+ applyPrayerGrounding(intent,text,reality);
+ 
+ if(intent.needs_clarification){
+@@ -469,6 +643,7 @@
+ await enforceAiRateLimit(env,chatId);
