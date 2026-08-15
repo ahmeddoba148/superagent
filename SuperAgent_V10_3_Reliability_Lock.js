@@ -20,7 +20,7 @@ return new Response("OK");
 return new Response("Not Found",{status:404});
 },
 async scheduled(controller,env,ctx){
-ctx.waitUntil(Promise.allSettled([deliverDueReminders(env,controller?.scheduledTime),runV10PeriodicIntelligence(env,controller?.scheduledTime),cleanupReliabilityData(env)]).then(async results=>{for(let i=0;i<results.length;i++)if(results[i].status==="rejected")await recordRuntimeFailure(env,{scope:`scheduled_${i}`,error:results[i].reason});}));
+ctx.waitUntil(Promise.allSettled([deliverDueReminders(env,controller?.scheduledTime),runV10PeriodicIntelligence(env,controller?.scheduledTime),cleanupReliabilityData(env)]).then(async results=>{for(const [i,result] of results.entries()){if(result.status==="rejected")await recordRuntimeFailure(env,{scope:`scheduled_${i}`,error:result.reason});}}));
 }
 };
 
@@ -515,7 +515,11 @@ if(rows.length)await env.DB.prepare(`DELETE FROM recurring_rules`).run();
 
 function reliabilityFingerprint(value){const str=normalizeArabicLoose(String(value||"")).replace(/\s+/g," ").trim();let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return `fnv1a:${(h>>>0).toString(16).padStart(8,"0")}:${str.length}`;}
 function newIncidentId(){return `SA-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;}
-async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error,context={}}={}){const incidentId=newIncidentId();const err=safeError(error||"Unknown failure");console.error(`[${incidentId}] ${scope}: ${err}`);try{if(env?.DB)await env.DB.prepare(`INSERT INTO runtime_failures(incident_id,chat_id,scope,error_text,context_json,created_at) VALUES (?,?,?,?,?,?)`).bind(incidentId,chatId?String(chatId):null,String(scope),String(err).slice(0,1200),JSON.stringify(context||{}).slice(0,4000),new Date().toISOString()).run();}catch(e){console.error("runtime failure log failed",safeError(e));}return incidentId;}
+/**
+ * @param {any} env
+ * @param {{chatId?: any, scope?: string, error?: any, context?: any}} [options]
+ */
+async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error=null,context={}}={}){const incidentId=newIncidentId();const err=safeError(error||"Unknown failure");console.error(`[${incidentId}] ${scope}: ${err}`);try{if(env?.DB)await env.DB.prepare(`INSERT INTO runtime_failures(incident_id,chat_id,scope,error_text,context_json,created_at) VALUES (?,?,?,?,?,?)`).bind(incidentId,chatId?String(chatId):null,String(scope),String(err).slice(0,1200),JSON.stringify(context||{}).slice(0,4000),new Date().toISOString()).run();}catch(e){console.error("runtime failure log failed",safeError(e));}return incidentId;}
 async function persistWorldUpdatesSafely(env,chatId,intent){try{await persistWorldUpdatesFromIntent(env,chatId,intent);}catch(e){await recordRuntimeFailure(env,{chatId,scope:"world_model_noncritical",error:e,context:{action:intent?.action}});}}
 async function getRecentOperationReceipt(env,chatId,fingerprint){const cutoff=new Date(Date.now()-RELIABILITY_RECEIPT_TTL_MINUTES*60000).toISOString();return env.DB.prepare(`SELECT * FROM operation_receipts WHERE chat_id=? AND fingerprint=? AND state='committed' AND created_at>=? ORDER BY id DESC LIMIT 1`).bind(String(chatId),String(fingerprint),cutoff).first();}
 async function saveOperationReceipt(env,chatId,fingerprint,action,responseText){const now=new Date().toISOString();await env.DB.prepare(`INSERT INTO operation_receipts(chat_id,fingerprint,action,state,response_text,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`).bind(String(chatId),String(fingerprint),String(action),"committed",String(responseText||"").slice(0,12000),now,now).run();}

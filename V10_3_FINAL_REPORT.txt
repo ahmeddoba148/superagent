@@ -1,7 +1,8 @@
-Super Agent V10.3 Reliability Lock
+Super Agent V10.3 Reliability Lock — IntelliSense Fix
 Syntax: PASS
-Exact bytes: 306044
-Exact SHA256: 3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781
+Reported VS Code IntelliSense regressions: PASS (0/6 remaining in targeted patterns)
+Exact bytes: 306161
+Exact SHA256: 5995f68160b99fd1e19f5cecebbda383631fd6da160f81d70760ee6ed1021a77
 Failure injection: PASS
 Lost Telegram confirmation duplicate protection: PASS
 Strict create Audit rollback: PASS
