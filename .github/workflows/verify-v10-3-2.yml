@@ -5,6 +5,7 @@ on:
     paths:
       - 'tools/build-v10-3-2.py'
       - 'tests/v10-3-2-cycle-regression.mjs'
+      - 'tests/v10-2-semantic-ci.mjs'
       - '.github/workflows/verify-v10-3-2.yml'
   workflow_dispatch:
 permissions:
