@@ -1,0 +1,3 @@
+l);const key=url.searchParams.get("key")||"";if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:"Unauthorized"},401);return json({version:V10_VERSION,...runV10SelfTests()});}
+ 
+ 
