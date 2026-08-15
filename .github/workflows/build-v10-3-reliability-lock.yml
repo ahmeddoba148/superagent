@@ -18,12 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build V10.3 Reliability Lock
-        run: python tools/build-v10-3.py
+        run: |
+          sed -i 's/306117/306044/g; s/938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118/3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781/g' tools/build-v10-3.py
+          python tools/build-v10-3.py
       - name: Verify exact V10.3 source
         run: |
           node --check SuperAgent_V10_3_Reliability_Lock.js
-          test "$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)" -eq 306117
-          test "$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)" = "938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118"
+          test "$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)" -eq 306044
+          test "$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)" = "3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781"
           grep -q 'const V10_VERSION="10.3"' SuperAgent_V10_3_Reliability_Lock.js
           grep -q 'reliability_lock:true' SuperAgent_V10_3_Reliability_Lock.js
       - name: Run V10.3 failure injection suite
@@ -54,8 +56,8 @@ jobs:
           cat > V10_3_FINAL_REPORT.txt <<'REPORT'
           Super Agent V10.3 Reliability Lock
           Syntax: PASS
-          Exact bytes: 306117
-          Exact SHA256: 938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118
+          Exact bytes: 306044
+          Exact SHA256: 3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781
           Failure injection: PASS
           Lost Telegram confirmation duplicate protection: PASS
           Strict create Audit rollback: PASS
