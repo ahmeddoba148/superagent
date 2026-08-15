@@ -1,0 +1,15 @@
+Super Agent V10.3.3 Chain Final
+Syntax + IntelliSense: PASS
+Full create -> move -> restore chain E2E: PASS
+Both linked reminders propagate: PASS
+Relation-derived duplicate alerts removed: PASS
+Existing shopping item explanation: PASS
+Cycle canonicalization regression: PASS
+Reliability failure injection: PASS
+Semantic regression: PASS
+V9.2 stress regression: PASS
+V10 stress/E2E/migration: PASS
+Protected diagnostics: PASS
+Exact bytes: 310525
+Exact SHA256: 1cab207e341baaec0e89cb0811a53e42799f01b575f61daa4f220b0bac53d5ae
+VERIFIED
