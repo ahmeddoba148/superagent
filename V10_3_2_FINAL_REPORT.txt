@@ -1,0 +1,12 @@
+Super Agent V10.3.2 Dependency Canonical
+Syntax + IntelliSense: PASS
+Production reverse/cyclic dependency repair: PASS
+Exact hard production scenario: PASS
+Reliability failure injection: PASS
+V10.2 semantic regression: PASS
+V9.2 stress regression: PASS
+V10 compatibility stress/E2E/migration: PASS
+Protected diagnostics: PASS
+Exact bytes: 309182
+Exact SHA256: 546785b746b6e5b3a9cef55663f53d52d509ca4bba113d686c45c6a8347c717a
+VERIFIED
