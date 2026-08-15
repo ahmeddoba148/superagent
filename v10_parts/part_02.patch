@@ -1,0 +1,301 @@
+ const profile=await getUserProfile(env,chatId);
+ const memories=await getUserMemories(env,chatId,30);
++const worldContext=await buildWorldModelContext(env,chatId,V10_WORLD_CONTEXT_LIMIT);
+ const reality=await buildLiveRealityContext(env,chatId,pending.base_text,profile);
+ const scheduleContext=await buildScheduleContext(env,chatId,CONTEXT_DAYS,pending.base_text);
+ const userPayload=buildAIUserMessage({
+@@ -477,11 +652,12 @@
+ history,
+ scheduleContext,
+ realityContext:reality.text,
+-memoryContext:memories.map(x=>x.memory).join("\n")
++memoryContext:[memories.map(x=>x.memory).join("\n"),worldContext].filter(Boolean).join("\n")
+ });
+ const intent=await parseIntentWithFallback(env,userPayload,{baseText:pending.base_text,clarifications:newContext,timezone:profile.timezone});
+ intent._timezone=profile.timezone;
+ intent._reality=reality;
++intent._base_text=pending.base_text;
+ applyPrayerGrounding(intent,pending.base_text,reality);
+ 
+ if(intent.needs_clarification){
+@@ -502,20 +678,19 @@
+ }
+ 
+ function mainMenuKeyboard(env,chatId){
+-const rows=[
++return{inline_keyboard:[
+ [{text:"📍 النهاردة",callback_data:"panel:today"},{text:"🗓️ 7 أيام",callback_data:"panel:week"}],
+-[{text:"📅 كل مواعيدي",callback_data:"panel:list"},{text:"🗓️ الشهر",callback_data:"panel:month"}],
+-[{text:"🔁 إدارة التكرارات",callback_data:"panel:recurring"}],
+-[{text:"🗑️ مسح كل مواعيدي",callback_data:"confirm:clear_all"},{text:"🧹 مسح السياق",callback_data:"confirm:clear_memory"}]
+-];
+-return{inline_keyboard:rows};
++[{text:"📅 كل المواعيد",callback_data:"panel:list"},{text:"🔁 التكرارات",callback_data:"panel:recurring"}],
++[{text:"🛒 المشتريات",callback_data:"panel:shopping"},{text:"📥 Inbox",callback_data:"panel:inbox"}],
++[{text:"🧠 عالمى وذاكرتي",callback_data:"panel:world"},{text:"📜 سجل التغييرات",callback_data:"panel:audit"}],
++[{text:"⚙️ إعدادات الوكيل",callback_data:"panel:agent_settings"}],
++[{text:"🗑️ إدارة المسح",callback_data:"panel:danger"}]
++]};
+ }
+ 
+ function quickMenuKeyboard(){
+-return{inline_keyboard:[[
+-{text:"📅 مواعيدي",callback_data:"panel:list"},
+-{text:"🎛️ التحكم",callback_data:"panel:home"}
+-]]};
++// V10 clean-chat policy: no inline buttons on ordinary conversational replies.
++return null;
+ }
+ 
+ function clarificationKeyboard(type){
+@@ -537,18 +712,26 @@
+ }
+ 
+ async function showMainPanel(env,chatId,messageId=null){
++await ensureAgentSettings(env,chatId);
+ const profile=await getUserProfile(env,chatId);
+ const now=zonedNow(profile.timezone);
+ const one=await env.DB.prepare(`SELECT COUNT(*) AS c FROM reminders WHERE chat_id=? AND cancelled=0 AND sent=0 AND (local_date>? OR (local_date=? AND local_time>=?))`).bind(chatId,now.date,now.date,now.time).first();
+ const rules=await env.DB.prepare(`SELECT COUNT(*) AS c FROM schedule_rules WHERE chat_id=? AND active=1`).bind(chatId).first();
+ const prayerRules=await env.DB.prepare(`SELECT COUNT(*) AS c FROM prayer_rules WHERE chat_id=? AND active=1`).bind(chatId).first();
++const shopping=await getDefaultShoppingList(env,chatId,false);
++let pendingShop=0;
++if(shopping){const r=await env.DB.prepare(`SELECT COUNT(*) AS c FROM smart_list_items WHERE chat_id=? AND list_id=? AND status='pending'`).bind(chatId,shopping.id).first();pendingShop=Number(r?.c||0);}
++const inbox=await env.DB.prepare(`SELECT COUNT(*) AS c FROM life_inbox WHERE chat_id=? AND status='open'`).bind(chatId).first();
++const world=await env.DB.prepare(`SELECT COUNT(*) AS c FROM life_entities WHERE chat_id=?`).bind(chatId).first();
+ const lines=[
+-"🎛️ لوحة تحكم Super Agent V9.1",
++"🎛️ Super Agent V10 — Life OS",
++"",
++`📅 القادم: ${Number(one?.c||0)} · 🔁 التكرارات: ${Number(rules?.c||0)+Number(prayerRules?.c||0)}`,
++`🛒 مشتريات متبقية: ${pendingShop} · 📥 Inbox: ${Number(inbox?.c||0)}`,
++`🧠 كيانات في World Model: ${Number(world?.c||0)}`,
+ "",
+-`📅 المواعيد القادمة: ${Number(one?.c||0)}`,
+-`🔁 التكرارات النشطة: ${Number(rules?.c||0)+Number(prayerRules?.c||0)}`
++"اختار القسم اللي عايزه:"
+ ];
+-lines.push("","اختار من الأزرار:");
+ await editOrSend(env,chatId,messageId,lines.join("\n"),mainMenuKeyboard(env,chatId));
+ }
+ 
+@@ -578,6 +761,19 @@
+ async function handleDirectCommands(env,chatId,text){
+ const t=normalizeArabicLoose(text);
+ 
++if(["/shopping","المشتريات","قائمه المشتريات","قائمة المشتريات"].includes(t)){
++await showShoppingList(env,chatId,null,{startSession:false});
++return true;
++}
++if(["/audit","سجل التغييرات","انت غيرت ايه النهارده","انت غيرت اي النهارده"].includes(t)){
++await showAuditPanel(env,chatId);
++return true;
++}
++if(["/undo","تراجع","رجع اخر حاجه","رجع اخر حاجة"].includes(t)){
++const msg=await undoLastAuditAction(env,chatId);await sendText(env,chatId,msg);return true;
++}
++if(["/inbox","الانبوكس","inbox"].includes(t)){await showInboxPanel(env,chatId);return true;}
++
+ if(["/menu","لوحه التحكم"].includes(t)){
+ await showMainPanel(env,chatId);
+ return true;
+@@ -625,6 +821,7 @@
+ }
+ 
+ async function executeIntent(env,chatId,intent,options={}){
++await persistWorldUpdatesFromIntent(env,chatId,intent);
+ if(intent.action==="create"){
+ if(!options.skipConflictCheck){
+ const conflicts=await findCreateConflicts(env,chatId,intent);
+@@ -667,6 +864,9 @@
+ for(const r of intent.recurring_items){
+ rules.push({...r,id:results?.[i++]?.meta?.last_row_id??"?"});
+ }
++await verifyCreatedScheduleBatch(env,chatId,one,rules);
++await persistIntentDependencies(env,chatId,intent,one);
++await writeAudit(env,chatId,{action:"create",entityType:"schedule_batch",entityId:"batch",summary:`إنشاء ${one.length+rules.length} موعد/تكرار`,after:{one,rules},undo:{type:"delete_created_schedule",reminder_ids:one.map(x=>Number(x.id)).filter(Boolean),rule_ids:rules.map(x=>Number(x.id)).filter(Boolean)}});
+ 
+ const lines=[];
+ for(const x of one){
+@@ -850,6 +1050,7 @@
+ WHERE id=? AND chat_id=?`)
+ .bind(next.title,next.kind,JSON.stringify(next.schedule),next.duration_minutes,next.schedule.start_at,next.schedule.end_at,next.schedule.max_occurrences,JSON.stringify(next.advance_alerts),new Date().toISOString(),id,chatId)
+ .run();
++await writeAudit(env,chatId,{action:"update",entityType:"schedule_rule",entityId:String(id),summary:`تعديل تكرار: ${next.title}`,before:current,after:next,undo:{type:"restore_schedule_rule",row:current}});
+ 
+ const answer=`✅ عدلت التكرار:
+ ${formatUniversalRule(next.schedule)}${next.duration_minutes?` · مدة ${formatMinutes(next.duration_minutes)}`:""} — ${next.title}${modelFooter(env,chatId,intent)}`;
+@@ -890,6 +1091,8 @@
+ WHERE id=? AND chat_id=?`)
+ .bind(next.title,next.kind,next.date,next.time,next.duration_minutes,JSON.stringify(next.advance_alerts),new Date().toISOString(),id,chatId)
+ .run();
++await propagateReminderDependencies(env,chatId,id);
++await writeAudit(env,chatId,{action:"update",entityType:"reminder",entityId:String(id),summary:`تعديل موعد: ${next.title}`,before:current,after:next,undo:{type:"restore_reminder_snapshot",row:current}});
+ 
+ const answer=`✅ عدلت الموعد:
+ ${formatEventWhen(next.date,next.time,next.duration_minutes,next.timezone||intent._timezone||TIME_ZONE)} — ${next.title}${modelFooter(env,chatId,intent)}`;
+@@ -952,6 +1155,20 @@
+ }
+ 
+ if(data==="panel:home")return showMainPanel(env,chatId,messageId);
++if(data==="panel:shopping")return showShoppingHub(env,chatId,messageId);
++if(data==="panel:inbox")return showInboxPanel(env,chatId,messageId);
++if(data==="panel:world")return showWorldPanel(env,chatId,messageId);
++if(data==="panel:audit")return showAuditPanel(env,chatId,messageId);
++if(data==="panel:agent_settings")return showAgentSettings(env,chatId,messageId);
++if(data==="panel:danger")return showDangerPanel(env,chatId,messageId);
++if(data==="shop:open")return showShoppingList(env,chatId,messageId,{startSession:true});
++if(data==="shop:view")return showShoppingList(env,chatId,messageId,{startSession:false});
++if(data.startsWith("shop:toggle:"))return toggleShoppingItemCallback(env,chatId,messageId,Number(data.split(":")[2]||0));
++if(data.startsWith("shop:finish:"))return finishShoppingSessionCallback(env,chatId,messageId,Number(data.split(":")[2]||0));
++if(data==="audit:undo"){const msg=await undoLastAuditAction(env,chatId);return editOrSend(env,chatId,messageId,msg,{inline_keyboard:[[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});}
++if(data.startsWith("setting:toggle:"))return toggleAgentSetting(env,chatId,messageId,data.split(":")[2]||"");
++if(data==="danger:clear_schedule")return editOrSend(env,chatId,messageId,"⚠️ تمسح كل مواعيدك وكل التكرارات؟",{inline_keyboard:[[{text:"✅ امسح الكل",callback_data:"do:clear_all_user_schedule"}],[{text:"↩️ إلغاء",callback_data:"panel:danger"}]]});
++if(data==="danger:clear_context")return editOrSend(env,chatId,messageId,"⚠️ تمسح سياق المحادثة؟ المواعيد والـWorld Model مش هيتمسحوا.",{inline_keyboard:[[{text:"✅ امسح السياق",callback_data:"do:clear_memory"}],[{text:"↩️ إلغاء",callback_data:"panel:danger"}]]});
+ if(data==="panel:list")return sendAllSchedule(env,chatId,messageId);
+ if(data==="panel:today")return sendScheduleList(env,chatId,"today",messageId);
+ if(data==="panel:week")return sendScheduleList(env,chatId,"week",messageId);
+@@ -4556,6 +4773,7 @@
+ id,
+ intent=null
+ ){
++const before=await env.DB.prepare(`SELECT * FROM reminders WHERE id=? AND chat_id=? LIMIT 1`).bind(id,chatId).first();
+ const res=
+ await env.DB.prepare(`
+ UPDATE reminders
+@@ -4578,6 +4796,7 @@
+ ?`🗑️ تم إلغاء الموعد.`
+ :`مش لاقي الموعد المطلوب أو الموعد خلص بالفعل.`;
+ 
++if(Number(res?.meta?.changes||0)&&before){await writeAudit(env,chatId,{action:"delete",entityType:"reminder",entityId:String(id),summary:`إلغاء: ${before.title}`,before,undo:{type:"restore_cancelled_reminder",id:Number(id)}});}
+ const final=
+ answer+
+ modelFooter(
+@@ -4602,11 +4821,13 @@
+ }
+ 
+ async function deleteScheduleRule(env,chatId,id,intent=null){
++const before=await env.DB.prepare(`SELECT * FROM schedule_rules WHERE id=? AND chat_id=? LIMIT 1`).bind(id,chatId).first();
+ const res=await env.DB.batch([
+ env.DB.prepare(`DELETE FROM schedule_fires WHERE rule_id=? AND chat_id=?`).bind(id,chatId),
+ env.DB.prepare(`DELETE FROM schedule_rules WHERE id=? AND chat_id=?`).bind(id,chatId)
+ ]);
+ const deleted=Number(res?.[1]?.meta?.changes||0);
++if(deleted&&before){await writeAudit(env,chatId,{action:"delete",entityType:"schedule_rule",entityId:String(id),summary:`حذف تكرار: ${before.title}`,before,undo:{type:"restore_schedule_rule",row:before}});}
+ const answer=deleted?`🗑️ تم حذف التكرار بالكامل.`:`مش لاقي التكرار المطلوب.`;
+ const final=answer+modelFooter(env,chatId,intent);
+ await sendText(env,chatId,final,quickMenuKeyboard());
+@@ -4727,7 +4948,7 @@
+ 
+ function buildReminderSystemPrompt(now){
+ return`
+-أنت Super Agent V9.1 Final Fix Life Context Engine: سكرتير شخصي ومساعد حياة يومي لمستخدم يتكلم غالبًا بالمصري.
++أنت Super Agent V10 Life OS: سكرتير شخصي يفهم حياة المستخدم كحالة مستمرة، وليس مجرد بوت تذكيرات. المستخدم يتكلم غالبًا بالمصري.
+ المنطقة الافتراضية ${TIME_ZONE}. الوقت المرجعي عند إنشاء البرومبت: ${now.date} ${now.time} ${now.weekday}.
+ 
+ مهم جدًا:
+@@ -4763,6 +4984,12 @@
+  "range_start_date":null,
+  "range_end_date":null,
+  "shift_minutes":0,
++ "dependencies":[
++   {"source_ref":0,"target_ref":1,"relation":"after_start|after_end|before_start","offset_minutes":0}
++ ],
++ "world_updates":[
++   {"subject":"أنا|اسم كيان","subject_type":"person|place|organization|concept","relation":"spouse|parent|child|works_at|lives_at|related_to|preference|fact","object":"القيمة أو اسم الكيان","object_type":"person|place|organization|concept|value","confidence":1}
++ ],
+  "items":[
+    {
+     "date":"YYYY-MM-DD",
+@@ -4829,6 +5056,10 @@
+ 14) أي طلب مواعيد متعدد: لا تسقط أي عنصر.
+ 15) التعارض يترك للسيرفر؛ استخرج الطلب ولا ترفضه.
+ 16) استخدم جدول المستخدم وذاكرته والواقع الحي لحل المراجع بدل الأسئلة الزائدة.
++17) لو طلب المستخدم علاقة دائمة بين حدثين (قبل/بعد حدث آخر) املأ dependencies بمؤشرات items الصفرية، ولا تعتمد فقط على وقت ثابت.
++18) world_updates لا تُملأ إلا بحقائق قالها المستخدم صراحة في رسالته الحالية؛ لا تستنتج صفات شخصية ولا معلومات حساسة ولا تخترع علاقات.
++19) لو المرجع واضح من السياق لا تسأل سؤالًا توضيحيًا غير ضروري. الهدف: never ask unnecessary questions.
++20) فرّق بين حقيقة صريحة واقتراح؛ confidence للحقائق الصريحة = 1.
+ `.trim();
+ }
+ 
+@@ -5356,6 +5587,8 @@
+ -10080,
+ 10080
+ ),
++dependencies:normalizeV10Dependencies(intent.dependencies),
++world_updates:normalizeV10WorldUpdates(intent.world_updates),
+ items:[],
+ recurring_items:[],
+ one_time_update:
+@@ -8522,6 +8755,7 @@
+ new Date().toISOString()
+ )
+ .run();
++try{await persistMemoryToWorldGraph(env,chatId,m);}catch(e){console.warn("Memory graph sync failed",safeError(e));}
+ 
+ return true;
+ }
+@@ -12989,6 +13223,403 @@
+ );
+ }
+ 
++
++/* =====================================================================
++   SUPER AGENT V10 — LIFE OS CORE
++   World model · dependency engine · smart lists · shopping · audit/undo
++   voice input · proactive brief settings · self tests
++   ===================================================================== */
++
++function normalizeV10Dependencies(value){
++  const arr=Array.isArray(value)?value:[];
++  return arr.slice(0,50).map(x=>({
++    source_ref:Math.max(0,Math.trunc(Number(x?.source_ref||0))),
++    target_ref:Math.max(0,Math.trunc(Number(x?.target_ref||0))),
++    relation:["after_start","after_end","before_start"].includes(String(x?.relation||""))?String(x.relation):"after_start",
++    offset_minutes:clamp(Math.trunc(Number(x?.offset_minutes||0)),0,10080)
++  })).filter(x=>x.source_ref!==x.target_ref);
++}
++
++function normalizeV10WorldUpdates(value){
++  const arr=Array.isArray(value)?value:[];
++  const types=new Set(["person","place","organization","concept","value"]);
++  return arr.slice(0,30).map(x=>({
++    subject:String(x?.subject||"").trim().slice(0,120),
++    subject_type:types.has(String(x?.subject_type||""))?String(x.subject_type):"concept",
++    relation:String(x?.relation||"fact").trim().slice(0,80),
++    object:String(x?.object||"").trim().slice(0,300),
++    object_type:types.has(String(x?.object_type||""))?String(x.object_type):"value",
++    confidence:Math.max(0,Math.min(1,Number(x?.confidence??1)))
++  })).filter(x=>x.subject&&x.relation&&x.object&&x.confidence>=0.75);
++}
++
++async function ensureAgentSettings(env,chatId){
++  const now=new Date().toISOString();
++  await env.DB.prepare(`INSERT OR IGNORE INTO agent_settings(chat_id,updated_at) VALUES (?,?)`).bind(chatId,now).run();
++  return env.DB.prepare(`SELECT * FROM agent_settings WHERE chat_id=? LIMIT 1`).bind(chatId).first();
++}
++
++async function writeAudit(env,chatId,{action,entityType,entityId=null,summary,before={},after={},undo={}}){
++  try{
++    await env.DB.prepare(`INSERT INTO action_audit(chat_id,action,entity_type,entity_id,summary,before_json,after_json,undo_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`)
++      .bind(chatId,String(action||"action"),String(entityType||"unknown"),entityId==null?null:String(entityId),String(summary||"تغيير" ).slice(0,500),JSON.stringify(before||{}),JSON.stringify(after||{}),JSON.stringify(undo||{}),new Date().toISOString()).run();
++  }catch(e){console.warn("Audit write failed",safeError(e));}
++}
++
++async function showAuditPanel(env,chatId,messageId=null){
++  const rows=(await env.DB.prepare(`SELECT id,action,entity_type,summary,created_at,undone_at FROM action_audit WHERE chat_id=? ORDER BY id DESC LIMIT 12`).bind(chatId).all())?.results||[];
++  const body=rows.length?rows.map(r=>`${r.undone_at?"↩️":"•"} ${r.summary}`).join("\n"):"مفيش تغييرات مسجلة لسه.";
++  return editOrSend(env,chatId,messageId,`📜 آخر التغييرات\n\n${body}`,{inline_keyboard:[[{text:"↩️ تراجع عن آخر عملية",callback_data:"audit:undo"}],[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function undoLastAuditAction(env,chatId){
++  const r=await env.DB.prepare(`SELECT * FROM action_audit WHERE chat_id=? AND undone_at IS NULL ORDER BY id DESC LIMIT 1`).bind(chatId).first();
++  if(!r)return "مفيش عملية قابلة للتراجع دلوقتي.";
++  const u=parseJsonObject(r.undo_json);
++  try{
++    if(u.type==="delete_created_schedule"){
++      const stm=[];
++      for(const id of (u.reminder_ids||[]))stm.push(env.DB.prepare(`DELETE FROM reminders WHERE id=? AND chat_id=?`).bind(Number(id),chatId));
++      for(const id of (u.rule_ids||[])){stm.push(env.DB.prepare(`DELETE FROM schedule_fires WHERE rule_id=? AND chat_id=?`).bind(Number(id),chatId));stm.push(env.DB.prepare(`DELETE FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(id),chatId));}
++      if(stm.length)await env.DB.batch(stm);
++    }else if(u.type==="restore_cancelled_reminder"){
