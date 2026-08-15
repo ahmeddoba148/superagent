@@ -1,0 +1,77 @@
+name: Verify SuperAgent V10.3 Reliability Lock
+
+on:
+  push:
+    branches: [superagent-v10-3-reliability-lock]
+    paths:
+      - 'tools/build-v10-3.py'
+      - 'tests/v10-3-reliability.mjs'
+      - '.github/workflows/build-v10-3-reliability-lock.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.3 Reliability Lock
+        run: python tools/build-v10-3.py
+      - name: Verify exact V10.3 source
+        run: |
+          node --check SuperAgent_V10_3_Reliability_Lock.js
+          test "$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)" -eq 306117
+          test "$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)" = "938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118"
+          grep -q 'const V10_VERSION="10.3"' SuperAgent_V10_3_Reliability_Lock.js
+          grep -q 'reliability_lock:true' SuperAgent_V10_3_Reliability_Lock.js
+      - name: Run V10.3 failure injection suite
+        run: |
+          node tests/v10-3-reliability.mjs | tee V10_3_RELIABILITY_REPORT.txt
+          grep -q '"fail": 0' V10_3_RELIABILITY_REPORT.txt
+      - name: Run V10.2 semantic regression
+        run: |
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_SEMANTIC_REPORT.txt
+          grep -q '"fail": 0' V10_3_SEMANTIC_REPORT.txt
+      - name: Run V9.2 stress regression
+        run: |
+          node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_V92_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_3_V92_STRESS_REPORT.txt
+      - name: Run V10.1 compatibility suites
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs | tee V10_3_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_3_STRESS_REPORT.txt
+          node tests/v10-final-e2e.mjs | tee V10_3_E2E_REPORT.txt
+          grep -q '"fail": 0' V10_3_E2E_REPORT.txt
+          node tests/v10-final-migration.mjs | tee V10_3_MIGRATION_REPORT.txt
+          grep -q '"fail": 0' V10_3_MIGRATION_REPORT.txt
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+      - name: Write verification report
+        run: |
+          cat > V10_3_FINAL_REPORT.txt <<'REPORT'
+          Super Agent V10.3 Reliability Lock
+          Syntax: PASS
+          Exact bytes: 306117
+          Exact SHA256: 938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118
+          Failure injection: PASS
+          Lost Telegram confirmation duplicate protection: PASS
+          Strict create Audit rollback: PASS
+          Runtime incident logging: PASS
+          Safe user-facing failure message: PASS
+          Health D1 probe: PASS
+          V10.2 semantic regression: PASS
+          V9.2 stress regression: PASS
+          V10.1 compatibility stress/E2E/migration: PASS
+          Reliability Lock: VERIFIED
+          REPORT
+      - name: Commit verified V10.3 source and reports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SuperAgent_V10_3_Reliability_Lock.js V10_3_*REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Build and verify Super Agent V10.3 Reliability Lock"
+          git push
