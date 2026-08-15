@@ -1,0 +1,42 @@
+name: Verify SuperAgent V10.3.2 Dependency Canonical
+on:
+  push:
+    branches: [superagent-v10-3-1-diagnostics]
+    paths:
+      - 'tools/build-v10-3-2.py'
+      - 'tests/v10-3-2-cycle-regression.mjs'
+      - '.github/workflows/verify-v10-3-2.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: python tools/build-v10-3-2.py
+      - name: Syntax
+        run: node --check SuperAgent_V10_3_2_Dependency_Canonical.js
+      - name: Production cycle regression
+        run: node tests/v10-3-2-cycle-regression.mjs
+      - name: Exact hard scenario
+        run: |
+          cp SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-hard-production.mjs
+      - name: Reliability and semantic regression
+        run: |
+          node tests/v10-3-failure-injection.mjs
+          node tests/v10-2-production-regression.mjs
+      - name: Legacy compatibility
+        run: |
+          node tests/v9_2_stress.mjs
+          node tests/v10_e2e.mjs
+          node tests/v10_migration.mjs
+      - name: Commit verified source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V10_3_2_Dependency_Canonical.js
+          git diff --cached --quiet || git commit -m 'Verify V10.3.2 dependency canonicalization'
+          git push
