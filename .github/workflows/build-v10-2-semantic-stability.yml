@@ -1,0 +1,102 @@
+name: Build & Verify SuperAgent V10.2 Semantic Stability
+
+on:
+  push:
+    branches: [superagent-v10-2-semantic-stability]
+    paths:
+      - 'v10_2_parts/**'
+      - 'tests/v10-2-semantic-ci.mjs'
+      - '.github/workflows/build-v10-2-semantic-stability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct exact V10.2 patch
+        shell: bash
+        run: |
+          cat v10_2_parts/part_* > v10_2.patch
+          test "$(wc -c < v10_2.patch)" -eq 35543
+          test "$(sha256sum v10_2.patch | cut -d' ' -f1)" = "a6f890734145bf220428b6d4cd8ead69665f75934f6072c4f6231caa13f61ae0"
+
+      - name: Build V10.2 Semantic Stability
+        shell: bash
+        run: |
+          cp SuperAgent_V10_Final_Stability.js SuperAgent_V10_2_Semantic_Stability.js
+          patch -p0 < v10_2.patch
+
+      - name: Verify exact source integrity
+        shell: bash
+        run: |
+          node --check SuperAgent_V10_2_Semantic_Stability.js
+          test "$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)" -eq 300222
+          test "$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)" = "c46d36ae56bf04a66b35acebc954ade71948249496a98b38e4e4657bb8100f8b"
+          grep -q 'const V10_VERSION="10.2"' SuperAgent_V10_2_Semantic_Stability.js
+          grep -q 'semantic_grounding_v2:true' SuperAgent_V10_2_Semantic_Stability.js
+          grep -q 'compound_voice_safe:true' SuperAgent_V10_2_Semantic_Stability.js
+          grep -q 'dependency_repair:true' SuperAgent_V10_2_Semantic_Stability.js
+
+      - name: Run V10.2 exact production regressions
+        shell: bash
+        run: |
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_2_Semantic_Stability.js | tee V10_2_SEMANTIC_REPORT.txt
+          grep -q '"fail": 0' V10_2_SEMANTIC_REPORT.txt
+
+      - name: Run V9.2 original stress regression
+        shell: bash
+        run: |
+          node tests/stress-v9-2.cjs SuperAgent_V10_2_Semantic_Stability.js | tee V10_2_V92_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_2_V92_STRESS_REPORT.txt
+
+      - name: Run all V10.1 regression suites against V10.2
+        shell: bash
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_original.js
+          cp SuperAgent_V10_2_Semantic_Stability.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs | tee V10_2_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_2_STRESS_REPORT.txt
+          node tests/v10-final-e2e.mjs | tee V10_2_E2E_REPORT.txt
+          grep -q '"fail": 0' V10_2_E2E_REPORT.txt
+          node tests/v10-final-migration.mjs | tee V10_2_MIGRATION_REPORT.txt
+          grep -q '"fail": 0' V10_2_MIGRATION_REPORT.txt
+          mv .v101_original.js SuperAgent_V10_Final_Stability.js
+
+      - name: Write V10.2 verification report
+        shell: bash
+        run: |
+          cat > V10_2_FINAL_REPORT.txt <<'EOF'
+          Super Agent V10.2 Semantic Stability
+          Syntax: PASS
+          Exact bytes: 300222
+          Exact SHA256: c46d36ae56bf04a66b35acebc954ade71948249496a98b38e4e4657bb8100f8b
+          Production regressions reported by user: PASS
+          Doctor dependency chain repair: PASS
+          Compound voice shopping + reminder separation: PASS
+          Bare action/reference time grounding: PASS
+          Dependency cycle guard and large dependency preservation: PASS
+          V9.2 original stress suite: PASS
+          V10.1 stress suite: PASS
+          V10.1 Telegram/Voice/Shopping E2E: PASS
+          Legacy DB migration: PASS
+          Compound shopping rollback on downstream failure: enabled
+          Clean chat mode: preserved
+          EOF
+
+      - name: Commit verified V10.2 source and reports
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- SuperAgent_V10_2_Semantic_Stability.js v10_2.patch V10_2_SEMANTIC_REPORT.txt V10_2_V92_STRESS_REPORT.txt V10_2_STRESS_REPORT.txt V10_2_E2E_REPORT.txt V10_2_MIGRATION_REPORT.txt V10_2_FINAL_REPORT.txt
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+            exit 0
+          fi
+          git commit -m "Build and verify Super Agent V10.2 Semantic Stability"
+          git push
