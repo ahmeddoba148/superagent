@@ -24,7 +24,7 @@ new_block=r'''function createV1033LinkedTarget(intent,sourceIndex,task,relation,
     if(sc>best){best=sc;targetIndex=i;}
   }
   if(best<2)targetIndex=-1;
-  const off=Number.isFinite(Number(offset))?Math.max(0,Number(offset)):60;
+  const rawOffset=Number(offset);const off=Number.isFinite(rawOffset)&&rawOffset>0?rawOffset:60;
   if(targetIndex<0){
     const base=`${source.date} ${source.time}`;
     let delta=relation==="before_start"?-off:off;
@@ -48,8 +48,6 @@ function repairV102LinkedEventIntent(intent,base,timeZone=TIME_ZONE){
   if(!/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(raw))return;
   let sourceIndex=intent.items.findIndex(x=>x.kind==="appointment");if(sourceIndex<0)sourceIndex=intent.items.findIndex(x=>/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(String(x.title||"")));if(sourceIndex<0)sourceIndex=0;
   const before=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)\s+قبلها\s+(.+?)(?=\s+(?:و?بعد(?:ها|\s+ما)?|و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى)|$)/iu);
-  // Be punctuation-tolerant and capture everything after the relationship marker.
-  // The task cleaner below removes trailing shopping/command clauses safely.
   let after=raw.match(/(?:^|[\s،,؛;])و?بعد\s+ما\s+(?:نخلص|اخلص|أخلص)\s+(.+)$/iu);
   if(!after)after=raw.match(/(?:^|[\s،,؛;])و?بعدها\s+(.+)$/iu);
   if(!after)after=raw.match(/(?:^|[\s،,؛;])و?بعد\s+(?:الدكتور|الطبيب|الكشف|الموعد|ميعاد|الاجتماع|المقابلة|المقابله)\s+(.+)$/iu);
