@@ -1,0 +1,43 @@
+name: Build & Stress Test SuperAgent V9.2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build V9.2
+        run: python tools/build_v9_2.py
+
+      - name: Syntax check
+        run: node --check SuperAgent_V9.2_Final_Stability.js
+
+      - name: Verify exact build
+        shell: bash
+        run: |
+          test "$(wc -c < SuperAgent_V9.2_Final_Stability.js)" -eq 224476
+          test "$(sha256sum SuperAgent_V9.2_Final_Stability.js | cut -d' ' -f1)" = "4e5c64bfca9b50f2175375e96a3ab28fd86c10d3ca0492b72b0eaab64b0fe841"
+
+      - name: Stress regression suite
+        run: node tests/test_v9_2.js
+
+      - name: Commit V9.2 source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SuperAgent_V9.2_Final_Stability.js
+          if git diff --cached --quiet; then
+            echo "No source changes"
+            exit 0
+          fi
+          git commit -m "Build Super Agent V9.2 Final Stability"
+          git push
