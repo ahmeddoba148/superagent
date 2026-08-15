@@ -6,7 +6,12 @@ fs.writeFileSync('./.v102_ci_exposed.mjs',src);
 const m=await import(new URL('../.v102_ci_exposed.mjs?x='+Date.now(), import.meta.url).href);
 let pass=0,fail=0;const errors=[];
 const ok=(name,c,d='')=>{if(c)pass++;else{fail++;errors.push({name,d})}};
-const today='2026-08-15',tom='2026-08-16';
+// Date expectations must be relative to the actual Cairo date. A fixed 2026-08-15
+// made this regression fail after midnight even when production behavior was correct.
+const cairoParts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Cairo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+const today=`${cairoParts.year}-${cairoParts.month}-${cairoParts.day}`;
+const noonUtc=new Date(`${today}T12:00:00Z`);noonUtc.setUTCDate(noonUtc.getUTCDate()+1);
+const tom=noonUtc.toISOString().slice(0,10);
 let i={action:'create',needs_clarification:false,items:[{title:'دكتور مرام',kind:'appointment',date:tom,time:'17:00',timezone:'Africa/Cairo',duration_minutes:0,advance_alerts:[]},{title:'أجيب الدوا بعد ما نخلص عند الدكتور',kind:'reminder',date:tom,time:'18:00',timezone:'Africa/Cairo',duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[]};
 m.applyV102SemanticRepairs(i,'مرام عندها الدكتور بكرة 5، فكرني قبلها بالتحاليل وبعد ما نخلص أجيب الدوا','Africa/Cairo');
 ok('doctor chain restores 3 items',i.items.length===3,JSON.stringify(i));
@@ -14,9 +19,9 @@ ok('doctor chain creates 2 deps',i.dependencies.length===2,JSON.stringify(i.depe
 const bd=i.dependencies.find(x=>x.relation==='before_start'),ad=i.dependencies.find(x=>x.relation==='after_end');
 ok('doctor before link',!!bd&&bd.offset_minutes===60,JSON.stringify(bd));
 ok('doctor after link',!!ad&&ad.offset_minutes===60,JSON.stringify(ad));
-let v={action:'create',needs_clarification:false,items:[{title:'أكلم أحمد',kind:'reminder',date:'2026-08-19',time:'04:00',timezone:'Africa/Cairo',duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[]};
+let v={action:'create',needs_clarification:false,items:[{title:'أكلم أحمد',kind:'reminder',date:'2099-08-19',time:'04:00',timezone:'Africa/Cairo',duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[]};
 m.applyV102SemanticRepairs(v,'فكرني بكرة الساعة 4 العصر أكلم أحمد','Africa/Cairo');
-ok('voice tomorrow grounded',v.items[0].date===tom,JSON.stringify(v.items[0]));
+ok('voice tomorrow grounded',v.items[0].date===tom,JSON.stringify({today,tom,item:v.items[0]}));
 ok('voice 4pm grounded',v.items[0].time==='16:00',JSON.stringify(v.items[0]));
 const mix=m.extractV102ShoppingAddClause('ضيف مناديل ومعجون للمشتريات وفكرني بكرة الساعة 4 العصر أكلم أحمد');
 ok('compound shopping count',mix?.items?.length===2,JSON.stringify(mix));
