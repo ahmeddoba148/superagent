@@ -90,4 +90,4 @@ TEXT,
 -if(type==="meridiem_single"){
 -rows.push([
 -{text:"☀️ صباحًا",callback_data:"clarify:period:am"},
--{text:"🌙 
+-{text:"🌙
