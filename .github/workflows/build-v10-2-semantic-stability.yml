@@ -22,8 +22,6 @@ jobs:
         shell: bash
         run: |
           cat v10_2_parts/part_* > v10_2.patch
-          echo "patch_bytes=$(wc -c < v10_2.patch)"
-          echo "patch_sha=$(sha256sum v10_2.patch | cut -d' ' -f1)"
           test "$(wc -c < v10_2.patch)" -eq 35543
           test "$(sha256sum v10_2.patch | cut -d' ' -f1)" = "a6f890734145bf220428b6d4cd8ead69665f75934f6072c4f6231caa13f61ae0"
 
@@ -34,6 +32,24 @@ jobs:
           patch -p0 < v10_2.patch
           mv SuperAgent_V10_Final_Stability.js SuperAgent_V10_2_Semantic_Stability.js
           mv .v101_build_base.js SuperAgent_V10_Final_Stability.js
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('SuperAgent_V10_2_Semantic_Stability.js')
+          s=p.read_text()
+          old='''  let dependencyOffset=explicitOffset;
+          if(targetIndex<0){
+            let at=`${source.date} ${source.time}`;if(Number.isFinite(explicitOffset)){
+              let delta=Number(explicitOffset||0);if(relation==="before_start")delta=-delta;else if(relation==="after_end")delta+=Number(source.duration_minutes||0);at=addMinutesLocal(at,delta,timeZone);
+            }'''
+          new='''  let dependencyOffset=explicitOffset;
+          if(targetIndex<0){
+            if(!Number.isFinite(dependencyOffset)&&relation==="before_start")dependencyOffset=60;
+            let at=`${source.date} ${source.time}`;if(Number.isFinite(dependencyOffset)){
+              let delta=Number(dependencyOffset||0);if(relation==="before_start")delta=-delta;else if(relation==="after_end")delta+=Number(source.duration_minutes||0);at=addMinutesLocal(at,delta,timeZone);
+            }'''
+          if old not in s: raise SystemExit('V10.2 before-offset hotfix target not found')
+          p.write_text(s.replace(old,new,1))
+          PY
 
       - name: Verify exact source integrity
         shell: bash
@@ -41,8 +57,8 @@ jobs:
           node --check SuperAgent_V10_2_Semantic_Stability.js
           echo "source_bytes=$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)"
           echo "source_sha=$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)"
-          test "$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)" -eq 300222
-          test "$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)" = "c46d36ae56bf04a66b35acebc954ade71948249496a98b38e4e4657bb8100f8b"
+          test "$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)" -eq 300316
+          test "$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)" = "260ad855562534386ac80a49f645e9466ce1d965a59eeefd149289813709f5fe"
           grep -q 'const V10_VERSION="10.2"' SuperAgent_V10_2_Semantic_Stability.js
           grep -q 'semantic_grounding_v2:true' SuperAgent_V10_2_Semantic_Stability.js
           grep -q 'compound_voice_safe:true' SuperAgent_V10_2_Semantic_Stability.js
@@ -79,10 +95,11 @@ jobs:
           cat > V10_2_FINAL_REPORT.txt <<'EOF'
           Super Agent V10.2 Semantic Stability
           Syntax: PASS
-          Exact bytes: 300222
-          Exact SHA256: c46d36ae56bf04a66b35acebc954ade71948249496a98b38e4e4657bb8100f8b
+          Exact bytes: 300316
+          Exact SHA256: 260ad855562534386ac80a49f645e9466ce1d965a59eeefd149289813709f5fe
           Production regressions reported by user: PASS
           Doctor dependency chain repair: PASS
+          Default before-event offset when unspecified: 60 minutes
           Compound voice shopping + reminder separation: PASS
           Bare action/reference time grounding: PASS
           Dependency cycle guard and large dependency preservation: PASS
