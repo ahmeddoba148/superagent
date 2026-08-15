@@ -1,0 +1,20 @@
+Super Agent V10.3.4 Atomic Direct
+Syntax + IntelliSense: PASS
+Compound conflict atomic rollback/replay: PASS
+Deterministic recurring delete with AI unavailable: PASS
+Ambiguous recurring delete asks instead of guessing: PASS
+Natural shopping language preserving original item text: PASS
+Explicit-clock purchase wording remains a timed reminder: PASS
+Delete shopping item + undo: PASS
+Delete whole shopping list + undo: PASS
+Relation-derived duplicate alerts removed: PASS
+V10.3.3 chain regression: PASS
+Cycle canonicalization regression: PASS
+Reliability failure injection: PASS
+Semantic regression: PASS
+V9.2 stress regression: PASS
+V10 stress/E2E/migration: PASS
+Protected diagnostics: PASS
+Exact bytes: 322195
+Exact SHA256: b9ea434a2b477bcdf698b63be21d8a83b2a0f85dc867378c2689598ded16530b
+VERIFIED
