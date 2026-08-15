@@ -4,7 +4,11 @@ p = Path('SuperAgent_V10_3_Reliability_Lock.js')
 s = p.read_text()
 
 old1 = 'async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error,context={}}={})'
-new1 = 'async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error=null,context={}}={})'
+new1 = '''/**
+ * @param {any} env
+ * @param {{chatId?: any, scope?: string, error?: any, context?: any}} [options]
+ */
+async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error=null,context={}}={})'''
 if old1 not in s:
     raise SystemExit('recordRuntimeFailure target not found')
 s = s.replace(old1, new1, 1)
