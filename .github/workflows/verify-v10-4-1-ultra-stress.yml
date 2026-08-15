@@ -1,0 +1,18 @@
+name: Verify SuperAgent V10.4.1 Ultra Stress
+on:
+  push:
+    branches: [superagent-v10-4-1-ultra-stress]
+    paths:
+      - 'tests/v10-4-1-ultra-direct-stress.mjs'
+      - '.github/workflows/verify-v10-4-1-ultra-stress.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ultra-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ultra deterministic stress
+        run: node tests/v10-4-1-ultra-direct-stress.mjs
