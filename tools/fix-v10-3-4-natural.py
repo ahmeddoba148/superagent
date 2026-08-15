@@ -9,7 +9,7 @@ new=r'''function extractNaturalShoppingItemsV1034(raw){
   const t=normalizeArabicLoose(original);
   if(!t)return null;
   // Explicit clock/recurrence = a real reminder, never a shopping shortcut.
-  if(/(?:\b(?:الساعه|الساعة|صباح|مساء|الظهر|العصر|بالليل|الليل|كل\s+(?:يوم|اسبوع|أسبوع))\b|\d{1,2}:\d{2}|(?:بعد|قبل)\s+\d+\s*(?:دقيقه|دقيقة|دقايق|ساعه|ساعة))/u.test(t))return null;
+  if(/(?:(?:^|\s)(?:الساعه|الساعة|صباح|مساء|الظهر|العصر|بالليل|الليل)(?:\s|$)|(?:^|\s)كل\s+(?:يوم|اسبوع|أسبوع)(?:\s|$)|\d{1,2}:\d{2}|(?:بعد|قبل)\s+\d+\s*(?:دقيقه|دقيقة|دقايق|ساعه|ساعة))/u.test(t))return null;
   if(/(?:معلومه|معلومة|معلومات|خبر|اخبار|أخبار|سعر|اسعار|أسعار|رابط|لينك|صوره|صورة|كود|نتيجه|نتيجة)/u.test(t))return null;
   const m=original.match(/^(?:(?:النهارده|النهاردة|بكره|بكرة|غدا)\s+)?(?:ممكن\s+)?(?:(?:فكرني|فكرنى|تفكرني|ذكرني|ذكرنى|نبهني|نبهنى|تنبهني|افتكرني|متنسانيش|ماتنسانيش|ما\s+تنسانيش)\s+)?(?:(?:انا\s+)?(?:عاوز|عايز|محتاج|لازم|حابب|نفسي|نفسى)\s+)?(?:اني\s+)?(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+(.+)$/iu);
   if(!m)return null;
@@ -23,10 +23,10 @@ new=r'''function extractNaturalShoppingItemsV1034(raw){
 async function tryDirectTimedPurchaseReminderV1034(env,chatId,raw){
   const original=String(raw||"").replace(/[؟?!،؛;]+/gu," ").replace(/\s+/g," ").trim();
   const normalized=normalizeArabicLoose(normalizeDigits(original));
-  if(!/^(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|افتكرني|متنسانيش|ماتنسانيش)\b/u.test(normalized))return false;
+  if(!/^(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|افتكرني|متنسانيش|ماتنسانيش)(?:\s|$)/u.test(normalized))return false;
   if(!/(?:اشتري|اشترى|اجيب|جيب|هات)/u.test(normalized))return false;
   if(!/(?:النهارده|النهاردة|اليوم|بكره|بكرة|غدا|غدًا|غداً|بعد\s+بكره|بعد\s+بكرة)/u.test(normalized))return false;
-  const tm=normalized.match(/(?:الساعه|الساعة)\s*(\d{1,2})(?::(\d{1,2}))?\s*(صباح|الصبح|مساء|المساء|العصر|بالليل|الليل)\b/u);
+  const tm=normalized.match(/(?:الساعه|الساعة)\s*(\d{1,2})(?::(\d{1,2}))?\s*(صباح|الصبح|مساء|المساء|العصر|بالليل|الليل)(?=\s|$)/u);
   if(!tm)return false;
   let hour=Number(tm[1]),minute=Number(tm[2]||0);if(hour<1||hour>12||minute<0||minute>59)return false;
   const period=tm[3];const pm=/(?:مساء|المساء|العصر|بالليل|الليل)/u.test(period);if(pm&&hour<12)hour+=12;if(!pm&&hour===12)hour=0;
