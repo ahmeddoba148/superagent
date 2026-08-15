@@ -1,0 +1,8 @@
+ async function selfTestEndpoint(request,env){const url=new URL(request.url);const key=url.searchParams.get("key")||"";if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:"Unauthorized"},401);return json({version:V10_VERSION,...runV10SelfTests()});}
+@@ -13864,4 +14058,4 @@
+ }
+ }
+ );
+-}
+\ No newline at end of file
++}
