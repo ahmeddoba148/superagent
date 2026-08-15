@@ -1,0 +1,57 @@
++  for(const x of intent.items||[])if(validDate(x.date)&&validTime(x.time)&&isPastLocal(x.date,x.time,timeZone))throw new Error(`Semantic grounding منع موعدًا في الماضي: ${x.date} ${x.time}`);
++  return intent;
++}
++
+ function applyDeterministicRelationships(
+ intent,
+ base,
+@@ -8326,7 +8433,7 @@
+ 
+ function parseClockMentionsForSemantics(text){
+ const s=normalizeTimeWords(normalizeDigits(String(text||"")));
+-const re=/(?:الساعة|الساعه)\s*(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ًا|ا)?|المساء|بالليل|ليل)?/giu;
++const re=/(?<!\d)(?:(?:الساعة|الساعه)\s*)?(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ًا|ا)?|المساء|بالليل|ليل)?/giu;
+ const out=[];let m;
+ while((m=re.exec(s))!==null){
+ const suffix=String(m[3]||"").replace(/\s+/g," ").trim();
+@@ -8392,7 +8499,7 @@
+ const verb=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu);
+ if(!verb||verb.index==null)return null;
+ let title=raw.slice(verb.index+verb[0].length).trim();
+-title=title.replace(/^(?:الساعة|الساعه)\s*(?:1[0-2]|[1-9])(?:\s*[:٫.]\s*[0-5]?\d|\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(?:صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ًا|ا)?|المساء|بالليل|ليل)?\s*/iu,"").trim();
++title=title.replace(/^(?:(?:الساعة|الساعه)\s*)?(?:1[0-2]|[1-9])(?:\s*[:٫.]\s*[0-5]?\d|\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(?:صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ًا|ا)?|المساء|بالليل|ليل)?\s*/iu,"").trim();
+ if(!title)title="التذكير المطلوب";
+ return{action:"create",needs_clarification:false,question:"",reply:"",items:[{date,time,title:title.slice(0,500),kind:"reminder",duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[],world_updates:[],_timezone:timeZone};
+ }
+@@ -12061,6 +12168,16 @@
+ guess+=diff;
+ }
+ 
++const finalShown=epochToLocalDateTime(guess,timeZone);
++if(finalShown!==`${date} ${time}`){
++  let firstFuture=null;const wantedMinute=time.slice(3,5);
++  for(let step=1;step<=180;step++){
++    const cand=guess+step*60000;const shown=epochToLocalDateTime(cand,timeZone);
++    if(!firstFuture&&shown>`${date} ${time}`)firstFuture=cand;
++    if(shown.slice(0,10)===date&&shown.slice(14,16)===wantedMinute&&shown>`${date} ${time}`)return cand;
++  }
++  if(firstFuture!=null)return firstFuture;
++}
+ return guess;
+ }
+ 
+@@ -13398,7 +13515,7 @@
+ 
+ function normalizeV10Dependencies(value){
+   const arr=Array.isArray(value)?value:[];
+-  const mapped=arr.slice(0,50).map(x=>({
++  const mapped=arr.slice(0,200).map(x=>({
+     source_ref:Math.max(0,Math.trunc(Number(x?.source_ref||0))),
+     target_ref:Math.max(0,Math.trunc(Number(x?.target_ref||0))),
+     relation:["after_start","after_end","before_start"].includes(String(x?.relation||""))?String(x.relation):"after_start",
+@@ -13457,7 +13574,7 @@
+   try{
+     if(u.type==="delete_created_schedule"){
+       const stm=[];
+-      for(const id of (u.reminder_ids||[]))stm.push(env.DB.prepare(`DELETE FROM reminders WHERE id=? AND chat_id=?`).bind(Number(id),chatId));
++      for(const id of (u.reminder_ids||[])){stm.push(env.DB.prepare(`DELETE FROM event_dependencies WHERE chat_id=? AND ((source_type='reminder' AND source_id=?) OR (target_type='reminder' AND target_id=?))`).bind(chatId,Number(id),Number(id)));stm.push(env.DB.prepare(`DELETE FROM reminders WHERE id=? AND chat_id=?`).bind(Number(id),chatId));}
