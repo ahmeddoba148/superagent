@@ -1,0 +1,14 @@
+Super Agent V10.3 Reliability Lock
+Syntax: PASS
+Exact bytes: 306044
+Exact SHA256: 3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781
+Failure injection: PASS
+Lost Telegram confirmation duplicate protection: PASS
+Strict create Audit rollback: PASS
+Runtime incident logging: PASS
+Safe user-facing failure message: PASS
+Health D1 probe: PASS
+V10.2 semantic regression: PASS
+V9.2 stress regression: PASS
+V10.1 compatibility stress/E2E/migration: PASS
+Reliability Lock: VERIFIED
