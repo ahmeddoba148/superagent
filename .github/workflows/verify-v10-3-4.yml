@@ -4,8 +4,9 @@ on:
     branches: [superagent-v10-3-4-atomic-direct]
     paths:
       - 'tools/build-v10-3-4.py'
+      - 'tools/fix-v10-3-4-natural.py'
       - 'tests/v10-3-4-atomic-direct-e2e.mjs'
-      - 'tests/v10-3-4-natural-shopping.mjs'
+      - 'tests/v10-3-4-natural-shopping-v2.mjs'
       - '.github/workflows/verify-v10-3-4.yml'
   workflow_dispatch:
 permissions:
@@ -16,7 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build V10.3.4
-        run: python tools/build-v10-3-4.py
+        run: |
+          python tools/build-v10-3-4.py
+          python tools/fix-v10-3-4-natural.py
       - name: Syntax and IntelliSense
         run: |
           node --check SuperAgent_V10_3_4_Atomic_Direct.js
@@ -24,7 +27,7 @@ jobs:
       - name: Atomic direct E2E
         run: node tests/v10-3-4-atomic-direct-e2e.mjs
       - name: Natural shopping and delete E2E
-        run: node tests/v10-3-4-natural-shopping.mjs
+        run: node tests/v10-3-4-natural-shopping-v2.mjs
       - name: V10.3.3 chain regression
         run: |
           cp SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js
@@ -63,7 +66,8 @@ jobs:
           Compound conflict atomic rollback/replay: PASS
           Deterministic recurring delete with AI unavailable: PASS
           Ambiguous recurring delete asks instead of guessing: PASS
-          Natural shopping language: PASS
+          Natural shopping language preserving original item text: PASS
+          Explicit-clock purchase wording remains a timed reminder: PASS
           Delete shopping item + undo: PASS
           Delete whole shopping list + undo: PASS
           Relation-derived duplicate alerts removed: PASS
