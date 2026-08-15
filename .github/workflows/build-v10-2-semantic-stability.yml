@@ -24,12 +24,16 @@ jobs:
           cat v10_2_parts/part_* > v10_2.patch
           echo "patch_bytes=$(wc -c < v10_2.patch)"
           echo "patch_sha=$(sha256sum v10_2.patch | cut -d' ' -f1)"
+          test "$(wc -c < v10_2.patch)" -eq 35543
+          test "$(sha256sum v10_2.patch | cut -d' ' -f1)" = "a6f890734145bf220428b6d4cd8ead69665f75934f6072c4f6231caa13f61ae0"
 
       - name: Build V10.2 Semantic Stability
         shell: bash
         run: |
-          cp SuperAgent_V10_Final_Stability.js SuperAgent_V10_2_Semantic_Stability.js
+          cp SuperAgent_V10_Final_Stability.js .v101_build_base.js
           patch -p0 < v10_2.patch
+          mv SuperAgent_V10_Final_Stability.js SuperAgent_V10_2_Semantic_Stability.js
+          mv .v101_build_base.js SuperAgent_V10_Final_Stability.js
 
       - name: Verify exact source integrity
         shell: bash
