@@ -35,8 +35,6 @@ new_block=r'''function createV1033LinkedTarget(intent,sourceIndex,task,relation,
   }
   usedTargets.add(targetIndex);
   const target=intent.items[targetIndex];
-  // The relative task is itself the reminder. Remove AI-generated duplicate advance alerts
-  // that mirror the same relationship offset on the linked cluster.
   for(const item of [source,target]){
     const arr=sanitizeAdvanceAlerts(item.advance_alerts||[]).filter(x=>Number(x)!==off);
     item.advance_alerts=arr;
@@ -50,15 +48,17 @@ function repairV102LinkedEventIntent(intent,base,timeZone=TIME_ZONE){
   if(!/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(raw))return;
   let sourceIndex=intent.items.findIndex(x=>x.kind==="appointment");if(sourceIndex<0)sourceIndex=intent.items.findIndex(x=>/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(String(x.title||"")));if(sourceIndex<0)sourceIndex=0;
   const before=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)\s+قبلها\s+(.+?)(?=\s+(?:و?بعد(?:ها|\s+ما)?|و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى)|$)/iu);
-  let after=raw.match(/(?:^|\s)و?بعد\s+ما\s+(?:نخلص|اخلص|أخلص)\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
-  if(!after)after=raw.match(/(?:^|\s)و?بعدها\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
-  if(!after)after=raw.match(/(?:^|\s)و?بعد\s+(?:الدكتور|الطبيب|الكشف|الموعد|ميعاد|الاجتماع|المقابلة|المقابله)\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
+  // Be punctuation-tolerant and capture everything after the relationship marker.
+  // The task cleaner below removes trailing shopping/command clauses safely.
+  let after=raw.match(/(?:^|[\s،,؛;])و?بعد\s+ما\s+(?:نخلص|اخلص|أخلص)\s+(.+)$/iu);
+  if(!after)after=raw.match(/(?:^|[\s،,؛;])و?بعدها\s+(.+)$/iu);
+  if(!after)after=raw.match(/(?:^|[\s،,؛;])و?بعد\s+(?:الدكتور|الطبيب|الكشف|الموعد|ميعاد|الاجتماع|المقابلة|المقابله)\s+(.+)$/iu);
   if(!before&&!after)return;
 
   const original=normalizeV10Dependencies(intent.dependencies);
   const usedTargets=new Set();const canonical=[];const canonicalNodes=new Set([sourceIndex]);
   if(before){const x=parseV102RelationTask(before[1]);if(x.task){const r=createV1033LinkedTarget(intent,sourceIndex,x.task,"before_start",x.offset,timeZone,usedTargets);canonical.push(r.dep);canonicalNodes.add(r.targetIndex);}}
-  if(after){const x=parseV102RelationTask(after[1]);if(x.task){const cleaned=x.task.replace(/^(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)\s+/iu,"").replace(/\s*(?:،|,)?\s*و?(?:ضيف|زود|حط|سجل)\s+.+$/iu,"").trim();const r=createV1033LinkedTarget(intent,sourceIndex,cleaned||x.task,"after_end",x.offset,timeZone,usedTargets);canonical.push(r.dep);canonicalNodes.add(r.targetIndex);}}
+  if(after){const x=parseV102RelationTask(after[1]);if(x.task){const cleaned=x.task.replace(/^(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)\s+/iu,"").replace(/\s*(?:،|,)?\s*و?(?:ضيف|زود|حط|سجل)\s+.+$/iu,"").trim();if(cleaned){const r=createV1033LinkedTarget(intent,sourceIndex,cleaned,"after_end",x.offset,timeZone,usedTargets);canonical.push(r.dep);canonicalNodes.add(r.targetIndex);}}}
   let merged=normalizeV10Dependencies(canonical);
   const extras=original.filter(d=>!(canonicalNodes.has(d.source_ref)&&canonicalNodes.has(d.target_ref)));
   for(const d of extras){const candidate=normalizeV10Dependencies([...merged,d]);if(!dependencyGraphHasCycle(candidate))merged=candidate;}
@@ -67,7 +67,6 @@ function repairV102LinkedEventIntent(intent,base,timeZone=TIME_ZONE){
 '''
 s=s[:start]+new_block+s[end:]
 
-# Shopping: distinguish newly-added items from items that were already pending.
 s=s.replace('const list=await getDefaultShoppingList(env,chatId,true);const now=new Date().toISOString();const ids=[];const added=[];',
             'const list=await getDefaultShoppingList(env,chatId,true);const now=new Date().toISOString();const ids=[];const added=[];const existingPending=[];',1)
 s=s.replace("if(exists&&exists.status==='pending')continue;",
