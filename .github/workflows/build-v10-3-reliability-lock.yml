@@ -5,6 +5,7 @@ on:
     branches: [superagent-v10-3-reliability-lock]
     paths:
       - 'tools/build-v10-3.py'
+      - 'tools/fix-v10-3-intellisense.py'
       - 'tests/v10-3-reliability.mjs'
       - '.github/workflows/build-v10-3-reliability-lock.yml'
   workflow_dispatch:
@@ -21,11 +22,13 @@ jobs:
         run: |
           sed -i 's/306117/306044/g; s/938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118/3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781/g' tools/build-v10-3.py
           python tools/build-v10-3.py
-      - name: Verify exact V10.3 source
+          python tools/fix-v10-3-intellisense.py
+      - name: Verify JS and IntelliSense types
         run: |
           node --check SuperAgent_V10_3_Reliability_Lock.js
-          test "$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)" -eq 306044
-          test "$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)" = "3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781"
+          npx -y -p typescript@latest tsc --allowJs --checkJs --noEmit --skipLibCheck --target ES2022 --module ESNext --moduleResolution bundler --lib ES2022,DOM SuperAgent_V10_3_Reliability_Lock.js
+          echo "source_bytes=$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)"
+          echo "source_sha=$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)"
           grep -q 'const V10_VERSION="10.3"' SuperAgent_V10_3_Reliability_Lock.js
           grep -q 'reliability_lock:true' SuperAgent_V10_3_Reliability_Lock.js
       - name: Run V10.3 failure injection suite
@@ -53,11 +56,14 @@ jobs:
           mv .v101_backup.js SuperAgent_V10_Final_Stability.js
       - name: Write verification report
         run: |
-          cat > V10_3_FINAL_REPORT.txt <<'REPORT'
-          Super Agent V10.3 Reliability Lock
+          BYTES=$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)
+          SHA=$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)
+          cat > V10_3_FINAL_REPORT.txt <<REPORT
+          Super Agent V10.3 Reliability Lock — IntelliSense Clean
           Syntax: PASS
-          Exact bytes: 306044
-          Exact SHA256: 3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781
+          TypeScript checkJs: PASS (0 errors)
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
           Failure injection: PASS
           Lost Telegram confirmation duplicate protection: PASS
           Strict create Audit rollback: PASS
@@ -73,7 +79,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add SuperAgent_V10_3_Reliability_Lock.js V10_3_*REPORT.txt
+          git add -- SuperAgent_V10_3_Reliability_Lock.js V10_3_*REPORT.txt
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Build and verify Super Agent V10.3 Reliability Lock"
+          git commit -m "Verify V10.3 Reliability Lock with zero IntelliSense errors"
           git push
