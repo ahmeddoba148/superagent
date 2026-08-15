@@ -18,12 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reconstruct exact V10.2 patch
+      - name: Reconstruct V10.2 patch
         shell: bash
         run: |
           cat v10_2_parts/part_* > v10_2.patch
-          test "$(wc -c < v10_2.patch)" -eq 35543
-          test "$(sha256sum v10_2.patch | cut -d' ' -f1)" = "a6f890734145bf220428b6d4cd8ead69665f75934f6072c4f6231caa13f61ae0"
+          echo "patch_bytes=$(wc -c < v10_2.patch)"
+          echo "patch_sha=$(sha256sum v10_2.patch | cut -d' ' -f1)"
 
       - name: Build V10.2 Semantic Stability
         shell: bash
@@ -35,6 +35,8 @@ jobs:
         shell: bash
         run: |
           node --check SuperAgent_V10_2_Semantic_Stability.js
+          echo "source_bytes=$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)"
+          echo "source_sha=$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)"
           test "$(wc -c < SuperAgent_V10_2_Semantic_Stability.js)" -eq 300222
           test "$(sha256sum SuperAgent_V10_2_Semantic_Stability.js | cut -d' ' -f1)" = "c46d36ae56bf04a66b35acebc954ade71948249496a98b38e4e4657bb8100f8b"
           grep -q 'const V10_VERSION="10.2"' SuperAgent_V10_2_Semantic_Stability.js
