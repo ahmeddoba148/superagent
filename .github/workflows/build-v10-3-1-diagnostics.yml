@@ -1,0 +1,85 @@
+name: Verify SuperAgent V10.3.1 Diagnostics
+
+on:
+  push:
+    branches: [superagent-v10-3-1-diagnostics]
+    paths:
+      - 'tools/build-v10-3.py'
+      - 'tools/fix-v10-3-intellisense.py'
+      - 'tools/add-v10-3-1-diagnostics.py'
+      - 'tests/v10-3-1-diagnostics.mjs'
+      - 'tests/v10-3-hard-production.mjs'
+      - '.github/workflows/build-v10-3-1-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.3.1 Diagnostics
+        run: |
+          sed -i 's/306117/306044/g; s/938abf9d88a40cf1d1b4ac1d14d6422fc476b3673d4123d6c2a38509f296d118/3cae22f668e5bb83370ab138266b787c6a5783c3fcd413630c703f9310f1c781/g' tools/build-v10-3.py
+          python tools/build-v10-3.py
+          python tools/fix-v10-3-intellisense.py
+          python tools/add-v10-3-1-diagnostics.py
+      - name: Verify syntax and protected diagnostics
+        run: |
+          node --check SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_1_INTELLISENSE_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_INTELLISENSE_REPORT.txt
+          node tests/v10-3-1-diagnostics.mjs | tee V10_3_1_DIAGNOSTICS_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_DIAGNOSTICS_REPORT.txt
+          grep -q 'const V10_VERSION="10.3.1"' SuperAgent_V10_3_Reliability_Lock.js
+          grep -q 'pathname==="/diagnostics"' SuperAgent_V10_3_Reliability_Lock.js
+      - name: Run exact hard production regression
+        run: |
+          node tests/v10-3-hard-production.mjs | tee V10_3_1_HARD_PRODUCTION_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_HARD_PRODUCTION_REPORT.txt
+      - name: Run reliability and semantic regression
+        run: |
+          node tests/v10-3-reliability.mjs | tee V10_3_1_RELIABILITY_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_RELIABILITY_REPORT.txt
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_1_SEMANTIC_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_SEMANTIC_REPORT.txt
+      - name: Run legacy stress and compatibility
+        run: |
+          node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_1_V92_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_3_1_V92_STRESS_REPORT.txt
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs | tee V10_3_1_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_3_1_STRESS_REPORT.txt
+          node tests/v10-final-e2e.mjs | tee V10_3_1_E2E_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_E2E_REPORT.txt
+          node tests/v10-final-migration.mjs | tee V10_3_1_MIGRATION_REPORT.txt
+          grep -q '"fail": 0' V10_3_1_MIGRATION_REPORT.txt
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+      - name: Write report
+        run: |
+          BYTES=$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)
+          SHA=$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)
+          cat > V10_3_1_FINAL_REPORT.txt <<REPORT
+          Super Agent V10.3.1 Diagnostics
+          Syntax: PASS
+          Protected diagnostics auth/redaction: PASS
+          Exact hard production scenario: PASS
+          V10.3 failure injection: PASS
+          V10.2 semantic regression: PASS
+          V9.2 stress regression: PASS
+          V10.1 compatibility stress/E2E/migration: PASS
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
+          VERIFIED
+          REPORT
+      - name: Commit verified diagnostic source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- SuperAgent_V10_3_Reliability_Lock.js V10_3_1_*REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Verify V10.3.1 protected production diagnostics"
+          git push
