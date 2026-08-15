@@ -40,10 +40,8 @@ let pass=0,fail=0;const errors=[];const ok=(name,c,d='')=>{if(c)pass++;else{fail
 async function webhook(id,text){const waits=[];const ctx={waitUntil:p=>waits.push(Promise.resolve(p))};const r=await worker.fetch(new Request('https://x.test/telegram',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'SECRET','Content-Type':'application/json'},body:JSON.stringify({update_id:id,message:{message_id:id,chat:{id:77,type:'private'},text}})}),env,ctx);await Promise.allSettled(waits);return r;}
 const sent=()=>telegram.filter(x=>x.method==='sendMessage').map(x=>String(x.body.text||''));
 try{
- // Initialize schema.
  await webhook(1000,'/start');
- // Existing conflicting event.
- await env.DB.prepare(`INSERT INTO reminders(chat_id,title,kind,local_date,local_time,sent,cancelled,created_at,duration_minutes,advance_alerts_json,timezone) VALUES (?,?,?,?,?,0,0,?,?,?,?,?)`)
+ await env.DB.prepare(`INSERT INTO reminders(chat_id,title,kind,local_date,local_time,sent,cancelled,created_at,duration_minutes,advance_alerts_json,timezone) VALUES (?,?,?,?,?,0,0,?,?,?,?)`)
    .bind('77','تعارض موجود','appointment',tom,'18:00',new Date().toISOString(),60,'[]','Africa/Cairo').run();
 
  const compound='عندي اجتماع أوميغا الذري بكرة الساعة 6 مساء ومدته ساعة، وضيف عصير مانجو وأكياس قمامة للمشتريات';
@@ -62,7 +60,6 @@ try{
  ok('confirmed conflict saves schedule',!!omega,JSON.stringify(omega));
  ok('confirmed conflict saves both shopping items',shopAfter.length===2&&shopAfter.every(x=>x.status==='pending'),JSON.stringify(shopAfter));
 
- // Direct recurring deletion must not touch AI at all.
  const now=new Date().toISOString();
  async function insertRule(title){return env.DB.prepare(`INSERT INTO schedule_rules(chat_id,title,kind,rule_json,duration_minutes,start_at,end_at,max_occurrences,fired_count,active,paused_until,exceptions_json,advance_alerts_json,legacy_rule_id,created_at,updated_at,timezone) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind('77',title,'reminder',JSON.stringify({mode:'calendar',every:1,unit:'days',times:['23:00']}),0,`${tom} 23:00`,null,3,0,1,null,'[]','[]',null,now,now,'Africa/Cairo').run()}
  await insertRule('أراجع المتابعة');
@@ -73,14 +70,12 @@ try{
  const aiFailure=(await env.DB.prepare(`SELECT COUNT(*) c FROM runtime_failures WHERE chat_id='77' AND error_text LIKE '%SIMULATED_ALL_AI_DOWN%'`).first())?.c||0;
  ok('direct recurring delete never invokes AI',Number(aiFailure)===0,String(aiFailure));
 
- // Ambiguous recurring deletion must ask instead of guessing.
  await insertRule('أراجع المتابعة اليومية');await insertRule('أراجع المتابعة الأسبوعية');
  const ambStart=sent().length;await webhook(1004,'احذف تذكير المتابعة المتكرر');
  const ambRows=(await env.DB.prepare(`SELECT title FROM schedule_rules WHERE chat_id='77' AND active=1 AND title LIKE '%المتابعة%' ORDER BY id`).all()).results;
  ok('ambiguous recurring delete preserves all matches',ambRows.length===2,JSON.stringify(ambRows));
  ok('ambiguous recurring delete asks for specificity',sent().slice(ambStart).some(x=>x.includes('أكتر من تذكير متكرر')),JSON.stringify(sent().slice(ambStart)));
 
- // Strong canonical alert cleanup: AI deliberately injects duplicate alerts everywhere.
  aiMode='chain';
  const chain='بكرة عندي اجتماع اسمه سيجما الذري الساعة 9 مساء ومدته 45 دقيقة، فكرني قبله بربع ساعة أجهز العرض، وبعده بنص ساعة فكرني أبعت الملخص';
  await webhook(1005,chain);
