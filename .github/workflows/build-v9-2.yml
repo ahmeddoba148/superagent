@@ -1,43 +1,53 @@
-name: Build & Stress Test SuperAgent V9.2
+name: Build & Test SuperAgent V9.2
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'v9_2_build.trigger'
+      - 'v9_2.patch'
+      - 'tests/stress-v9-2.cjs'
+      - '.github/workflows/build-v9-2.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-test:
+  build-test-publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build V9.2
-        run: python tools/build_v9_2.py
-
-      - name: Syntax check
-        run: node --check SuperAgent_V9.2_Final_Stability.js
-
-      - name: Verify exact build
+      - name: Build V9.2 from verified V9.1 base
         shell: bash
         run: |
-          test "$(wc -c < SuperAgent_V9.2_Final_Stability.js)" -eq 224476
-          test "$(sha256sum SuperAgent_V9.2_Final_Stability.js | cut -d' ' -f1)" = "4e5c64bfca9b50f2175375e96a3ab28fd86c10d3ca0492b72b0eaab64b0fe841"
+          cp SuperAgent_V9.1_Final_Fix.js SuperAgent_V9.2_Final_Stability.js
+          patch -p0 < v9_2.patch
 
-      - name: Stress regression suite
-        run: node tests/test_v9_2.js
+      - name: Verify syntax and exact integrity
+        shell: bash
+        run: |
+          node --check SuperAgent_V9.2_Final_Stability.js
+          test "$(wc -c < SuperAgent_V9.2_Final_Stability.js)" -eq 227587
+          test "$(sha256sum SuperAgent_V9.2_Final_Stability.js | cut -d' ' -f1)" = "2657d4b05cbf96760afd7edb00474570f722b5d20d0bdb03f0209d97bb7f55c7"
 
-      - name: Commit V9.2 source
+      - name: Run 33,006 regression and stress assertions
+        shell: bash
+        run: |
+          node tests/stress-v9-2.cjs SuperAgent_V9.2_Final_Stability.js | tee V9.2_TEST_REPORT.txt
+          grep -q '"passed": 33006' V9.2_TEST_REPORT.txt
+          grep -q '"failed": 0' V9.2_TEST_REPORT.txt
+
+      - name: Commit tested final source
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add SuperAgent_V9.2_Final_Stability.js
+          git add SuperAgent_V9.2_Final_Stability.js V9.2_TEST_REPORT.txt
           if git diff --cached --quiet; then
-            echo "No source changes"
+            echo "No generated changes"
             exit 0
           fi
-          git commit -m "Build Super Agent V9.2 Final Stability"
+          git commit -m "Build and verify Super Agent V9.2 Final Stability"
           git push
