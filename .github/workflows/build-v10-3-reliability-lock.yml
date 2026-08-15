@@ -8,6 +8,7 @@ on:
       - 'tools/fix-v10-3-intellisense.py'
       - 'tests/v10-3-intellisense-regression.mjs'
       - 'tests/v10-3-reliability.mjs'
+      - 'tests/v10-3-hard-production.mjs'
       - '.github/workflows/build-v10-3-reliability-lock.yml'
   workflow_dispatch:
 
@@ -29,10 +30,12 @@ jobs:
           node --check SuperAgent_V10_3_Reliability_Lock.js
           node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_3_Reliability_Lock.js | tee V10_3_INTELLISENSE_REPORT.txt
           grep -q '"fail": 0' V10_3_INTELLISENSE_REPORT.txt
-          echo "source_bytes=$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)"
-          echo "source_sha=$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)"
           grep -q 'const V10_VERSION="10.3"' SuperAgent_V10_3_Reliability_Lock.js
           grep -q 'reliability_lock:true' SuperAgent_V10_3_Reliability_Lock.js
+      - name: Run exact hard production regression
+        run: |
+          node tests/v10-3-hard-production.mjs | tee V10_3_HARD_PRODUCTION_REPORT.txt
+          grep -q '"fail": 0' V10_3_HARD_PRODUCTION_REPORT.txt
       - name: Run V10.3 failure injection suite
         run: |
           node tests/v10-3-reliability.mjs | tee V10_3_RELIABILITY_REPORT.txt
@@ -61,9 +64,10 @@ jobs:
           BYTES=$(wc -c < SuperAgent_V10_3_Reliability_Lock.js)
           SHA=$(sha256sum SuperAgent_V10_3_Reliability_Lock.js | cut -d' ' -f1)
           cat > V10_3_FINAL_REPORT.txt <<REPORT
-          Super Agent V10.3 Reliability Lock — IntelliSense Fix
+          Super Agent V10.3 Reliability Lock — Hard Production Verified
           Syntax: PASS
-          Reported VS Code IntelliSense regressions: PASS (0/6 remaining in targeted patterns)
+          Reported VS Code IntelliSense regressions: PASS
+          Exact hard production scenario: PASS
           Exact bytes: $BYTES
           Exact SHA256: $SHA
           Failure injection: PASS
@@ -83,5 +87,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- SuperAgent_V10_3_Reliability_Lock.js V10_3_*REPORT.txt
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Fix V10.3 reported VS Code IntelliSense errors"
+          git commit -m "Verify V10.3 exact hard production scenario"
           git push
