@@ -1,0 +1,25 @@
+name: V10.7 Build Gate
+
+on:
+  push:
+    branches: [superagent-v10-7-universal-agent]
+    paths:
+      - 'tools/build-v10-7.py'
+      - 'tests/v10-7-static.mjs'
+      - '.github/workflows/v10-7-build-check.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.7
+        run: python tools/build-v10-7.py
+      - name: JavaScript syntax
+        run: node --check SuperAgent_V10_7_Universal_Agent.js
+      - name: Architecture checks
+        run: node tests/v10-7-static.mjs SuperAgent_V10_7_Universal_Agent.js
+      - name: Existing semantic smoke
+        run: node tests/v10-2-semantic-ci.mjs SuperAgent_V10_7_Universal_Agent.js
