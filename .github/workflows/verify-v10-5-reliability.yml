@@ -1,0 +1,104 @@
+name: Verify SuperAgent V10.5 Reliability Rewrite
+on:
+  push:
+    branches: [superagent-v10-5-reliability-rewrite]
+    paths:
+      - 'tools/build-v10-5.py'
+      - 'tests/v10-5-manual-bugs-regression.mjs'
+      - '.github/workflows/verify-v10-5-reliability.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.5 and static syntax
+        run: |
+          python tools/build-v10-5.py
+          node --check SuperAgent_V10_5_Reliability_Rewrite.js
+          node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_5_Reliability_Rewrite.js
+      - name: Manual discovered bugs regression
+        run: node tests/v10-5-manual-bugs-regression.mjs
+      - name: Arabic user interface regression
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_4_3_Full_Arabic.js
+          node tests/v10-4-3-arabic-ui-e2e.mjs
+          python tools/verify-v10-4-3-arabic.py SuperAgent_V10_4_3_Full_Arabic.js
+      - name: Prepare ultra stress harness
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_4_Zero_Known_Bugs.js
+          python tools/patch-v10-4-1-stress-chat-id.py
+          python -c "from pathlib import Path; p=Path('tests/v10-4-1-ultra-direct-stress.mjs'); s=p.read_text(); old=\"VALUES (?,'reminder',?,'reminder',?,?,?,?,1,?,?)\"; new=\"VALUES (?,'reminder',?,'reminder',?,?,?,1,?,?)\"; s=s.replace(old,new,1) if old in s else s; p.write_text(s)"
+          python tools/patch-v10-4-1-stress-ready-users.py
+      - name: Ultra deterministic fuzz 4644
+        run: node tests/v10-4-1-ultra-direct-stress.mjs
+      - name: Boundary dependency concurrency 5112
+        run: node tests/v10-4-1-boundary-concurrency.mjs
+      - name: V10.4 killer regression x10
+        run: for i in $(seq 1 10); do node tests/v10-4-killer-regression.mjs; done
+      - name: V10.4.2 data controls regression
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_4_2_Data_Controls.js
+          node tests/v10-4-2-data-controls-e2e.mjs
+      - name: Atomic and natural shopping regressions
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_3_4_Atomic_Direct.js
+          node tests/v10-3-4-atomic-direct-e2e.mjs
+          node tests/v10-3-4-natural-shopping-v2.mjs
+      - name: Dependency chain and cycles x30
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_3_3_Chain_Final.js
+          node tests/v10-3-3-chain-e2e.mjs
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_3_2_Dependency_Canonical.js
+          for i in $(seq 1 30); do node tests/v10-3-2-cycle-regression.mjs; done
+      - name: Reliability injection x15 semantic and V9 stress
+        run: |
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_3_Reliability_Lock.js
+          for i in $(seq 1 15); do node tests/v10-3-reliability.mjs; done
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js
+          node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V10 full stress E2E migration diagnostics
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs
+          node tests/v10-final-e2e.mjs
+          node tests/v10-final-migration.mjs
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+          cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-1-diagnostics.mjs
+      - name: Final V10.5 report
+        run: |
+          BYTES=$(wc -c < SuperAgent_V10_5_Reliability_Rewrite.js)
+          SHA=$(sha256sum SuperAgent_V10_5_Reliability_Rewrite.js | cut -d' ' -f1)
+          cat > V10_5_RELIABILITY_REPORT.txt <<REPORT
+          سوبر إيجنت V10.5 — Reliability Rewrite
+          Manual discovered bugs regression: PASS
+          Arabic UI: PASS
+          Ultra deterministic fuzz 4644/4644: PASS
+          Boundary/dependency/concurrency 5112/5112: PASS
+          V10.4 killer x10: PASS
+          Data controls: PASS
+          Atomic + natural shopping: PASS
+          Chain + cycles x30: PASS
+          Reliability injection x15: PASS
+          Semantic + V9.2 stress: PASS
+          V10 stress/E2E/migration/diagnostics: PASS
+          Syntax + IntelliSense: PASS
+          Known failures in verification matrix: 0
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
+          VERIFIED
+          REPORT
+      - name: Commit verified V10.5 source and report
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -- SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_4_3_Full_Arabic.js SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js tests/v10-4-1-ultra-direct-stress.mjs tests/v10-4-1-debug-stress-first-case.mjs || true
+          git add SuperAgent_V10_5_Reliability_Rewrite.js V10_5_RELIABILITY_REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Verify Super Agent V10.5 reliability rewrite matrix'
+          git push
