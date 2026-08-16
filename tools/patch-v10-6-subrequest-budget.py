@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# V10.6 live-pressure fix: bound each Cloudflare invocation and confirm the durable ledger.
 p=Path('tools/build-v10-6.py')
 s=p.read_text(encoding='utf-8')
 
