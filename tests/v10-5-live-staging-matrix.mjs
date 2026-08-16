@@ -126,9 +126,11 @@ check('live shopping did not become timed reminder',!reminders().some(x=>x.local
 // 5) Duplicate Telegram update id must execute once.
 const dup=++seq;
 await say('فكرني يوم 22 أكتوبر 2026 الساعة 3:17 مساء أراجع اختبار التكرار',{updateId:dup,wait:0});
-await say('فكرني يوم 22 أكتوبر 2026 الساعة 3:17 مساء أراجع اختبار التكرار',{updateId:dup,wait:1300});
-const dupRows=reminders().filter(x=>String(x.title).includes('أراجع اختبار التكرار'));
-check('live Telegram update idempotency',dupRows.length===1,JSON.stringify(dupRows));
+await say('فكرني يوم 22 أكتوبر 2026 الساعة 3:17 مساء أراجع اختبار التكرار',{updateId:dup,wait:0});
+const dupRows=await poll(()=>{const rows=reminders().filter(x=>String(x.title).includes('أراجع اختبار التكرار'));return rows.length===1?rows:null;},{tries:45,delay:700,label:'duplicate update first completion'});
+await sleep(1800);
+const dupRowsFinal=reminders().filter(x=>String(x.title).includes('أراجع اختبار التكرار'));
+check('live Telegram update idempotency',dupRowsFinal.length===1,JSON.stringify(dupRowsFinal));
 
 // 6) Same-chat rapid update then natural undo, without waiting between webhook requests.
 await say('يوم 21 نوفمبر 2026 الساعة 6 مساء عندي اجتماع اسمه سريع 717 ومدته ساعة',{wait:1200});
