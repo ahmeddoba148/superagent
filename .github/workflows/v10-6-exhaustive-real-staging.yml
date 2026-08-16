@@ -1,0 +1,277 @@
+name: V10.6 Exhaustive Real Staging Certification
+
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths:
+      - '.github/workflows/v10-6-exhaustive-real-staging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v10-6-exhaustive-real-staging
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v106-staging.ahmeddoba91.workers.dev
+      STAGING_DB: superagent-v106-staging
+      STAGING_CONFIG: wrangler.v106.staging.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate required live secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$STAGING_TELEGRAM_BOT_TOKEN"
+          test -n "$STAGING_OMNIAI_API_KEY"
+          test -n "$STAGING_ADMIN_CHAT_ID"
+
+      - name: Generate masked ephemeral staging secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Build exact V10.6 candidate and syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build-v10-6.py
+          node --check SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'const V10_VERSION="10.6"' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'V106_LEASE_RETRY_COUNT=64' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'v106_ledger_confirmed_delivery:true' SuperAgent_V10_6_Zero_Known_Failures.js
+
+      - name: Local semantic and regression smoke before live deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_6_Zero_Known_Failures.js
+          node tests/stress-v9-2.cjs SuperAgent_V10_6_Zero_Known_Failures.js
+
+      - name: Build staging Wrangler config
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');
+          let s=fs.readFileSync('wrangler.v10-6-staging.template.jsonc','utf8')
+            .replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697')
+            .replace('subrequest-fix-1','exhaustive-real-cert');
+          fs.writeFileSync('wrangler.v106.staging.jsonc',s);
+          NODE
+
+      - name: Deploy exact candidate to real V10.6 staging Worker
+        run: npx wrangler deploy --config wrangler.v106.staging.jsonc
+
+      - name: Rotate real staging secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v106.staging.jsonc
+          sleep 10
+
+      - name: Initialize real Telegram webhook with retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          ok=0
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/setup.json -w '%{http_code}' "$STAGING_URL/setup?key=$KEY&force=1" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/setup.json");if(!x.ok)process.exit(1)' 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          cat /tmp/setup.json || true
+          test "$ok" -eq 1
+
+      - name: Selftest must be fully green
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          ok=0
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/selftest.json -w '%{http_code}' "$STAGING_URL/selftest?key=$KEY" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/selftest.json");if(!x.ok||x.version!=="10.6"||x.passed!==x.total||x.total<32)process.exit(1)' 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          cat /tmp/selftest.json
+          test "$ok" -eq 1
+
+      - name: Reset historical staging failures only
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v106.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL;"
+
+      - name: Real Cloudflare pressure, dedupe, crash recovery and ordering
+        run: node tests/v10-6-live-pressure.mjs
+
+      - name: Full real human-language and Telegram UI matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tests/v10-5-live-staging-matrix.mjs tests/.v106-human-live-temp.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g; s/V10.5/V10.6/g' tests/.v106-human-live-temp.mjs
+          node tests/.v106-human-live-temp.mjs
+
+      - name: Stale receipt and replay regression on real Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tests/v10-5-live-stale-receipt.mjs tests/.v106-stale-live-temp.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g; s/V10.5/V10.6/g' tests/.v106-stale-live-temp.mjs
+          node tests/.v106-stale-live-temp.mjs
+
+      - name: Exhaustive real staging chaos certification
+        run: node tests/live-exhaustive-v106.mjs
+
+      - name: Final live integrity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$STAGING_URL/health" | tee /tmp/final-health.json
+          node -e 'const x=require("/tmp/final-health.json");if(!x.ok||!x.db||!x.omniai_service)process.exit(1)'
+          npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT status,COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' GROUP BY status; SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status IN ('pending','processing','failed'); SELECT COUNT(*) c FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status!='done'; SELECT COUNT(*) c FROM runtime_failures WHERE created_at>=datetime('now','-45 minutes');" | tee /tmp/final-d1.json
+          node - <<'NODE'
+          const fs=require('fs');const j=JSON.parse(fs.readFileSync('/tmp/final-d1.json','utf8'));
+          const blocks=Array.isArray(j)?j:[];
+          for(const b of blocks){if(b?.success===false)process.exit(1)}
+          const counts=blocks.flatMap(b=>b?.results||[]).map(x=>Number(x.c)).filter(Number.isFinite);
+          if(counts.slice(-3).some(x=>x!==0)){console.error('Nonzero final failure/stuck count',counts);process.exit(1)}
+          NODE
+
+      - name: Build Cloudflare-ready certified package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp SuperAgent_V10_6_Zero_Known_Failures.js SuperAgent_V10_6_CLOUDFLARE_READY.js
+          SHA="$(sha256sum SuperAgent_V10_6_CLOUDFLARE_READY.js | cut -d' ' -f1)"
+          BYTES="$(wc -c < SuperAgent_V10_6_CLOUDFLARE_READY.js | tr -d ' ')"
+          UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          cat > V10_6_CLOUDFLARE_READY_CERTIFICATE.txt <<EOF
+          Super Agent V10.6 — CLOUDFLARE READY CERTIFICATE
+          =================================================
+          Certification UTC: $UTC
+          Source workflow commit: $GITHUB_SHA
+          Staging Worker: $STAGING_URL
+          Source bytes: $BYTES
+          SHA256: $SHA
+
+          PASSED GATES
+          - JavaScript syntax
+          - V10.6 internal selftest 32/32 or greater
+          - Semantic regression smoke
+          - Legacy stress regression smoke
+          - Real Cloudflare deployment
+          - Real D1 database binding
+          - Real OmniAI service binding
+          - Real Telegram getMe/API reachability
+          - Real Telegram webhook setup
+          - Invalid-secret rejection
+          - Malformed-JSON rejection
+          - Durable duplicate idempotency
+          - 25-way duplicate pressure
+          - 40-way same-chat pressure
+          - Crash/expired-lease recovery
+          - Cross-request ordering + undo
+          - Human Arabic natural-language matrix
+          - Recurring reminder create/edit/delete/undo
+          - Natural shopping parsing/dedupe
+          - Mixed reminder + shopping parsing
+          - Stale receipt/replay regression
+          - 36-update multi-wave burst
+          - General chat / AI live path
+          - Cron-only durable inbox recovery
+          - Actual scheduled reminder delivery through Telegram
+          - Final queue/ledger integrity
+          - Final runtime-failure gate
+          - Final health gate
+
+          RESULT: CERTIFIED_FOR_CLOUDFLARE_UPLOAD
+          EOF
+          cat > wrangler.v10-6.production.example.jsonc <<'EOF'
+          {
+            "$schema": "./node_modules/wrangler/config-schema.json",
+            "name": "superagent-v10-6",
+            "main": "./SuperAgent_V10_6_CLOUDFLARE_READY.js",
+            "compatibility_date": "2026-08-16",
+            "workers_dev": true,
+            "vars": {
+              "PUBLIC_BOT": "false"
+            },
+            "d1_databases": [
+              {
+                "binding": "DB",
+                "database_name": "superagent",
+                "database_id": "__YOUR_D1_DATABASE_ID__"
+              }
+            ],
+            "services": [
+              {
+                "binding": "OMNIAI_SERVICE",
+                "service": "omniai-engine"
+              }
+            ],
+            "triggers": {
+              "crons": ["* * * * *"]
+            }
+          }
+          EOF
+          cat V10_6_CLOUDFLARE_READY_CERTIFICATE.txt
+
+      - name: Upload certified package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V10.6-Cloudflare-Ready
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            SuperAgent_V10_6_CLOUDFLARE_READY.js
+            V10_6_CLOUDFLARE_READY_CERTIFICATE.txt
+            wrangler.v10-6.production.example.jsonc
+
+      - name: Commit only the fully certified Cloudflare-ready build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V10_6_Zero_Known_Failures.js SuperAgent_V10_6_CLOUDFLARE_READY.js V10_6_CLOUDFLARE_READY_CERTIFICATE.txt wrangler.v10-6.production.example.jsonc
+          if git diff --cached --quiet; then
+            echo 'Certified files already current.'
+            exit 0
+          fi
+          git commit -m 'Certify Super Agent V10.6 for Cloudflare after exhaustive real staging tests'
+          git pull --rebase origin superagent-v10-6-zero-known-failures
+          git push origin HEAD:superagent-v10-6-zero-known-failures
