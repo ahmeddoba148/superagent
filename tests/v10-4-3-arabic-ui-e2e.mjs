@@ -12,13 +12,14 @@ function auditMessages(label){for(const [i,x] of sent.entries()){const texts=[];
 try{
  await update(1,{text:'/start'});await update(1,{text:'/menu'});
  for(const cb of ['panel:shopping','panel:inbox','panel:world','panel:audit','panel:agent_settings','panel:danger','danger:clear_world','danger:clear_shopping','danger:clear_context','danger:clear_schedule'])await update(1,{cb});
- await update(1,{text:'/where'});await update(1,{text:'عاوز اشتري بيض ولبن'});await update(1,{text:'أنا في الهايبر'});await update(1,{text:'حط في الانبوكس كلم أحمد'});await update(1,{text:'/inbox'});await update(1,{text:'امسح كل اللي فاكره عن الأشخاص والعلاقات'});await update(1,{text:'عامل ايه النهارده'});
+ await update(1,{text:'/where'});await update(1,{text:'/live'});await update(1,{text:'عاوز اشتري بيض ولبن'});await update(1,{text:'أنا في الهايبر'});await update(1,{text:'حط في الانبوكس كلم أحمد'});await update(1,{text:'/inbox'});await update(1,{text:'امسح كل اللي فاكره عن الأشخاص والعلاقات'});await update(1,{text:'عامل ايه النهارده'});
  auditMessages('ui');
  const all=sent.flatMap(x=>[x.b?.text,...(x.b?.reply_markup?.inline_keyboard||[]).flat().map(b=>b?.text)]).filter(Boolean).join('\n');
  if(!all.includes('صندوق الوارد'))fail.push(['arabic inbox label missing',all.slice(0,1500)]);
  if(!all.includes('نموذج العالم'))fail.push(['arabic world label missing',all.slice(0,1500)]);
  if(!all.includes('سوبر إيجنت'))fail.push(['arabic product label missing',all.slice(0,1500)]);
- if(!all.includes('القاهرة'))fail.push(['arabic Cairo label missing',all.slice(0,1500)]);
- if(!all.includes('مصر'))fail.push(['arabic Egypt label missing',all.slice(0,1500)]);
+ // /live exposes the default place; when it does, it must be Arabic.
+ if(!all.includes('القاهرة'))fail.push(['arabic Cairo label missing',all.slice(-2500)]);
+ if(!all.includes('مصر'))fail.push(['arabic Egypt label missing',all.slice(-2500)]);
 }catch(e){fail.push(['unexpected',String(e.stack||e)])}
 console.log(JSON.stringify({suite:'V10.4.3 Arabic-only UI',ok:!fail.length,fail,telegramMessages:sent.length,aiCalls},null,2));py.stdin.write(JSON.stringify({mode:'close'})+'\n');setTimeout(()=>process.exit(fail.length?1:0),50);
