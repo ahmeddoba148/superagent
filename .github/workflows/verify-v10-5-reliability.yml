@@ -4,8 +4,10 @@ on:
     branches: [superagent-v10-5-reliability-rewrite]
     paths:
       - 'tools/build-v10-5.py'
+      - 'tools/patch-v10-5-human-findings.py'
       - 'tools/patch-v10-5-regression-harness.py'
       - 'tests/v10-5-manual-bugs-regression.mjs'
+      - 'tests/v10-5-human-findings-regression.mjs'
       - '.github/workflows/verify-v10-5-reliability.yml'
   workflow_dispatch:
 permissions:
@@ -19,12 +21,14 @@ jobs:
       - name: Build V10.5 and static syntax
         run: |
           python tools/build-v10-5.py
+          python tools/patch-v10-5-human-findings.py
           node --check SuperAgent_V10_5_Reliability_Rewrite.js
           node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_5_Reliability_Rewrite.js
       - name: Manual discovered bugs regression
         run: |
           python tools/patch-v10-5-regression-harness.py
           node tests/v10-5-manual-bugs-regression.mjs
+          node tests/v10-5-human-findings-regression.mjs
       - name: Arabic user interface regression
         run: |
           cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_4_3_Full_Arabic.js
@@ -80,6 +84,7 @@ jobs:
           cat > V10_5_RELIABILITY_REPORT.txt <<REPORT
           سوبر إيجنت V10.5 — Reliability Rewrite
           Manual discovered bugs regression 34/34: PASS
+          Human exploratory findings regression 5/5: PASS
           Arabic UI: PASS
           Ultra deterministic fuzz 4644/4644: PASS
           Boundary/dependency/concurrency 5112/5112: PASS
