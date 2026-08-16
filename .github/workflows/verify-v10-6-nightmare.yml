@@ -93,9 +93,10 @@ jobs:
         run: |
           grep -q 'telegram_inbox_v106' SuperAgent_V10_6_Zero_Known_Failures.js
           grep -q 'telegram_chat_leases_v106' SuperAgent_V10_6_Zero_Known_Failures.js
-          grep -q 'persistTelegramInboxV106' SuperAgent_V10_6_Zero_Known_Failures.js
-          grep -q 'drainPendingTelegramInboxV106' SuperAgent_V10_6_Zero_Known_Failures.js
-          grep -q 'v106_cross_isolate_serialization:true' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'V106_INBOX_BATCH_SIZE=4' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'v106_subrequest_budget_safe:true' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'v106_ledger_confirmed_delivery:true' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q "SELECT status,error_text FROM telegram_updates" SuperAgent_V10_6_Zero_Known_Failures.js
 
       - name: Final V10.6 report
         run: |
@@ -114,7 +115,9 @@ jobs:
           Reliability failure injection x30: PASS
           Semantic + V9 stress: PASS
           Full V10 stress/E2E/migration/diagnostics: PASS
-          Durable D1 Telegram inbox assertions: PASS
+          Durable D1 Telegram inbox: PASS
+          Cloudflare subrequest budget guard: PASS
+          Ledger-confirmed delivery: PASS
           Known failures in deterministic matrix: 0
           Exact bytes: $BYTES
           Exact SHA256: $SHA
@@ -131,5 +134,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add SuperAgent_V10_6_Zero_Known_Failures.js V10_6_NIGHTMARE_REPORT.txt
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'Build and verify Super Agent V10.6 nightmare matrix'
+          git commit -m 'Re-verify Super Agent V10.6 after live pressure fix'
           git push
