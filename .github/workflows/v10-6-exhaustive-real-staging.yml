@@ -5,6 +5,10 @@ on:
     branches: [superagent-v10-6-zero-known-failures]
     paths:
       - '.github/workflows/v10-6-exhaustive-real-staging.yml'
+      - 'tools/build-v10-6.py'
+      - 'wrangler.v10-6-staging.template.jsonc'
+      - 'tests/v10-6-live-pressure.mjs'
+      - 'tests/live-exhaustive-v106.mjs'
   workflow_dispatch:
 
 permissions:
@@ -64,8 +68,12 @@ jobs:
           python tools/build-v10-6.py
           node --check SuperAgent_V10_6_Zero_Known_Failures.js
           grep -q 'const V10_VERSION="10.6"' SuperAgent_V10_6_Zero_Known_Failures.js
-          grep -q 'V106_LEASE_RETRY_COUNT=64' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'V106_INBOX_BATCH_SIZE=4' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'url.pathname==="/internal/drain-v106"' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'triggerDrainContinuationV106' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'v106_self_continuation:true' SuperAgent_V10_6_Zero_Known_Failures.js
           grep -q 'v106_ledger_confirmed_delivery:true' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'global_fetch_strictly_public' wrangler.v10-6-staging.template.jsonc
 
       - name: Local semantic and regression smoke before live deploy
         shell: bash
@@ -82,7 +90,7 @@ jobs:
           const fs=require('fs');
           let s=fs.readFileSync('wrangler.v10-6-staging.template.jsonc','utf8')
             .replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697')
-            .replace('subrequest-fix-1','exhaustive-real-cert');
+            .replace('self-continuation-1','exhaustive-real-cert-v2');
           fs.writeFileSync('wrangler.v106.staging.jsonc',s);
           NODE
 
@@ -122,17 +130,24 @@ jobs:
           ok=0
           for i in $(seq 1 20); do
             CODE="$(curl -sS -o /tmp/selftest.json -w '%{http_code}' "$STAGING_URL/selftest?key=$KEY" || true)"
-            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/selftest.json");if(!x.ok||x.version!=="10.6"||x.passed!==x.total||x.total<32)process.exit(1)' 2>/dev/null; then ok=1; break; fi
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/selftest.json");if(!x.ok||x.version!=="10.6"||x.passed!==x.total||x.total<33)process.exit(1)' 2>/dev/null; then ok=1; break; fi
             sleep 2
           done
           cat /tmp/selftest.json
           test "$ok" -eq 1
 
-      - name: Reset historical staging failures only
+      - name: Protected continuation endpoint rejects outsiders
         shell: bash
         run: |
           set -euo pipefail
-          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v106.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL;"
+          CODE="$(curl -sS -o /tmp/internal-reject.txt -w '%{http_code}' -X POST "$STAGING_URL/internal/drain-v106" -H 'content-type: application/json' -H 'X-SuperAgent-Internal: WRONG' --data '{"chat_id":"123"}')"
+          test "$CODE" = 401
+
+      - name: Reset historical staging failures and prior admin test queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v106.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
 
       - name: Real Cloudflare pressure, dedupe, crash recovery and ordering
         run: node tests/v10-6-live-pressure.mjs
@@ -162,14 +177,13 @@ jobs:
           set -euo pipefail
           curl -fsS "$STAGING_URL/health" | tee /tmp/final-health.json
           node -e 'const x=require("/tmp/final-health.json");if(!x.ok||!x.db||!x.omniai_service)process.exit(1)'
-          npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT status,COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' GROUP BY status; SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status IN ('pending','processing','failed'); SELECT COUNT(*) c FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status!='done'; SELECT COUNT(*) c FROM runtime_failures WHERE created_at>=datetime('now','-45 minutes');" | tee /tmp/final-d1.json
-          node - <<'NODE'
-          const fs=require('fs');const j=JSON.parse(fs.readFileSync('/tmp/final-d1.json','utf8'));
-          const blocks=Array.isArray(j)?j:[];
-          for(const b of blocks){if(b?.success===false)process.exit(1)}
-          const counts=blocks.flatMap(b=>b?.results||[]).map(x=>Number(x.c)).filter(Number.isFinite);
-          if(counts.slice(-3).some(x=>x!==0)){console.error('Nonzero final failure/stuck count',counts);process.exit(1)}
-          NODE
+          PENDING="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status IN ('pending','processing','failed')" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          LEDGER="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT COUNT(*) c FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status!='done'" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          FAILS="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT COUNT(*) c FROM runtime_failures WHERE created_at>=datetime('now','-45 minutes')" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          echo "FINAL pending=$PENDING ledger_non_done=$LEDGER runtime_failures=$FAILS"
+          test "$PENDING" = 0
+          test "$LEDGER" = 0
+          test "$FAILS" = 0
 
       - name: Build Cloudflare-ready certified package
         shell: bash
@@ -190,7 +204,7 @@ jobs:
 
           PASSED GATES
           - JavaScript syntax
-          - V10.6 internal selftest 32/32 or greater
+          - V10.6 internal selftest 33/33 or greater
           - Semantic regression smoke
           - Legacy stress regression smoke
           - Real Cloudflare deployment
@@ -198,11 +212,12 @@ jobs:
           - Real OmniAI service binding
           - Real Telegram getMe/API reachability
           - Real Telegram webhook setup
+          - Protected internal continuation authorization
           - Invalid-secret rejection
           - Malformed-JSON rejection
           - Durable duplicate idempotency
           - 25-way duplicate pressure
-          - 40-way same-chat pressure
+          - 40-way same-chat pressure with fresh-invocation continuation
           - Crash/expired-lease recovery
           - Cross-request ordering + undo
           - Human Arabic natural-language matrix
@@ -226,6 +241,7 @@ jobs:
             "name": "superagent-v10-6",
             "main": "./SuperAgent_V10_6_CLOUDFLARE_READY.js",
             "compatibility_date": "2026-08-16",
+            "compatibility_flags": ["global_fetch_strictly_public"],
             "workers_dev": true,
             "vars": {
               "PUBLIC_BOT": "false"
