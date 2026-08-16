@@ -16,6 +16,11 @@ new=r'''function parseShiftTailV1041(raw){
   const unitH='(?:ساعه|ساعة|ساعات)';
   const unitM='(?:دقيقه|دقيقة|دقايق|دقائق)';
   const candidates=[
+    // Most specific numeric multi-hour forms MUST precede generic one-hour forms.
+    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*(\\d+)\\s*${unitM}$`,'u'),calc:m=>Number(m[1])*60+Number(m[2])},
+    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*نص$`,'u'),calc:m=>Number(m[1])*60+30},
+    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*ربع$`,'u'),calc:m=>Number(m[1])*60+15},
+    {re:new RegExp(`(\\d+)\\s*${unitH}$`,'u'),calc:m=>Number(m[1])*60},
     {re:new RegExp(`ساعتين\\s+و?\\s*نص$`,'u'),minutes:150},
     {re:new RegExp(`ساعتين\\s+و?\\s*ربع$`,'u'),minutes:135},
     {re:new RegExp(`ساعتين\\s+و?\\s*(\\d+)\\s*${unitM}$`,'u'),calc:m=>120+Number(m[1])},
@@ -23,10 +28,6 @@ new=r'''function parseShiftTailV1041(raw){
     {re:new RegExp(`${unitH}\\s+و?\\s*نص$`,'u'),minutes:90},
     {re:new RegExp(`${unitH}\\s+و?\\s*ربع$`,'u'),minutes:75},
     {re:new RegExp(`${unitH}\\s+و?\\s*(\\d+)\\s*${unitM}$`,'u'),calc:m=>60+Number(m[1])},
-    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*(\\d+)\\s*${unitM}$`,'u'),calc:m=>Number(m[1])*60+Number(m[2])},
-    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*نص$`,'u'),calc:m=>Number(m[1])*60+30},
-    {re:new RegExp(`(\\d+)\\s*${unitH}\\s+و?\\s*ربع$`,'u'),calc:m=>Number(m[1])*60+15},
-    {re:new RegExp(`(\\d+)\\s*${unitH}$`,'u'),calc:m=>Number(m[1])*60},
     {re:new RegExp(`نص\\s*${unitH}$`,'u'),minutes:30},
     {re:new RegExp(`ربع\\s*${unitH}$`,'u'),minutes:15},
     {re:new RegExp(`(\\d+)\\s*${unitM}$`,'u'),calc:m=>Number(m[1])},
@@ -57,6 +58,12 @@ async function tryDirectRelativeRescheduleV104(env,chatId,raw){
 }
 '''
 s=s[:start]+new+s[end:]
+
+# Allow Egyptian conjunction "و" to connect whole shopping commands without merging the command text into an item.
+old_marker=r'''marked=marked.replace(/\s+(?=(?:(?:فكرني|فكرنى|تفكرني|ذكرني|ذكرنى|نبهني|نبهنى|تنبهني|افتكرني|متنسانيش|ماتنسانيش)\s+|(?:انا\s+)?(?:عاوز|عايز|محتاج|لازم|حابب|نفسي|نفسى)\s+)(?:(?:اني\s+)?(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+|(?:عاوز|عايز|محتاج)\s+))/giu,' ␞ ');'''
+new_marker=r'''marked=marked.replace(/\s+و?(?=(?:(?:فكرني|فكرنى|تفكرني|ذكرني|ذكرنى|نبهني|نبهنى|تنبهني|افتكرني|متنسانيش|ماتنسانيش)\s+|(?:انا\s+)?(?:عاوز|عايز|محتاج|لازم|حابب|نفسي|نفسى)\s+)(?:(?:اني\s+)?(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+|(?:عاوز|عايز|محتاج)\s+))/giu,' ␞ ');'''
+if old_marker not in s: raise SystemExit('shopping multi-command marker missing')
+s=s.replace(old_marker,new_marker,1)
 
 # Timed purchase parser v2: tolerate Arabic/Western digits, hh or hh:mm, common AM/PM wording.
 tstart=s.find('async function tryDirectTimedPurchaseReminderV1034(env,chatId,raw){')
