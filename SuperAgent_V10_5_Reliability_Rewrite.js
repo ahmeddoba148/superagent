@@ -524,6 +524,26 @@ async function recordRuntimeFailure(env,{chatId=null,scope="runtime",error=null,
 async function persistWorldUpdatesSafely(env,chatId,intent){try{await persistWorldUpdatesFromIntent(env,chatId,intent);}catch(e){await recordRuntimeFailure(env,{chatId,scope:"world_model_noncritical",error:e,context:{action:intent?.action}});}}
 async function getRecentOperationReceipt(env,chatId,fingerprint){const cutoff=new Date(Date.now()-RELIABILITY_RECEIPT_TTL_MINUTES*60000).toISOString();return env.DB.prepare(`SELECT * FROM operation_receipts WHERE chat_id=? AND fingerprint=? AND state='committed' AND created_at>=? ORDER BY id DESC LIMIT 1`).bind(String(chatId),String(fingerprint),cutoff).first();}
 async function saveOperationReceipt(env,chatId,fingerprint,action,responseText){const now=new Date().toISOString();await env.DB.prepare(`INSERT INTO operation_receipts(chat_id,fingerprint,action,state,response_text,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`).bind(String(chatId),String(fingerprint),String(action),"committed",String(responseText||"").slice(0,12000),now,now).run();}
+async function createReceiptStateStillExistsV105(env,chatId,intent){
+  const items=Array.isArray(intent?.items)?intent.items:[];
+  const recurring=Array.isArray(intent?.recurring_items)?intent.recurring_items:[];
+  if(!items.length&&!recurring.length)return false;
+  for(const item of items){
+    const title=String(item?.title||'').trim();const date=String(item?.date||'').trim();const time=String(item?.time||'').trim();
+    if(!title||!date||!time)return false;
+    const row=await env.DB.prepare(`SELECT id FROM reminders WHERE chat_id=? AND title=? AND local_date=? AND local_time=? AND cancelled=0 LIMIT 1`).bind(String(chatId),title,date,time).first();
+    if(!row?.id)return false;
+  }
+  for(const rule of recurring){
+    const title=String(rule?.title||'').trim();if(!title)return false;
+    const row=await env.DB.prepare(`SELECT id FROM schedule_rules WHERE chat_id=? AND title=? AND active=1 LIMIT 1`).bind(String(chatId),title).first();
+    if(!row?.id)return false;
+  }
+  return true;
+}
+async function invalidateOperationReceiptV105(env,id){
+  if(!id)return;await env.DB.prepare(`UPDATE operation_receipts SET state='stale',updated_at=? WHERE id=?`).bind(new Date().toISOString(),Number(id)).run();
+}
 async function cleanupReliabilityData(env){try{const cutoff=new Date(Date.now()-RUNTIME_FAILURE_RETENTION_DAYS*86400000).toISOString();const receipts=new Date(Date.now()-86400000).toISOString();await env.DB.batch([env.DB.prepare(`DELETE FROM runtime_failures WHERE created_at<?`).bind(cutoff),env.DB.prepare(`DELETE FROM operation_receipts WHERE created_at<?`).bind(receipts)]);}catch(e){console.warn("Reliability cleanup failed",safeError(e));}}
 async function reliabilityHealth(env){const base={ok:true,version:V10_VERSION,now:cairoNow(),db:false,omniai_service:!!env.OMNIAI_SERVICE,life_os:true,reliability_lock:true,voice:!!((env.OMNIAI_SERVICE&&env.OMNIAI_API_KEY)||env.GROQ_API_KEY||env.VOICE_TRANSCRIBE_URL)};if(!env.DB)return json({...base,ok:false,error:"ربط قاعدة البيانات غير موجود"},503);try{await ensureSchemaOnce(env);const probe=await env.DB.prepare(`SELECT 1 AS ok`).first();const since=new Date(Date.now()-3600000).toISOString();const f=await env.DB.prepare(`SELECT COUNT(*) AS c FROM runtime_failures WHERE created_at>=?`).bind(since).first();return json({...base,db:Number(probe?.ok||0)===1,recent_failures_1h:Number(f?.c||0)});}catch(e){const incident=await recordRuntimeFailure(env,{scope:"health_db_probe",error:e});return json({...base,ok:false,error:"فشل فحص قاعدة البيانات",incident_id:incident},503);}}
 
@@ -981,7 +1001,12 @@ await persistWorldUpdatesSafely(env,chatId,intent);
 if(intent.action==="create"){
 const receiptFingerprint=reliabilityFingerprint(intent._base_text||JSON.stringify({action:intent.action,items:intent.items,recurring_items:intent.recurring_items,dependencies:intent.dependencies}));
 const priorReceipt=await getRecentOperationReceipt(env,chatId,receiptFingerprint);
-if(priorReceipt?.response_text){await sendText(env,chatId,String(priorReceipt.response_text),quickMenuKeyboard());return;}
+if(priorReceipt?.response_text){
+  if(await createReceiptStateStillExistsV105(env,chatId,intent)){
+    await sendText(env,chatId,String(priorReceipt.response_text),quickMenuKeyboard());return;
+  }
+  await invalidateOperationReceiptV105(env,priorReceipt.id);
+}
 if(!options.skipConflictCheck){
 const conflicts=await findCreateConflicts(env,chatId,intent);
 if(conflicts.length){
@@ -14283,7 +14308,8 @@ async function clearEverythingV105(env,chatId){
     env.DB.prepare(`DELETE FROM conversation_messages WHERE chat_id=?`).bind(chatId),
     env.DB.prepare(`DELETE FROM pending_dialogs WHERE chat_id=?`).bind(chatId),
     env.DB.prepare(`DELETE FROM pending_conflicts WHERE chat_id=?`).bind(chatId),
-    env.DB.prepare(`DELETE FROM pending_requests WHERE chat_id=?`).bind(chatId)
+    env.DB.prepare(`DELETE FROM pending_requests WHERE chat_id=?`).bind(chatId),
+    env.DB.prepare(`DELETE FROM operation_receipts WHERE chat_id=?`).bind(chatId)
   ]);
   return{...before,shopping:shop.count,entities:world.entities,edges:world.edges};
 }
@@ -14341,6 +14367,7 @@ async function tryDirectRecurringTimeUpdateV105(env,chatId,raw){
   if(hits.length>1){await sendText(env,chatId,`لقيت أكتر من تذكير متكرر مطابق لـ «${query}». اكتب الاسم بشكل أوضح.`);return true;}
   const row=hits[0],rule=parseJsonObject(row.rule_json);rule.times=[time];
   const oldStart=String(row.start_at||'');const newStart=oldStart?`${splitLocalDateTime(oldStart)[0]} ${time}`:oldStart;
+  if(newStart)rule.start_at=newStart;
   const before={...row};await env.DB.prepare(`UPDATE schedule_rules SET rule_json=?,start_at=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(rule),newStart,new Date().toISOString(),Number(row.id),chatId).run();
   await writeAudit(env,chatId,{action:'update',entityType:'schedule_rule',entityId:String(row.id),summary:`تعديل تكرار: ${row.title}`,before,undo:{type:'restore_schedule_rule',row:before}});
   await sendText(env,chatId,`✅ عدلت التكرار: ${row.title} — الساعة ${formatArabicTime(time)}.`);return true;
