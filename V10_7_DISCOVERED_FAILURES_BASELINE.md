@@ -2,13 +2,13 @@
 
 Source: cancelled V10.6 user mega live matrix, run 31964514526 / job 95207498223.
 
-The harness contains 259 cases. The user intentionally stopped the long run after 49 cases had executed live.
+The harness contains 272 cases. The user intentionally stopped the long run after 49 cases had executed live.
 
 Observed partial baseline:
 - Executed: 49
 - Passed: 10
 - Failed: 39
-- Unexecuted: 210 (no claim is made about them)
+- Unexecuted: 223 (no claim is made about them)
 
 Systemic failures observed in the executed slice:
 - Natural shopping requests were sometimes routed to reminder/schedule state.
