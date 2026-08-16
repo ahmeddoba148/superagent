@@ -1,0 +1,17 @@
+سوبر إيجنت V10.6 — Nightmare Verification
+Syntax + IntelliSense: PASS
+Manual production findings: PASS
+Ultra fuzz: 13,932 assertions PASS
+Boundary/dependency/concurrency: 15,336 assertions PASS
+Killer regression x30: PASS
+Data controls + Arabic UI: PASS
+Atomic shopping: PASS
+Dependency chain x20 + cycles x50: PASS
+Reliability failure injection x30: PASS
+Semantic + V9 stress: PASS
+Full V10 stress/E2E/migration/diagnostics: PASS
+Durable D1 Telegram inbox assertions: PASS
+Known failures in deterministic matrix: 0
+Exact bytes: 356150
+Exact SHA256: af734754bf75b01251b8d9f53f1618d35a314e5020142f914b73f573d9a875e9
+VERIFIED_FOR_LIVE_STAGING
