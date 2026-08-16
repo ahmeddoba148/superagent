@@ -3,6 +3,7 @@ on:
   push:
     branches: [superagent-v10-4-1-ultra-stress]
     paths:
+      - 'tools/build-v10-4-1.py'
       - 'tests/v10-4-1-ultra-direct-stress.mjs'
       - '.github/workflows/verify-v10-4-1-ultra-stress.yml'
   workflow_dispatch:
@@ -14,6 +15,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Build V10.4.1 hardened
+        run: |
+          python tools/build-v10-4-1.py
+          node --check SuperAgent_V10_4_1_Ultra_Hardened.js
+          cp SuperAgent_V10_4_1_Ultra_Hardened.js SuperAgent_V10_4_Zero_Known_Bugs.js
       - name: Fix stress harness dependency insert
         run: python -c "from pathlib import Path; p=Path('tests/v10-4-1-ultra-direct-stress.mjs'); s=p.read_text(); old=\"VALUES (?,'reminder',?,'reminder',?,?,?,?,1,?,?)\"; new=\"VALUES (?,'reminder',?,'reminder',?,?,?,1,?,?)\"; assert old in s, 'stress harness SQL anchor missing'; p.write_text(s.replace(old,new,1))"
       - name: Ultra deterministic stress
