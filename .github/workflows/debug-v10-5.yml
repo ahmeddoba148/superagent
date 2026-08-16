@@ -1,0 +1,16 @@
+name: Debug V10.5 Probe
+on:
+  push:
+    branches: [superagent-v10-5-reliability-rewrite]
+    paths:
+      - 'tests/v10-5-debug-probe.mjs'
+      - '.github/workflows/debug-v10-5.yml'
+  workflow_dispatch:
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python tools/build-v10-5.py
+          node tests/v10-5-debug-probe.mjs
