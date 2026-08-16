@@ -12,7 +12,14 @@ repls={
 'تشغيل Super Agent':'تشغيل سوبر إيجنت','🎛️ Super Agent V10 — Life OS':'🎛️ سوبر إيجنت — نظام الحياة',
 '📥 Inbox':'📥 صندوق الوارد','Inbox:':'صندوق الوارد:','الـInbox':'صندوق الوارد','للـInbox':'لصندوق الوارد',
 'World Model':'نموذج العالم','الـWorld Model':'نموذج العالم','كيانات في نموذج العالم':'كيانات نموذج العالم',
-'Super Agent فاكرها عنك':'سوبر إيجنت فاكرها عنك'
+'Super Agent فاكرها عنك':'سوبر إيجنت فاكرها عنك','🛒 افتح To‑Do':'🛒 افتح قائمة التسوق',
+'Undo failed':'فشل التراجع','Verifier رفض':'المتحقق رفض','Local datetime غير صالح':'التاريخ والوقت المحليان غير صالحين',
+'Telegram request failed':'فشل طلب تيليجرام','Telegram returned non-JSON':'أعاد تيليجرام استجابة غير صالحة',
+'مقدرتش أحمل الفويس من Telegram.':'مقدرتش أحمل الرسالة الصوتية من تيليجرام.',
+'محرك OmniAI لم ينجح في تفريغ الفويس. تأكد إن Groq/مزود Audio Transcription مفعّل داخل OmniAI.':'محرك الذكاء لم ينجح في تحويل الرسالة الصوتية إلى نص. تأكد إن مزود تحويل الصوت إلى نص مفعّل.',
+'V10.4 compound shopping rollback failed':'فشل التراجع عن عملية المشتريات المركبة',
+'V10.4 confirmed compound rollback failed':'فشل التراجع عن العملية المركبة المؤكدة',
+'world model noncritical':'نموذج العالم غير الحرج',
 }
 for a,b in repls.items(): s=s.replace(a,b)
 for a,b in {
@@ -28,6 +35,9 @@ function localizeUserFacingArabicV1043(value){
   const pairs=[
     [/\\bWorld Model\\b/gi,"نموذج العالم"],[/\\bLife OS\\b/gi,"نظام الحياة"],[/\\bInbox\\b/gi,"صندوق الوارد"],
     [/\\bSuper Agent\\b/gi,"سوبر إيجنت"],[/\\bData Controls\\b/gi,"إدارة البيانات"],[/\\bUltra Hardened\\b/gi,"شديد التحمل"],
+    [/\\bTo[-‑ ]?Do\\b/gi,"قائمة التسوق"],[/\\bTelegram\\b/gi,"تيليجرام"],[/\\bVerifier\\b/gi,"المتحقق"],
+    [/\\bUndo failed\\b/gi,"فشل التراجع"],[/\\bLocal datetime\\b/gi,"التاريخ والوقت المحليان"],
+    [/\\bOmniAI\\b/gi,"محرك الذكاء"],[/\\bGroq\\b/gi,"مزود الصوت"],[/Audio Transcription/gi,"تحويل الصوت إلى نص"],
     [/\\bpending\\b/gi,"قيد الانتظار"],[/\\bbought\\b/gi,"تم الشراء"],[/\\bunavailable\\b/gi,"غير متاح"],[/\\bskipped\\b/gi,"تم التخطي"],
     [/\\bwaiting\\b/gi,"بانتظار الرد"],[/\\bopen\\b/gi,"مفتوح"],[/\\bactive\\b/gi,"نشط"],[/\\bpaused\\b/gi,"متوقف مؤقتًا"],
     [/\\bsafe_auto\\b/gi,"تلقائي آمن"],[/\\bconfirmed\\b/gi,"مؤكد"],[/\\bcommitted\\b/gi,"تم التنفيذ"],
@@ -51,13 +61,11 @@ function localizeTelegramPayloadV1043(method,payload){
 m=re.search(r'async\s+function\s+telegramApi\s*\(([^)]*)\)\s*\{',s)
 if not m: raise SystemExit('telegramApi function not found')
 pos=m.start();s=s[:pos]+status_map+'\n'+s[pos:]
-# Re-find after insertion, discover actual argument names instead of assuming payload.
 m=re.search(r'(async\s+function\s+telegramApi\s*\(([^)]*)\)\s*\{)',s)
 params=[x.strip() for x in m.group(2).split(',')]
 if len(params)<3: raise SystemExit('telegramApi has fewer than 3 params')
 method_name=params[1].split('=')[0].strip(); payload_name=params[2].split('=')[0].strip()
-inject=m.group(1)+f'{payload_name}=localizeTelegramPayloadV1043({method_name},{payload_name});'
-s=s[:m.start()]+inject+s[m.end():]
+s=s[:m.start()]+m.group(1)+f'{payload_name}=localizeTelegramPayloadV1043({method_name},{payload_name});'+s[m.end():]
 
 arabic_rule='''\nقاعدة لغة إلزامية: كل رد مرئي للمستخدم يجب أن يكون بالعربية فقط وبأسلوب مصري طبيعي عند المناسب. لا تستخدم كلمات أو عناوين إنجليزية إذا كان لها مقابل عربي واضح. يُسمح فقط بالأسماء التي يكتبها المستخدم، الروابط، الأكواد، أو أوامر تيليجرام التقنية مثل /start.\n'''
 for marker in ['أنت Super Agent','أنت سوبر إيجنت','لهجة مصرية','مصري']:
@@ -68,7 +76,8 @@ for marker in ['أنت Super Agent','أنت سوبر إيجنت','لهجة مص�
 for a,b in {
 '🧠 World Model':'🧠 نموذج العالم','✅ امسح World Model':'✅ امسح نموذج العالم','📥 Inbox':'📥 صندوق الوارد',
 '📥 تمام، حطيتها في الـInbox.':'📥 تمام، حطيتها في صندوق الوارد.','إضافة للـInbox:':'إضافة لصندوق الوارد:',
-'🧠 عالمى وذاكرتي':'🧠 عالمي وذاكرتي','Super Agent':'سوبر إيجنت','Life OS':'نظام الحياة','Data Controls':'إدارة البيانات','Ultra Hardened':'شديد التحمل'
+'🧠 عالمى وذاكرتي':'🧠 عالمي وذاكرتي','Super Agent':'سوبر إيجنت','Life OS':'نظام الحياة','Data Controls':'إدارة البيانات','Ultra Hardened':'شديد التحمل',
+'الـنموذج العالم':'نموذج العالم','للـصندوق الوارد':'لصندوق الوارد','إضافة للـصندوق الوارد':'إضافة لصندوق الوارد'
 }.items(): s=s.replace(a,b)
 
 out.write_text(s,encoding='utf-8')
