@@ -1,0 +1,12 @@
+Super Agent V10.6 — Real Shopping Hotfix Certificate
+Exact reported multiline shopping screenshot: PASS
+Zero reminder creation for untimed shopping list: PASS
+Pronoun correction to shopping: PASS
+No-reminder correction: PASS
+Existing semantic/stress smoke: PASS
+Full real human-language/Telegram UI matrix: PASS
+Stale receipt/replay: PASS
+Real staging chaos: PASS
+Final health/runtime-failure gate: PASS
+SHA256: 053842993c39ec4f830a5ef9d70ef75b76a2d21980af73dfd759e9371e28d65b
+RESULT: READY_FOR_CLOUDFLARE_UPLOAD
