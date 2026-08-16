@@ -4,6 +4,7 @@ on:
     branches: [superagent-v10-4-1-ultra-stress]
     paths:
       - 'tools/build-v10-4-1.py'
+      - 'tools/patch-v10-4-1-projected-conflicts.py'
       - 'tests/v10-4-1-ultra-direct-stress.mjs'
       - '.github/workflows/verify-v10-4-1-ultra-stress.yml'
   workflow_dispatch:
@@ -18,6 +19,7 @@ jobs:
       - name: Build V10.4.1 hardened
         run: |
           python tools/build-v10-4-1.py
+          python tools/patch-v10-4-1-projected-conflicts.py
           node --check SuperAgent_V10_4_1_Ultra_Hardened.js
           cp SuperAgent_V10_4_1_Ultra_Hardened.js SuperAgent_V10_4_Zero_Known_Bugs.js
       - name: Fix stress harness dependency insert
