@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/v10-7-semantic-live-cert.yml'
       - 'tools/build-v10-7.py'
+      - 'tools/finalize-v10-7.py'
+      - 'tools/optimize-v10-7-live-test.py'
       - 'tests/v10-7-static.mjs'
       - 'tests/v10-7-discovered-live.mjs'
       - 'wrangler.v10-7-staging.template.jsonc'
@@ -50,6 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           python tools/build-v10-7.py
+          python tools/finalize-v10-7.py
           node --check SuperAgent_V10_7_Universal_Agent.js
           node tests/v10-7-static.mjs SuperAgent_V10_7_Universal_Agent.js
           node tests/v10-2-semantic-ci.mjs SuperAgent_V10_7_Universal_Agent.js
@@ -103,7 +106,10 @@ jobs:
           npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v107.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
 
       - name: Run discovered failures plus free-form semantic variants LIVE
-        run: node tests/v10-7-discovered-live.mjs
+        run: |
+          set -euo pipefail
+          python tools/optimize-v10-7-live-test.py
+          node tests/v10-7-discovered-live.mjs
 
       - name: Upload live evidence
         if: always()
