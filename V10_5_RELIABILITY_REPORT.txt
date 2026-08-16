@@ -1,5 +1,6 @@
 سوبر إيجنت V10.5 — Reliability Rewrite
 Manual discovered bugs regression 34/34: PASS
+Human exploratory findings regression 5/5: PASS
 Arabic UI: PASS
 Ultra deterministic fuzz 4644/4644: PASS
 Boundary/dependency/concurrency 5112/5112: PASS
@@ -12,6 +13,6 @@ Semantic + V9.2 stress: PASS
 V10 stress/E2E/migration/diagnostics: PASS
 Syntax + IntelliSense: PASS
 Known failures in verification matrix: 0
-Exact bytes: 347669
-Exact SHA256: d70da100c4e80e966afe2fb359af56ed21b7fde52c0ad7bf75f5b60376316e4d
+Exact bytes: 348410
+Exact SHA256: 74561e8803ffc1e3904c852dd23490e7f33ac36da7dd89d8e83696bb54bd6612
 VERIFIED

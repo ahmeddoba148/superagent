@@ -13959,11 +13959,17 @@ async function getDefaultShoppingList(env,chatId,create=true){
   return row||null;
 }
 
+function canonicalShoppingKeyV105(value){
+  let n=normalizeArabicLoose(String(value||"")).trim();
+  if(/^ال[ء-ي]/u.test(n))n=n.slice(2);
+  return n;
+}
+
 async function addShoppingItems(env,chatId,titles){
   const list=await getDefaultShoppingList(env,chatId,true);const now=new Date().toISOString();const ids=[];const added=[];const existingPending=[];
   const posRow=await env.DB.prepare(`SELECT COALESCE(MAX(position),0) m FROM smart_list_items WHERE list_id=? AND chat_id=?`).bind(Number(list.id),chatId).first();let pos=Number(posRow?.m||0);
   for(const title0 of titles.slice(0,30)){
-    const title=String(title0||"").trim().slice(0,180);const n=normalizeArabicLoose(title);if(!n)continue;
+    const title=String(title0||"").trim().slice(0,180);const n=canonicalShoppingKeyV105(title);if(!n)continue;
     const exists=await env.DB.prepare(`SELECT id,status FROM smart_list_items WHERE list_id=? AND chat_id=? AND normalized_title=? AND status IN ('pending','bought','unavailable','skipped') ORDER BY id DESC LIMIT 1`).bind(Number(list.id),chatId,n).first();
     if(exists&&exists.status==='pending'){existingPending.push(title);continue;}
     if(exists&&exists.status!=='pending'){await env.DB.prepare(`UPDATE smart_list_items SET status='pending',updated_at=? WHERE id=?`).bind(now,Number(exists.id)).run();ids.push(Number(exists.id));added.push(title);continue;}
@@ -14150,7 +14156,9 @@ async function tryDirectTimedPurchaseReminderV1034(env,chatId,raw){
   const taskMatch=original.match(/(?:اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+(.+)$/iu);if(!taskMatch)return false;
   const taskTail=String(taskMatch[1]||"").trim();if(!taskTail)return false;
   const verbMatch=original.match(/(اشتريلي|اشتريلنا|اشتري|اشترى|أشتري|أشترى|اجيب|أجيب|جيبلي|جيب|هاتلي|هات)\s+(.+)$/iu);
-  const title=verbMatch?`${verbMatch[1]} ${String(verbMatch[2]||"").trim()}`:`أجيب ${taskTail}`;
+  let cleanTaskTail=String(verbMatch?.[2]||taskTail||"").trim();
+  cleanTaskTail=cleanTaskTail.replace(/^(?:(?:النهارده|النهاردة|اليوم|بكره|بكرة|غدا|بعد\s+بكره|بعد\s+بكرة)\s+)?(?:(?:الساعة|الساعه)\s*)?(?:1[0-2]|[1-9])(?:\s*[:٫.]\s*[0-5]?\d|\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(?:صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)?\s*/iu,"").trim();
+  const title=verbMatch?`${verbMatch[1]} ${cleanTaskTail||taskTail}`:`أجيب ${cleanTaskTail||taskTail}`;
   const intent={action:"create",needs_clarification:false,question:"",reply:"",needs_live_data:false,items:[{title,kind:"reminder",date,time:hhmm,timezone:TIME_ZONE,duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[],world_updates:[],_base_text:original};
   await executeIntent(env,chatId,intent);
   return true;
