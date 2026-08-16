@@ -68,8 +68,8 @@ queue_anchor='''const V105_CHAT_QUEUES=new Map();'''
 queue_helpers='''const V106_INBOX_LEASE_MS=90000;
 const V106_INBOX_MAX_ATTEMPTS=5;
 const V106_INBOX_BATCH_SIZE=4;
-const V106_LEASE_RETRY_COUNT=12;
-const V106_LEASE_RETRY_DELAY_MS=180;
+const V106_LEASE_RETRY_COUNT=64;
+const V106_LEASE_RETRY_DELAY_MS=350;
 const V106_INTER_UPDATE_DELAY_MS=90;
 const sleepV106=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function newQueueOwnerV106(){return `Q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
@@ -168,7 +168,7 @@ needle='''  add("incident id format",/^SA-[A-Z0-9]+-[A-Z0-9]{5}$/.test(newIncide
 extra=needle+'''\n  add("v106 durable inbox lease",V106_INBOX_LEASE_MS>=TOTAL_AI_BUDGET_MS*2,String(V106_INBOX_LEASE_MS));
   add("v106 inbox retry budget",V106_INBOX_MAX_ATTEMPTS>=3,String(V106_INBOX_MAX_ATTEMPTS));
   add("v106 subrequest batch budget",V106_INBOX_BATCH_SIZE<=4,String(V106_INBOX_BATCH_SIZE));
-  add("v106 lease retry budget",V106_LEASE_RETRY_COUNT<=16,String(V106_LEASE_RETRY_COUNT));'''
+  add("v106 lease retry window",V106_LEASE_RETRY_COUNT>=32&&V106_LEASE_RETRY_COUNT*(V106_LEASE_RETRY_DELAY_MS+50)<=26000,`${V106_LEASE_RETRY_COUNT}x${V106_LEASE_RETRY_DELAY_MS}`);'''
 rep(needle,extra,'V10.6 selftests')
 
 out.write_text(s,encoding='utf-8')
