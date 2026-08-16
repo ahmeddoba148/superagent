@@ -7,6 +7,7 @@ on:
       - 'tools/scan-v10-4-3-latin.py'
       - 'tools/verify-v10-4-3-arabic.py'
       - 'tests/v10-4-3-arabic-ui-e2e.mjs'
+      - 'tests/v10-4-2-data-controls-e2e.mjs'
       - '.github/workflows/verify-v10-4-3-full-arabic.yml'
   workflow_dispatch:
 permissions:
