@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "superagent-v106-staging",
+  "main": "./SuperAgent_V10_6_Zero_Known_Failures.js",
+  "compatibility_date": "2026-08-16",
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    "PUBLIC_BOT": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "superagent-v106-staging",
+      "database_id": "__D1_DATABASE_ID__"
+    }
+  ],
+  "services": [
+    {
+      "binding": "OMNIAI_SERVICE",
+      "service": "omniai-engine"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}
