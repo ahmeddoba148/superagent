@@ -1,0 +1,94 @@
+name: Verify SuperAgent V10.4.2 Data Controls
+on:
+  push:
+    branches: [superagent-v10-4-2-data-controls]
+    paths:
+      - 'tools/build-v10-4-2.py'
+      - 'tests/v10-4-2-data-controls-e2e.mjs'
+      - '.github/workflows/verify-v10-4-2.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.4.2
+        run: |
+          python tools/build-v10-4-2.py
+          node --check SuperAgent_V10_4_2_Data_Controls.js
+          node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_4_2_Data_Controls.js
+      - name: New data controls E2E
+        run: node tests/v10-4-2-data-controls-e2e.mjs
+      - name: Arabic holiday labels static gate
+        run: |
+          grep -q 'المولد النبوي الشريف ﷺ' SuperAgent_V10_4_2_Data_Controls.js
+          grep -q 'عيد الفطر المبارك' SuperAgent_V10_4_2_Data_Controls.js
+          grep -q 'عيد الأضحى المبارك' SuperAgent_V10_4_2_Data_Controls.js
+      - name: V10.4 killer regression
+        run: |
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_4_Zero_Known_Bugs.js
+          node tests/v10-4-killer-regression.mjs
+      - name: V10.3.4 atomic natural regression
+        run: |
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_4_Atomic_Direct.js
+          node tests/v10-3-4-atomic-direct-e2e.mjs
+          node tests/v10-3-4-natural-shopping-v2.mjs
+      - name: V10.3.3 chain and cycles
+        run: |
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_3_Chain_Final.js
+          node tests/v10-3-3-chain-e2e.mjs
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_2_Dependency_Canonical.js
+          node tests/v10-3-2-cycle-regression.mjs
+      - name: Reliability semantic and V9 stress
+        run: |
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-reliability.mjs
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js
+          node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V10 stress E2E migration diagnostics
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs
+          node tests/v10-final-e2e.mjs
+          node tests/v10-final-migration.mjs
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+          cp SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-1-diagnostics.mjs
+      - name: Write report
+        run: |
+          BYTES=$(wc -c < SuperAgent_V10_4_2_Data_Controls.js)
+          SHA=$(sha256sum SuperAgent_V10_4_2_Data_Controls.js | cut -d' ' -f1)
+          cat > V10_4_2_FINAL_REPORT.txt <<REPORT
+          Super Agent V10.4.2 Data Controls
+          World Model clear button + confirmation: PASS
+          Natural world/person/relationship clear: PASS
+          Shopping clear button + confirmation: PASS
+          Multi-user isolation for destructive controls: PASS
+          Arabic Prophet Muhammad Birthday label: PASS
+          Arabic Eid labels: PASS
+          Syntax + IntelliSense: PASS
+          V10.4 killer regression: PASS
+          V10.3.4 atomic/natural regression: PASS
+          V10.3.3 chain regression: PASS
+          Cycle canonicalization: PASS
+          Reliability + semantic: PASS
+          V9.2 stress: PASS
+          V10 stress/E2E/migration: PASS
+          Diagnostics: PASS
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
+          VERIFIED
+          REPORT
+      - name: Commit verified source and report
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -- SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js || true
+          git add SuperAgent_V10_4_2_Data_Controls.js V10_4_2_FINAL_REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Verify Super Agent V10.4.2 data controls'
+          git push
