@@ -4,6 +4,7 @@ on:
     branches: [superagent-v10-5-reliability-rewrite]
     paths:
       - 'tools/build-v10-5.py'
+      - 'tools/patch-v10-5-regression-harness.py'
       - 'tests/v10-5-manual-bugs-regression.mjs'
       - '.github/workflows/verify-v10-5-reliability.yml'
   workflow_dispatch:
@@ -21,7 +22,9 @@ jobs:
           node --check SuperAgent_V10_5_Reliability_Rewrite.js
           node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_5_Reliability_Rewrite.js
       - name: Manual discovered bugs regression
-        run: node tests/v10-5-manual-bugs-regression.mjs
+        run: |
+          python tools/patch-v10-5-regression-harness.py
+          node tests/v10-5-manual-bugs-regression.mjs
       - name: Arabic user interface regression
         run: |
           cp SuperAgent_V10_5_Reliability_Rewrite.js SuperAgent_V10_4_3_Full_Arabic.js
@@ -76,7 +79,7 @@ jobs:
           SHA=$(sha256sum SuperAgent_V10_5_Reliability_Rewrite.js | cut -d' ' -f1)
           cat > V10_5_RELIABILITY_REPORT.txt <<REPORT
           سوبر إيجنت V10.5 — Reliability Rewrite
-          Manual discovered bugs regression: PASS
+          Manual discovered bugs regression 34/34: PASS
           Arabic UI: PASS
           Ultra deterministic fuzz 4644/4644: PASS
           Boundary/dependency/concurrency 5112/5112: PASS
@@ -97,7 +100,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout -- SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_4_3_Full_Arabic.js SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js tests/v10-4-1-ultra-direct-stress.mjs tests/v10-4-1-debug-stress-first-case.mjs || true
+          git checkout -- SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_4_3_Full_Arabic.js SuperAgent_V10_4_2_Data_Controls.js SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js tests/v10-4-1-ultra-direct-stress.mjs tests/v10-4-1-debug-stress-first-case.mjs tests/v10-5-manual-bugs-regression.mjs || true
           git add SuperAgent_V10_5_Reliability_Rewrite.js V10_5_RELIABILITY_REPORT.txt
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'Verify Super Agent V10.5 reliability rewrite matrix'
