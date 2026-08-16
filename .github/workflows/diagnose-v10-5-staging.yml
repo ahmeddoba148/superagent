@@ -1,0 +1,38 @@
+name: Diagnose V10.5 Staging
+
+on:
+  push:
+    branches:
+      - superagent-v10-5-reliability-rewrite
+    paths:
+      - '.github/workflows/diagnose-v10-5-staging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --no-save wrangler@latest
+      - name: Build config
+        run: |
+          LIST="$(npx wrangler d1 list --json)"
+          ID="$(node -e 'const x=JSON.parse(process.argv[1]);const r=x.find(v=>v.name==="superagent-v105-staging");process.stdout.write(r?.uuid||r?.id||"")' "$LIST")"
+          node -e 'const fs=require("fs");let s=fs.readFileSync("wrangler.staging.template.jsonc","utf8");fs.writeFileSync("wrangler.staging.jsonc",s.replace("__D1_DATABASE_ID__",process.argv[1]))' "$ID"
+      - name: Inspect latest live state
+        run: |
+          set -euo pipefail
+          q(){ echo; echo "### $1"; npx wrangler d1 execute superagent-v105-staging --remote --config wrangler.staging.jsonc --command "$2"; }
+          q updates "SELECT update_id,chat_id,update_type,status,started_at,finished_at,error FROM telegram_updates WHERE chat_id='$CHAT' ORDER BY started_at DESC LIMIT 12"
+          q failures "SELECT id,scope,error_text,created_at FROM runtime_failures ORDER BY id DESC LIMIT 12"
+          q messages "SELECT role,substr(content,1,300) content,created_at FROM conversation_messages WHERE chat_id='$CHAT' ORDER BY id DESC LIMIT 12"
+          q reminders "SELECT id,title,local_date,local_time,duration_minutes,cancelled,created_at FROM reminders WHERE chat_id='$CHAT' ORDER BY id DESC LIMIT 12"
+          q rates "SELECT chat_id,window_start,request_count FROM user_rate_limits WHERE chat_id='$CHAT'"
+          q modelstats "SELECT * FROM model_stats ORDER BY updated_at DESC LIMIT 12"
