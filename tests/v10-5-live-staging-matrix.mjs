@@ -133,13 +133,13 @@ const dupRowsFinal=reminders().filter(x=>String(x.title).includes('أراجع ا
 check('live Telegram update idempotency',dupRowsFinal.length===1,JSON.stringify(dupRowsFinal));
 
 // 6) Same-chat rapid update then natural undo, without waiting between webhook requests.
-await say('يوم 21 نوفمبر 2026 الساعة 6 مساء عندي اجتماع اسمه سريع 717 ومدته ساعة',{wait:1200});
+await say('يوم 21 نوفمبر 2026 الساعة 6 مساء عندي اجتماع اسمه سريع 717 ومدته ساعة',{wait:0});
+await poll(()=>{const x=reminders().find(v=>String(v.title).includes('سريع 717'));return x?.local_time==='18:00'?x:null;},{tries:45,delay:700,label:'rapid appointment create precondition'});
 await Promise.all([
   say('أجل اجتماع سريع 717 ساعة',{wait:0}),
   (async()=>{await sleep(35);return say('رجع آخر تعديل',{wait:0})})()
 ]);
-await sleep(1700);
-const rapid=reminders().find(x=>String(x.title).includes('سريع 717'));
+const rapid=await poll(()=>{const x=reminders().find(v=>String(v.title).includes('سريع 717'));return x?.local_time==='18:00'?x:null;},{tries:45,delay:700,label:'rapid shift+undo settled state'});
 check('live rapid shift+undo final state',rapid?.local_time==='18:00',JSON.stringify(rapid));
 
 // 7) No stale conflict-confirm is allowed to resurrect anything.
