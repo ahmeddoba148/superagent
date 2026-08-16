@@ -19,7 +19,6 @@ repls={
 'محرك OmniAI لم ينجح في تفريغ الفويس. تأكد إن Groq/مزود Audio Transcription مفعّل داخل OmniAI.':'محرك الذكاء لم ينجح في تحويل الرسالة الصوتية إلى نص. تأكد إن مزود تحويل الصوت إلى نص مفعّل.',
 'V10.4 compound shopping rollback failed':'فشل التراجع عن عملية المشتريات المركبة',
 'V10.4 confirmed compound rollback failed':'فشل التراجع عن العملية المركبة المؤكدة',
-'world model noncritical':'نموذج العالم غير الحرج',
 }
 for a,b in repls.items(): s=s.replace(a,b)
 for a,b in {
@@ -38,6 +37,7 @@ function localizeUserFacingArabicV1043(value){
     [/\\bTo[-‑ ]?Do\\b/gi,"قائمة التسوق"],[/\\bTelegram\\b/gi,"تيليجرام"],[/\\bVerifier\\b/gi,"المتحقق"],
     [/\\bUndo failed\\b/gi,"فشل التراجع"],[/\\bLocal datetime\\b/gi,"التاريخ والوقت المحليان"],
     [/\\bOmniAI\\b/gi,"محرك الذكاء"],[/\\bGroq\\b/gi,"مزود الصوت"],[/Audio Transcription/gi,"تحويل الصوت إلى نص"],
+    [/Africa\\/Cairo/gi,"توقيت القاهرة"],[/\\bCairo\\b/gi,"القاهرة"],[/\\bEgypt\\b/gi,"مصر"],[/\\(EG\\)/g,"(مصر)"],
     [/\\bpending\\b/gi,"قيد الانتظار"],[/\\bbought\\b/gi,"تم الشراء"],[/\\bunavailable\\b/gi,"غير متاح"],[/\\bskipped\\b/gi,"تم التخطي"],
     [/\\bwaiting\\b/gi,"بانتظار الرد"],[/\\bopen\\b/gi,"مفتوح"],[/\\bactive\\b/gi,"نشط"],[/\\bpaused\\b/gi,"متوقف مؤقتًا"],
     [/\\bsafe_auto\\b/gi,"تلقائي آمن"],[/\\bconfirmed\\b/gi,"مؤكد"],[/\\bcommitted\\b/gi,"تم التنفيذ"],
