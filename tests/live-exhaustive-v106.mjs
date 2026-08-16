@@ -155,3 +155,4 @@ console.log('\n=== EXHAUSTIVE LIVE CERTIFICATION PASS ===');
 console.log(JSON.stringify({ok:true,checks:report.length,burstUpdates:waveIds.length,replayFanout:18,cronRecovery:true,realReminderDelivery:true,generalChatAI:true,startedAt,finishedAt:new Date().toISOString()},null,2));
 
 // certification-trigger: callback-ledger-sync-v1
+// certification-trigger: callback-ledger-sync-v2
