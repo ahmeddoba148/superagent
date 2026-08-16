@@ -8,6 +8,8 @@ on:
       - 'tools/build-v10-6.py'
       - 'wrangler.v10-6-staging.template.jsonc'
       - 'tests/v10-6-live-pressure.mjs'
+      - 'tests/v10-5-live-staging-matrix.mjs'
+      - 'tests/v10-5-live-stale-receipt.mjs'
       - 'tests/live-exhaustive-v106.mjs'
   workflow_dispatch:
 
