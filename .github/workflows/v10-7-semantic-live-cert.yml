@@ -1,0 +1,170 @@
+name: V10.7 Semantic Universal Live Certification
+
+on:
+  push:
+    branches: [superagent-v10-7-universal-agent]
+    paths:
+      - '.github/workflows/v10-7-semantic-live-cert.yml'
+      - 'tools/build-v10-7.py'
+      - 'tests/v10-7-static.mjs'
+      - 'tests/v10-7-discovered-live.mjs'
+      - 'wrangler.v10-7-staging.template.jsonc'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v10-7-semantic-universal-live
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v107-staging.ahmeddoba91.workers.dev
+      STAGING_DB: superagent-v106-staging
+      STAGING_CONFIG: wrangler.v107.staging.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate secrets
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$STAGING_TELEGRAM_BOT_TOKEN"
+          test -n "$STAGING_OMNIAI_API_KEY"
+          test -n "$STAGING_ADMIN_CHAT_ID"
+
+      - name: Build V10.7 semantic-first agent
+        run: |
+          set -euo pipefail
+          python tools/build-v10-7.py
+          node --check SuperAgent_V10_7_Universal_Agent.js
+          node tests/v10-7-static.mjs SuperAgent_V10_7_Universal_Agent.js
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_7_Universal_Agent.js
+          node tests/stress-v9-2.cjs SuperAgent_V10_7_Universal_Agent.js
+
+      - name: Prepare V10.7 staging config
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const s=fs.readFileSync('wrangler.v10-7-staging.template.jsonc','utf8').replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697');
+          fs.writeFileSync('wrangler.v107.staging.jsonc',s);
+          NODE
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Deploy isolated V10.7 staging Worker
+        run: npx wrangler deploy --config wrangler.v107.staging.jsonc
+
+      - name: Generate and rotate staging secrets
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v107.staging.jsonc
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v107.staging.jsonc
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v107.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v107.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v107.staging.jsonc
+          sleep 7
+
+      - name: Initialize V10.7 real Telegram webhook
+        run: |
+          set -euo pipefail
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          ok=0
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/setup107.json -w '%{http_code}' "$STAGING_URL/setup?key=$KEY&force=1" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/setup107.json");if(!x.ok)process.exit(1)' 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          cat /tmp/setup107.json || true
+          test "$ok" -eq 1
+
+      - name: Reset V10.7 staging failures and queues
+        run: |
+          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v107.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
+
+      - name: Run discovered failures plus free-form semantic variants LIVE
+        run: node tests/v10-7-discovered-live.mjs
+
+      - name: Upload live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V10.7-Semantic-Live-Evidence
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            artifacts/V10_7_DISCOVERED_LIVE_REPORT.json
+            artifacts/V10_7_DISCOVERED_LIVE_SUMMARY.json
+
+      - name: Final health and integrity
+        if: always()
+        run: |
+          set -euo pipefail
+          curl -fsS "$STAGING_URL/health" | tee /tmp/v107-health.json
+          node -e 'const x=require("/tmp/v107-health.json");if(!x.ok||!x.db||!x.omniai_service||x.version!=="10.7")process.exit(1)'
+          PENDING="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v107.staging.jsonc --command "SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status IN ('pending','processing')" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          echo "pending=$PENDING"
+          test "$PENDING" = 0
+
+      - name: Build Cloudflare-ready V10.7 package
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f SuperAgent_V10_7_Universal_Agent.js
+          node --check SuperAgent_V10_7_Universal_Agent.js
+          SHA="$(sha256sum SuperAgent_V10_7_Universal_Agent.js | cut -d' ' -f1)"
+          LIVE_RESULT="NOT_COMPLETED"
+          if [ -f artifacts/V10_7_DISCOVERED_LIVE_SUMMARY.json ]; then LIVE_RESULT="$(cat artifacts/V10_7_DISCOVERED_LIVE_SUMMARY.json)"; fi
+          cat > V10_7_CERTIFICATE.txt <<EOF
+          Super Agent V10.7 — Semantic Universal Agent
+          Architecture: semantic-first natural language planning; deterministic routes are fallback
+          Shopping: structured transactional operations + rollback + D1 metadata + context resolution
+          Safety: ambiguous references require clarification; queries are no-write; no fake success before verified mutation
+          Cloudflare editor RegExp/string tuple annotation: FIXED
+          Live targeted result: $LIVE_RESULT
+          SHA256: $SHA
+          EOF
+
+      - name: Upload Cloudflare-ready V10.7
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V10.7-Universal-Agent
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            SuperAgent_V10_7_Universal_Agent.js
+            V10_7_CERTIFICATE.txt
+            wrangler.v10-7-staging.template.jsonc
+
+      - name: Commit generated V10.7 candidate only on full live pass
+        if: success()
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V10_7_Universal_Agent.js V10_7_CERTIFICATE.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Certify V10.7 semantic universal agent'
+          git pull --rebase origin superagent-v10-7-universal-agent
+          git push origin HEAD:superagent-v10-7-universal-agent
