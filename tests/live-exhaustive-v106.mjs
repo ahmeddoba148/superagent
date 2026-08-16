@@ -127,15 +127,19 @@ d1(`INSERT OR REPLACE INTO telegram_inbox_v106(update_id,chat_id,payload_json,st
 await waitFor(()=>inboxStatus(cronRecoverId)?.status==='done','cron-only inbox recovery',220,500);
 assert('cron recovery effect exactly once',itemExists(cronTitle).length===1,JSON.stringify(itemExists(cronTitle)));
 
-// H) Actual scheduled reminder delivery through Telegram. Insert an already-due staging reminder and let the real cron deliver it.
+// H) Actual scheduled reminder delivery through Telegram. One-time main reminders use reminders.sent as their delivery claim/state.
+// reminder_fires is intentionally reserved for advance-alert dedupe, so an empty advance-alert list should not create a reminder_fires row.
 const due=cairoParts(new Date(Date.now()-60000));
 const marker=`اختبار-تسليم-فعلي-106-${String(Date.now()).slice(-6)}`;
 d1(`INSERT INTO reminders(chat_id,title,kind,local_date,local_time,sent,cancelled,created_at,duration_minutes,advance_alerts_json,timezone) VALUES ('${C}','${q(marker)}','reminder','${due.date}','${due.time}',0,0,'${new Date().toISOString()}',0,'[]','Africa/Cairo')`);
 const reminderRow=d1(`SELECT id,title,sent FROM reminders WHERE chat_id='${C}' AND title='${q(marker)}' ORDER BY id DESC LIMIT 1`)[0];
 assert('due reminder seeded',!!reminderRow?.id,JSON.stringify(reminderRow));
-await waitFor(()=>{const x=d1(`SELECT sent FROM reminders WHERE id=${Number(reminderRow.id)} LIMIT 1`)[0];return Number(x?.sent)===1?x:null},'real cron reminder delivery',220,500);
-const fireCount=Number(d1(`SELECT COUNT(*) c FROM reminder_fires WHERE reminder_id=${Number(reminderRow.id)}`)[0]?.c||0);
-assert('reminder delivery receipt written',fireCount>=1,`fires=${fireCount}`);
+await waitFor(()=>{const x=d1(`SELECT sent,cancelled FROM reminders WHERE id=${Number(reminderRow.id)} LIMIT 1`)[0];return Number(x?.sent)===1?x:null},'real cron reminder delivery',220,500);
+await sleep(5000);
+const deliveryFinal=d1(`SELECT sent,cancelled FROM reminders WHERE id=${Number(reminderRow.id)} LIMIT 1`)[0];
+assert('real cron reminder delivery remains committed',Number(deliveryFinal?.sent)===1&&Number(deliveryFinal?.cancelled)===0,JSON.stringify(deliveryFinal));
+const preFireCount=Number(d1(`SELECT COUNT(*) c FROM reminder_fires WHERE reminder_id=${Number(reminderRow.id)} AND fire_key LIKE 'pre:%'`)[0]?.c||0);
+assert('no phantom advance-alert fire for empty alert list',preFireCount===0,`pre_fires=${preFireCount}`);
 
 // I) Queue/ledger integrity: no admin staging work may remain stranded or failed.
 await waitFor(()=>Number(d1(`SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='${C}' AND status IN ('pending','processing')`)[0]?.c||0)===0,'queue fully drained',160,500);
@@ -156,3 +160,4 @@ console.log(JSON.stringify({ok:true,checks:report.length,burstUpdates:waveIds.le
 
 // certification-trigger: callback-ledger-sync-v1
 // certification-trigger: callback-ledger-sync-v2
+// certification-trigger: one-time-delivery-contract-v1
