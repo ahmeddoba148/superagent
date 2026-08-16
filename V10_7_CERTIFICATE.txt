@@ -1,0 +1,9 @@
+Super Agent V10.7 — Semantic Universal Agent
+Build/static/legacy smoke: PASS
+Focused real Telegram semantic live gate: PASS
+Semantic-first natural-language planning: ENABLED
+Shopping first-class action + transactional rollback: ENABLED
+Context quantity/delete/ambiguity checks: PASS
+Shopping-vs-timed-reminder distinction: PASS
+Cloudflare RegExp/string tuple IntelliSense fix: PASS
+SHA256: 27cb711ef88b58d14ae93ed546c38d46296ca41fa5487070b38ba34dddd38d18
