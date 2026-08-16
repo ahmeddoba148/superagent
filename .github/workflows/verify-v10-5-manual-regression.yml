@@ -1,0 +1,21 @@
+name: Verify V10.5 Manual Regression
+on:
+  push:
+    branches: [superagent-v10-5-reliability-rewrite]
+    paths:
+      - 'tools/build-v10-5.py'
+      - 'tools/patch-v10-5-regression-harness.py'
+      - 'tests/v10-5-manual-bugs-regression.mjs'
+      - '.github/workflows/verify-v10-5-manual-regression.yml'
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python tools/build-v10-5.py
+          python tools/patch-v10-5-regression-harness.py
+          node --check SuperAgent_V10_5_Reliability_Rewrite.js
+          node tests/v10-5-manual-bugs-regression.mjs
