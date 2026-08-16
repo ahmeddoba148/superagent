@@ -6,7 +6,8 @@
   "workers_dev": true,
   "preview_urls": true,
   "vars": {
-    "PUBLIC_BOT": "false"
+    "PUBLIC_BOT": "false",
+    "V106_STAGING_BUILD": "subrequest-fix-1"
   },
   "d1_databases": [
     {
