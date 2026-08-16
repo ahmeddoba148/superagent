@@ -7,6 +7,7 @@ on:
       - 'tools/build-v10-6.py'
       - '.github/workflows/verify-v10-6-nightmare.yml'
       - 'tests/v10-6-*.mjs'
+      - 'tests/v10-3-2-cycle-regression.mjs'
   workflow_dispatch:
 
 permissions:
@@ -44,16 +45,13 @@ jobs:
           python tools/patch-v10-4-1-stress-ready-users.py
 
       - name: Ultra deterministic fuzz 4644 x3
-        run: |
-          for i in 1 2 3; do node tests/v10-4-1-ultra-direct-stress.mjs; done
+        run: for i in 1 2 3; do node tests/v10-4-1-ultra-direct-stress.mjs; done
 
       - name: Boundary dependency concurrency 5112 x3
-        run: |
-          for i in 1 2 3; do node tests/v10-4-1-boundary-concurrency.mjs; done
+        run: for i in 1 2 3; do node tests/v10-4-1-boundary-concurrency.mjs; done
 
       - name: Killer regression x30
-        run: |
-          for i in $(seq 1 30); do node tests/v10-4-killer-regression.mjs; done
+        run: for i in $(seq 1 30); do node tests/v10-4-killer-regression.mjs; done
 
       - name: Data controls and Arabic UI
         run: |
