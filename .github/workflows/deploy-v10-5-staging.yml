@@ -8,6 +8,7 @@ on:
       - '.github/workflows/deploy-v10-5-staging.yml'
       - 'wrangler.staging.template.jsonc'
       - 'SuperAgent_V10_5_Reliability_Rewrite.js'
+      - 'tests/v10-5-live-staging-matrix.mjs'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -132,8 +133,15 @@ jobs:
           curl -fsS "$URL/selftest?key=$KEY" | tee /tmp/selftest.json
           node -e 'const fs=require("fs"); for (const f of ["/tmp/root.json","/tmp/health.json","/tmp/selftest.json"]) { const x=JSON.parse(fs.readFileSync(f,"utf8")); if(!x.ok) throw new Error(f+" failed: "+JSON.stringify(x)); }'
 
+      - name: Real human-style behavior matrix
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: node tests/v10-5-live-staging-matrix.mjs
+
       - name: Publish staging URL
+        if: always()
         run: |
           echo "## V10.5 Staging" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Real human-style live matrix runs against Worker + D1 + OmniAI + Telegram API." >> "$GITHUB_STEP_SUMMARY"
           echo "Access is restricted to STAGING_ADMIN_CHAT_ID." >> "$GITHUB_STEP_SUMMARY"
