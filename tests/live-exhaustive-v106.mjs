@@ -161,3 +161,4 @@ console.log(JSON.stringify({ok:true,checks:report.length,burstUpdates:waveIds.le
 // certification-trigger: callback-ledger-sync-v1
 // certification-trigger: callback-ledger-sync-v2
 // certification-trigger: one-time-delivery-contract-v1
+// certification-trigger: stale-receipt-harness-v2
