@@ -153,3 +153,5 @@ assert('health green after exhaustive chaos',r.status===200&&health1?.ok===true&
 
 console.log('\n=== EXHAUSTIVE LIVE CERTIFICATION PASS ===');
 console.log(JSON.stringify({ok:true,checks:report.length,burstUpdates:waveIds.length,replayFanout:18,cronRecovery:true,realReminderDelivery:true,generalChatAI:true,startedAt,finishedAt:new Date().toISOString()},null,2));
+
+// certification-trigger: callback-ledger-sync-v1

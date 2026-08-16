@@ -39,6 +39,11 @@ async function callback(data,messageId){
   console.log(`\nCALLBACK > ${data}`);
   await postUpdate({update_id:id,callback_query:{id:`live-${id}`,from:{id:Number(CHAT),is_bot:false,first_name:'Staging'},message:{message_id:messageId,chat:{id:Number(CHAT),type:'private'},date:Math.floor(Date.now()/1000),text:'لوحة اختبار'},chat_instance:'live',data}});
   await sleep(850);
+  await poll(()=>{
+    const row=d1(`SELECT status,error_text FROM telegram_updates WHERE update_id='${id}' LIMIT 1`)[0];
+    if(row?.status==='failed') throw new Error(`Telegram callback ledger failed ${id}: ${row?.error_text||'unknown'}`);
+    return row?.status==='done'?row:null;
+  },{tries:24,delay:300,label:`callback ledger ${id}`});
 }
 async function poll(fn,{tries=16,delay=650,label='condition'}={}){
   let v; for(let i=0;i<tries;i++){v=fn();if(v) return v;await sleep(delay);}throw new Error(`Timeout waiting for ${label}`);
