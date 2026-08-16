@@ -10,6 +10,7 @@ on:
       - 'tests/v10-4-1-debug-shift.mjs'
       - 'tests/v10-4-1-debug-stress-first-case.mjs'
       - 'tests/v10-4-1-ultra-direct-stress.mjs'
+      - 'tests/v10-4-1-boundary-concurrency.mjs'
       - '.github/workflows/verify-v10-4-1-ultra-stress.yml'
   workflow_dispatch:
 permissions:
@@ -17,7 +18,7 @@ permissions:
 jobs:
   ultra-direct:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build V10.4.1 hardened
@@ -38,3 +39,5 @@ jobs:
           python tools/patch-v10-4-1-stress-ready-users.py
       - name: Ultra deterministic stress
         run: node tests/v10-4-1-ultra-direct-stress.mjs
+      - name: Boundary dependency concurrency stress
+        run: node tests/v10-4-1-boundary-concurrency.mjs
