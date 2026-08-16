@@ -1,0 +1,184 @@
+name: V10.6 Real Shopping Hotfix Certification
+
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths:
+      - '.github/workflows/v10-6-real-shopping-hotfix.yml'
+      - 'tools/patch-v10-6-real-shopping.py'
+      - 'tests/v10-6-real-shopping-regression.mjs'
+      - 'tests/v10-6-live-shopping-screenshot.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v10-6-real-shopping-hotfix
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v106-staging.ahmeddoba91.workers.dev
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate live secrets
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$STAGING_TELEGRAM_BOT_TOKEN"
+          test -n "$STAGING_OMNIAI_API_KEY"
+          test -n "$STAGING_ADMIN_CHAT_ID"
+
+      - name: Generate ephemeral staging secrets
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Build and apply real shopping fix
+        run: |
+          set -euo pipefail
+          python tools/build-v10-6.py
+          python tools/patch-v10-6-real-shopping.py
+          node --check SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'recentShoppingItemsFromConversationV106' SuperAgent_V10_6_Zero_Known_Failures.js
+
+      - name: Exact local screenshot regression
+        run: node tests/v10-6-real-shopping-regression.mjs
+
+      - name: Broad local regression smoke
+        run: |
+          set -euo pipefail
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_6_Zero_Known_Failures.js
+          node tests/stress-v9-2.cjs SuperAgent_V10_6_Zero_Known_Failures.js
+
+      - name: Build staging config
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          let s=fs.readFileSync('wrangler.v10-6-staging.template.jsonc','utf8')
+            .replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697')
+            .replace('self-continuation-1','real-shopping-hotfix');
+          fs.writeFileSync('wrangler.v106.staging.jsonc',s);
+          NODE
+
+      - name: Deploy patched candidate to real staging Worker
+        run: npx wrangler deploy --config wrangler.v106.staging.jsonc
+
+      - name: Rotate staging secrets
+        run: |
+          set -euo pipefail
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v106.staging.jsonc
+          sleep 8
+
+      - name: Initialize real Telegram webhook
+        run: |
+          set -euo pipefail
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/setup.json -w '%{http_code}' "$STAGING_URL/setup?key=$KEY&force=1" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/setup.json");if(!x.ok)process.exit(1)' 2>/dev/null; then cat /tmp/setup.json; exit 0; fi
+            sleep 2
+          done
+          cat /tmp/setup.json || true
+          exit 1
+
+      - name: Reset staging failures
+        run: npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v106.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
+
+      - name: Exact live screenshot flow on real bot
+        run: node tests/v10-6-live-shopping-screenshot.mjs
+
+      - name: Re-run full human-language and Telegram UI matrix
+        run: |
+          set -euo pipefail
+          cp tests/v10-5-live-staging-matrix.mjs tests/.v106-hotfix-human.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g; s/V10.5/V10.6/g' tests/.v106-hotfix-human.mjs
+          node tests/.v106-hotfix-human.mjs
+
+      - name: Re-run stale receipt and replay regression
+        run: |
+          set -euo pipefail
+          cp tests/v10-5-live-stale-receipt.mjs tests/.v106-hotfix-stale.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g; s/V10.5/V10.6/g' tests/.v106-hotfix-stale.mjs
+          node tests/.v106-hotfix-stale.mjs
+
+      - name: Re-run real staging chaos certification
+        run: node tests/live-exhaustive-v106.mjs
+
+      - name: Final live integrity
+        run: |
+          set -euo pipefail
+          curl -fsS "$STAGING_URL/health" | tee /tmp/health.json
+          node -e 'const x=require("/tmp/health.json");if(!x.ok||!x.db||!x.omniai_service)process.exit(1)'
+          FAILS="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT COUNT(*) c FROM runtime_failures WHERE created_at>=datetime('now','-45 minutes')" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          echo "runtime_failures=$FAILS"
+          test "$FAILS" = 0
+
+      - name: Build corrected Cloudflare-ready package
+        run: |
+          set -euo pipefail
+          cp SuperAgent_V10_6_Zero_Known_Failures.js SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js
+          node --check SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js
+          SHA="$(sha256sum SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js | cut -d' ' -f1)"
+          cat > V10_6_REAL_SHOPPING_FIX_CERTIFICATE.txt <<EOF
+          Super Agent V10.6 — Real Shopping Hotfix Certificate
+          Exact reported multiline shopping screenshot: PASS
+          Zero reminder creation for untimed shopping list: PASS
+          Pronoun correction to shopping: PASS
+          No-reminder correction: PASS
+          Existing semantic/stress smoke: PASS
+          Full real human-language/Telegram UI matrix: PASS
+          Stale receipt/replay: PASS
+          Real staging chaos: PASS
+          Final health/runtime-failure gate: PASS
+          SHA256: $SHA
+          RESULT: READY_FOR_CLOUDFLARE_UPLOAD
+          EOF
+
+      - name: Upload corrected package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V10.6-Real-Shopping-Fix
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js
+            V10_6_REAL_SHOPPING_FIX_CERTIFICATE.txt
+            wrangler.v10-6.production.example.jsonc
+
+      - name: Commit certified corrected build
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V10_6_Zero_Known_Failures.js SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js V10_6_REAL_SHOPPING_FIX_CERTIFICATE.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Certify V10.6 real multiline shopping hotfix'
+          git pull --rebase origin superagent-v10-6-zero-known-failures
+          git push origin HEAD:superagent-v10-6-zero-known-failures
