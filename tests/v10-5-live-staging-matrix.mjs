@@ -57,8 +57,24 @@ async function directTelegramMessage(text){
 console.log('=== SUPER AGENT V10.5 REAL STAGING HUMAN MATRIX ===');
 console.log(`Worker: ${URL}`);
 
-// Fresh staging-user state via product's own destructive callback at the end; start by ensuring no stale named test rows.
-d1(`DELETE FROM pending_conflicts WHERE chat_id='${sqlq(CHAT)}'; DELETE FROM pending_dialogs WHERE chat_id='${sqlq(CHAT)}'; DELETE FROM pending_requests WHERE chat_id='${sqlq(CHAT)}';`);
+// Completely isolate every live run from artifacts left by an earlier live run.
+const C=sqlq(CHAT);
+d1(`
+DELETE FROM event_dependencies WHERE chat_id='${C}';
+DELETE FROM reminder_fires WHERE chat_id='${C}';
+DELETE FROM schedule_fires WHERE chat_id='${C}';
+DELETE FROM reminders WHERE chat_id='${C}';
+DELETE FROM schedule_rules WHERE chat_id='${C}';
+DELETE FROM smart_list_items WHERE chat_id='${C}';
+DELETE FROM life_edges WHERE chat_id='${C}';
+DELETE FROM life_entities WHERE chat_id='${C}';
+DELETE FROM conversation_messages WHERE chat_id='${C}';
+DELETE FROM pending_dialogs WHERE chat_id='${C}';
+DELETE FROM pending_conflicts WHERE chat_id='${C}';
+DELETE FROM pending_requests WHERE chat_id='${C}';
+DELETE FROM action_audit WHERE chat_id='${C}';
+DELETE FROM telegram_updates WHERE chat_id='${C}';
+`);
 
 // 1) Absolute appointment -> simple relative reschedule -> natural-language undo.
 await say('يوم 20 أكتوبر 2026 الساعة 6 مساء عندي اجتماع اسمه برق 404 ومدته ساعة');
@@ -79,8 +95,11 @@ check('live recurrence occurrence duration=0',Number(rule.duration_minutes)===0,
 await say('خلي تذكير أراجع المشروع المتكرر الساعة 11 مساء');
 rule=await poll(()=>{const x=rules().find(v=>String(v.title).includes('أراجع المشروع'));return String(x?.start_at||'').includes('23:00')?x:null},{label:'recurrence time update'});
 check('live recurrence time update 23:00',String(rule.start_at).includes('23:00'),JSON.stringify(rule));
+const canonicalRule=JSON.parse(rule.rule_json||'{}');
+check('live recurrence canonical time list updated',Array.isArray(canonicalRule.times)&&canonicalRule.times.includes('23:00'),JSON.stringify(canonicalRule));
 await say('احذف تذكير أراجع المشروع المتكرر');
-await poll(()=>{const x=rules().find(v=>String(v.title).includes('أراجع المشروع'));return x&&Number(x.active)===0?x:null},{label:'recurrence delete'});
+await poll(()=>!rules().some(v=>String(v.title).includes('أراجع المشروع'))?{deleted:true}:null,{label:'recurrence delete'});
+check('live recurring delete removes physical rule row',!rules().some(v=>String(v.title).includes('أراجع المشروع')));
 await say('/undo');
 rule=await poll(()=>{const x=rules().find(v=>String(v.title).includes('أراجع المشروع'));return x&&Number(x.active)===1?x:null},{label:'recurrence undo'});
 check('live recurring delete undo restores rule',Number(rule.active)===1&&String(rule.start_at).includes('23:00'),JSON.stringify(rule));
@@ -122,7 +141,7 @@ const rapid=reminders().find(x=>String(x.title).includes('سريع 717'));
 check('live rapid shift+undo final state',rapid?.local_time==='18:00',JSON.stringify(rapid));
 
 // 7) No stale conflict-confirm is allowed to resurrect anything.
-d1(`DELETE FROM pending_conflicts WHERE chat_id='${sqlq(CHAT)}'`);
+d1(`DELETE FROM pending_conflicts WHERE chat_id='${C}'`);
 const beforeCount=reminders().length;
 await say('نفذ رغم التعارض');
 await sleep(500);
@@ -134,29 +153,28 @@ await Promise.all([
   (async()=>{await sleep(30);return say('امسح كل اللي فاكره عن الأشخاص والعلاقات',{wait:0})})()
 ]);
 await sleep(2300);
-const world=d1(`SELECT id,name,entity_type FROM life_entities WHERE chat_id='${sqlq(CHAT)}' ORDER BY id`);
+const world=d1(`SELECT id,name,entity_type FROM life_entities WHERE chat_id='${C}' ORDER BY id`);
 check('live fast world-write then clear final state empty',world.length===0,JSON.stringify(world));
 
 // 9) /menu must never trigger destructive world clear.
 await say('مرام زوجتي',{wait:1500});
-const worldBeforeMenu=d1(`SELECT id,name FROM life_entities WHERE chat_id='${sqlq(CHAT)}' ORDER BY id`);
+const worldBeforeMenu=d1(`SELECT id,name FROM life_entities WHERE chat_id='${C}' ORDER BY id`);
 await say('/menu',{wait:800});
-const worldAfterMenu=d1(`SELECT id,name FROM life_entities WHERE chat_id='${sqlq(CHAT)}' ORDER BY id`);
+const worldAfterMenu=d1(`SELECT id,name FROM life_entities WHERE chat_id='${C}' ORDER BY id`);
 check('live /menu is non-destructive',worldBeforeMenu.length===worldAfterMenu.length,`before=${JSON.stringify(worldBeforeMenu)} after=${JSON.stringify(worldAfterMenu)}`);
 
 // 10) Real UI callbacks for Delete Everything, using a real Telegram message id.
 const fakeOther='987654321987';
-// Sentinel other-user row to prove scope isolation.
-d1(`INSERT INTO reminders(chat_id,title,kind,local_date,local_time,sent,cancelled,created_at,duration_minutes,advance_alerts_json,timezone) VALUES ('${fakeOther}','ممنوع المساس','appointment','2027-01-01','10:00',0,0,datetime('now'),30,'[]','Africa/Cairo')`);
+d1(`DELETE FROM reminders WHERE chat_id='${fakeOther}'; INSERT INTO reminders(chat_id,title,kind,local_date,local_time,sent,cancelled,created_at,duration_minutes,advance_alerts_json,timezone) VALUES ('${fakeOther}','ممنوع المساس','appointment','2027-01-01','10:00',0,0,datetime('now'),30,'[]','Africa/Cairo')`);
 const messageId=await directTelegramMessage('🧪 اختبار زر حذف كل شيء — رسالة آلية من V10.5 Staging');
 await callback('panel:danger',messageId);
 await callback('danger:clear_everything',messageId);
 await callback('do:clear_everything',messageId);
 await sleep(900);
-const ownRem=d1(`SELECT COUNT(*) c FROM reminders WHERE chat_id='${sqlq(CHAT)}'`)[0]?.c||0;
-const ownRules=d1(`SELECT COUNT(*) c FROM schedule_rules WHERE chat_id='${sqlq(CHAT)}'`)[0]?.c||0;
-const ownShop=d1(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='${sqlq(CHAT)}'`)[0]?.c||0;
-const ownWorld=d1(`SELECT COUNT(*) c FROM life_entities WHERE chat_id='${sqlq(CHAT)}'`)[0]?.c||0;
+const ownRem=d1(`SELECT COUNT(*) c FROM reminders WHERE chat_id='${C}'`)[0]?.c||0;
+const ownRules=d1(`SELECT COUNT(*) c FROM schedule_rules WHERE chat_id='${C}'`)[0]?.c||0;
+const ownShop=d1(`SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='${C}'`)[0]?.c||0;
+const ownWorld=d1(`SELECT COUNT(*) c FROM life_entities WHERE chat_id='${C}'`)[0]?.c||0;
 check('live Delete Everything clears current user',Number(ownRem)===0&&Number(ownRules)===0&&Number(ownShop)===0&&Number(ownWorld)===0,JSON.stringify({ownRem,ownRules,ownShop,ownWorld}));
 const sentinel=d1(`SELECT title FROM reminders WHERE chat_id='${fakeOther}'`);
 check('live Delete Everything isolates other user',sentinel.length===1&&sentinel[0].title==='ممنوع المساس',JSON.stringify(sentinel));
