@@ -5,6 +5,7 @@ on:
     paths:
       - 'tools/build-v10-4-3.py'
       - 'tools/scan-v10-4-3-latin.py'
+      - 'tools/verify-v10-4-3-arabic.py'
       - 'tests/v10-4-3-arabic-ui-e2e.mjs'
       - '.github/workflows/verify-v10-4-3-full-arabic.yml'
   workflow_dispatch:
@@ -23,10 +24,8 @@ jobs:
           node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_4_3_Full_Arabic.js
       - name: Strict Arabic Telegram UI E2E
         run: node tests/v10-4-3-arabic-ui-e2e.mjs
-      - name: Static Arabic inventory
-        run: |
-          python tools/scan-v10-4-3-latin.py SuperAgent_V10_4_3_Full_Arabic.js | tee v1043_latin_inventory.txt
-          ! grep -E -i 'Super Agent|World Model|Life OS|Data Controls|Ultra Hardened|\bInbox\b|is ready|Unauthorized|Bad Request|Not Found|setWebhook failed' v1043_latin_inventory.txt
+      - name: Static user-facing Arabic verifier
+        run: python tools/verify-v10-4-3-arabic.py SuperAgent_V10_4_3_Full_Arabic.js
       - name: Prepare ultra stress harness
         run: |
           cp SuperAgent_V10_4_3_Full_Arabic.js SuperAgent_V10_4_Zero_Known_Bugs.js
@@ -77,7 +76,7 @@ jobs:
           cat > V10_4_3_FULL_ARABIC_REPORT.txt <<REPORT
           سوبر إيجنت V10.4.3 — النسخة العربية الكاملة
           واجهة تيليجرام العربية الصارمة: PASS
-          فحص النصوص الإنجليزية الممنوعة: PASS
+          فحص النصوص المرئية للمستخدم: PASS
           4644/4644 اختبارات Fuzz مباشرة: PASS
           5112/5112 حدود زمنية/اعتماديات/توازي: PASS
           إجمالي Hardening الجديد: 9756/9756 PASS
