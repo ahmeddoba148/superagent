@@ -1,0 +1,145 @@
+name: Deploy and Live-Test V10.6 Nightmare
+
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths:
+      - '.github/workflows/deploy-v10-6-live-nightmare.yml'
+      - 'wrangler.v10-6-staging.template.jsonc'
+      - 'SuperAgent_V10_6_Zero_Known_Failures.js'
+      - 'tests/v10-6-live-pressure.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v10-6-live-staging
+  cancel-in-progress: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate staging secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_OMNIAI_API_KEY STAGING_ADMIN_CHAT_ID; do
+            if [ -z "${!v:-}" ]; then echo "Missing $v"; missing=1; fi
+          done
+          test "$missing" -eq 0
+
+      - name: Generate masked ephemeral security keys
+        run: |
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Resolve or create isolated V10.6 D1
+        id: d1
+        run: |
+          set -euo pipefail
+          NAME=superagent-v106-staging
+          LIST="$(npx wrangler d1 list --json)"
+          ID="$(node -e 'const a=JSON.parse(process.argv[1]);const x=a.find(v=>v.name===process.argv[2]);if(x)process.stdout.write(x.uuid||x.id||"")' "$LIST" "$NAME")"
+          if [ -z "$ID" ]; then
+            npx wrangler d1 create "$NAME"
+            LIST="$(npx wrangler d1 list --json)"
+            ID="$(node -e 'const a=JSON.parse(process.argv[1]);const x=a.find(v=>v.name===process.argv[2]);if(x)process.stdout.write(x.uuid||x.id||"")' "$LIST" "$NAME")"
+          fi
+          test -n "$ID"
+          echo "database_id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build Wrangler config
+        run: node -e 'const fs=require("fs");let s=fs.readFileSync("wrangler.v10-6-staging.template.jsonc","utf8");s=s.replace("__D1_DATABASE_ID__",process.argv[1]);fs.writeFileSync("wrangler.v106.staging.jsonc",s)' '${{ steps.d1.outputs.database_id }}'
+
+      - name: Deploy V10.6 isolated Worker
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.v106.staging.jsonc 2>&1 | tee /tmp/deploy.log
+          URL="$(grep -Eo 'https://[^ ]+\.workers\.dev' /tmp/deploy.log | tail -1)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload staging-only secrets
+        run: |
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v106.staging.jsonc
+
+      - name: Wait for propagation and initialize
+        run: |
+          set -euo pipefail
+          URL='${{ steps.deploy.outputs.url }}'
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/root.json -w '%{http_code}' "$URL/" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/root.json");if(x.version!=="10.6")process.exit(1)' 2>/dev/null; then break; fi
+            sleep 2
+          done
+          node -e 'const x=require("/tmp/root.json");if(!x.ok||x.version!=="10.6")process.exit(1)'
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          curl -fsS "$URL/setup?key=$KEY&force=1" | tee /tmp/setup.json
+          node -e 'const x=require("/tmp/setup.json");if(!x.ok)process.exit(1)'
+
+      - name: Live V10.6 smoke and selftest
+        run: |
+          URL='${{ steps.deploy.outputs.url }}'
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          curl -fsS "$URL/health" | tee /tmp/health.json
+          curl -fsS "$URL/selftest?key=$KEY" | tee /tmp/selftest.json
+          node -e 'const h=require("/tmp/health.json"),s=require("/tmp/selftest.json");if(!h.ok||!h.db||!h.omniai_service||!s.ok||s.version!=="10.6"||s.passed!==s.total||s.total<30)process.exit(1);console.log(`SELFTEST ${s.passed}/${s.total} PASS`)'
+
+      - name: V10.6 real Cloudflare pressure + crash recovery
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: node tests/v10-6-live-pressure.mjs
+
+      - name: Adapt and run full human live matrix
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          cp tests/v10-5-live-staging-matrix.mjs /tmp/v106-human.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g; s/V10.5/V10.6/g' /tmp/v106-human.mjs
+          cp /tmp/v106-human.mjs tests/v10-6-human-live-temp.mjs
+          node tests/v10-6-human-live-temp.mjs
+
+      - name: Live stale-receipt recreate regression
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          cp tests/v10-5-live-stale-receipt.mjs tests/v10-6-stale-temp.mjs
+          sed -i 's/superagent-v105-staging/superagent-v106-staging/g; s/wrangler.staging.jsonc/wrangler.v106.staging.jsonc/g' tests/v10-6-stale-temp.mjs
+          node tests/v10-6-stale-temp.mjs
+
+      - name: Final live health and inbox integrity
+        run: |
+          URL='${{ steps.deploy.outputs.url }}'
+          curl -fsS "$URL/health" | tee /tmp/final-health.json
+          node -e 'const h=require("/tmp/final-health.json");if(!h.ok||!h.db||!h.omniai_service)process.exit(1)'
+          npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT status,COUNT(*) c FROM telegram_inbox_v106 GROUP BY status; SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE status IN ('pending','processing','failed');" | tee /tmp/inbox.json
+
+      - name: Publish live verdict
+        if: always()
+        run: |
+          echo '## Super Agent V10.6 Live Nightmare' >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.deploy.outputs.url }}' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Worker + isolated D1 + real OmniAI + real Telegram API + concurrent pressure + crash recovery.' >> "$GITHUB_STEP_SUMMARY"
