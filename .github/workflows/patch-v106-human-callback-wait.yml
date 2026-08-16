@@ -1,0 +1,56 @@
+name: Patch V10.6 Human Matrix Callback Completion
+
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths:
+      - '.github/workflows/patch-v106-human-callback-wait.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Replace fixed callback sleep with committed-ledger wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/v10-5-live-staging-matrix.mjs')
+          s=p.read_text(encoding='utf-8')
+          old='''  await sleep(850);\n}'''
+          new='''  await sleep(850);\n  await poll(()=>{\n    const row=d1(`SELECT status,error_text FROM telegram_updates WHERE update_id='${id}' LIMIT 1`)[0];\n    if(row?.status==='failed') throw new Error(`Telegram callback ledger failed ${id}: ${row?.error_text||'unknown'}`);\n    return row?.status==='done'?row:null;\n  },{tries:24,delay:300,label:`callback ledger ${id}`});\n}'''
+          if old not in s:
+              if 'callback ledger ${id}' in s:
+                  print('Callback wait already patched')
+              else:
+                  raise SystemExit('callback sleep anchor not found')
+          else:
+              s=s.replace(old,new,1)
+              p.write_text(s,encoding='utf-8')
+          t=Path('tests/live-exhaustive-v106.mjs')
+          x=t.read_text(encoding='utf-8')
+          marker='// certification-trigger: callback-ledger-sync-v1\n'
+          if marker not in x:
+              t.write_text(x.rstrip()+"\n\n"+marker,encoding='utf-8')
+          PY
+          node --check tests/v10-5-live-staging-matrix.mjs
+          node --check tests/live-exhaustive-v106.mjs
+      - name: Commit deterministic live-test synchronization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/v10-5-live-staging-matrix.mjs tests/live-exhaustive-v106.mjs
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Wait for committed Telegram callback before live UI assertions'
+          git pull --rebase origin superagent-v10-6-zero-known-failures
+          git push origin HEAD:superagent-v10-6-zero-known-failures
