@@ -1,0 +1,14 @@
+name: Scan V10.4.3 Arabic UI
+on:
+  push:
+    branches: [superagent-v10-4-3-full-arabic]
+    paths:
+      - 'tools/scan-v10-4-3-latin.py'
+      - '.github/workflows/scan-v10-4-3-arabic.yml'
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inventory user-facing Latin text
+        run: python tools/scan-v10-4-3-latin.py
