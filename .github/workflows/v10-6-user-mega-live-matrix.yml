@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   mega-live:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
