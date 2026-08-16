@@ -17,13 +17,14 @@ jobs:
       STAGING_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.STAGING_TELEGRAM_WEBHOOK_SECRET }}
       STAGING_SETUP_KEY: ${{ secrets.STAGING_SETUP_KEY }}
       STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate staging-only secrets
         run: |
           set -euo pipefail
-          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_TELEGRAM_WEBHOOK_SECRET STAGING_SETUP_KEY STAGING_OMNIAI_API_KEY; do
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_TELEGRAM_WEBHOOK_SECRET STAGING_SETUP_KEY STAGING_OMNIAI_API_KEY STAGING_ADMIN_CHAT_ID; do
             if [ -z "${!v:-}" ]; then echo "Missing secret: $v"; exit 1; fi
           done
 
@@ -55,12 +56,13 @@ jobs:
           printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.staging.jsonc
           printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.staging.jsonc
           printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.staging.jsonc
 
       - name: Deploy staging Worker
         id: deploy
         run: |
           set -euo pipefail
-          OUT=$(npx wrangler deploy --config wrangler.staging.jsonc 2>&1 | tee /tmp/deploy.log)
+          npx wrangler deploy --config wrangler.staging.jsonc 2>&1 | tee /tmp/deploy.log
           URL=$(grep -Eo 'https://[^ ]+\.workers\.dev' /tmp/deploy.log | tail -1)
           if [ -z "$URL" ]; then
             echo "Could not detect workers.dev URL"; cat /tmp/deploy.log; exit 1
@@ -71,27 +73,37 @@ jobs:
         run: |
           set -euo pipefail
           URL="${{ steps.deploy.outputs.url }}"
-          curl -fsS "$URL/setup?key=$(python - <<'PY'
+          KEY=$(python - <<'PY'
 import os, urllib.parse
 print(urllib.parse.quote(os.environ['STAGING_SETUP_KEY'], safe=''))
 PY
-)&force=1"
+)
+          curl -fsS "$URL/setup?key=$KEY&force=1" | tee /tmp/setup.json
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/setup.json","utf8")); if(!x.ok) process.exit(1)'
 
       - name: Live smoke tests
         run: |
           set -euo pipefail
           URL="${{ steps.deploy.outputs.url }}"
-          echo "Staging URL: $URL"
-          curl -fsS "$URL/"
-          curl -fsS "$URL/health"
-          curl -fsS "$URL/selftest?key=$(python - <<'PY'
+          KEY=$(python - <<'PY'
 import os, urllib.parse
 print(urllib.parse.quote(os.environ['STAGING_SETUP_KEY'], safe=''))
 PY
-)" | tee /tmp/selftest.json
-          node -e 'const x=require("/tmp/selftest.json"); if(!x.ok) process.exit(1)'
+)
+          echo "Staging URL: $URL"
+          curl -fsS "$URL/" | tee /tmp/root.json
+          curl -fsS "$URL/health" | tee /tmp/health.json
+          curl -fsS "$URL/selftest?key=$KEY" | tee /tmp/selftest.json
+          node - <<'NODE'
+const fs=require('fs');
+for (const f of ['/tmp/root.json','/tmp/health.json','/tmp/selftest.json']) {
+  const x=JSON.parse(fs.readFileSync(f,'utf8'));
+  if(!x.ok) throw new Error(`${f} failed: ${JSON.stringify(x)}`);
+}
+NODE
 
       - name: Publish staging URL
         run: |
           echo "## V10.5 Staging" >> "$GITHUB_STEP_SUMMARY"
           echo "${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Access is restricted to STAGING_ADMIN_CHAT_ID." >> "$GITHUB_STEP_SUMMARY"
