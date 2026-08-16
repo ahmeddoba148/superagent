@@ -4,7 +4,7 @@ export default{
 async fetch(request,env,ctx){
 const url=new URL(request.url);
 if(request.method==="GET"&&url.pathname==="/"){
-return json({ok:true,service:V10_NAME,version:V10_VERSION,status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),life_os:true,personal_world_model:true,memory_graph:true,event_dependencies:true,planner_executor_verifier:true,shadow_safety:true,smart_lists:true,interactive_shopping:true,voice_first:true,audit_undo:true,permission_levels:true,context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,deterministic_relationships:true,multi_prayer_rules_safe:true,action_reference_time_safe:true,semantic_item_count_safe:true,telegram_idempotency:true,dependency_cycle_guard:true,clean_chat_strict:true,semantic_grounding_v2:true,compound_voice_safe:true,dependency_repair:true,dependency_canonicalization:true,chain_final_guard:true,atomic_compound_conflicts:true,direct_recurring_delete:true,natural_shopping_language:true,shopping_delete_undo:true,relative_reschedule_direct:true,multi_natural_shopping:true,no_op_update_guard:true,ultra_stress_hardened:true,generic_shift_duration_parser:true,timed_purchase_parser_v2:true,world_model_clear:true,shopping_clear_button:true,arabic_holiday_labels:true,v105_reliability_rewrite:true,v105_per_chat_queue:true,v105_intent_guard:true,v105_mixed_message_guard:true,v105_clear_everything:true,v106_durable_telegram_inbox:true,v106_cross_isolate_serialization:true,v106_crash_recovery:true,reliability_lock:true,operation_receipts:true,runtime_failure_log:true,health_db_probe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
+return json({ok:true,service:V10_NAME,version:V10_VERSION,status:"online",timezone:TIME_ZONE,public_mode:isPublicMode(env),life_os:true,personal_world_model:true,memory_graph:true,event_dependencies:true,planner_executor_verifier:true,shadow_safety:true,smart_lists:true,interactive_shopping:true,voice_first:true,audit_undo:true,permission_levels:true,context_memory:true,universal_recurrence:true,safety_grounding:true,live_reality:true,live_world_news:true,prayer_awareness:true,hijri_calendar:true,public_holidays:true,per_user_location:true,long_term_memory:true,egyptian_dialect_engine:true,hidden_internal_ids:true,deterministic_relationships:true,multi_prayer_rules_safe:true,action_reference_time_safe:true,semantic_item_count_safe:true,telegram_idempotency:true,dependency_cycle_guard:true,clean_chat_strict:true,semantic_grounding_v2:true,compound_voice_safe:true,dependency_repair:true,dependency_canonicalization:true,chain_final_guard:true,atomic_compound_conflicts:true,direct_recurring_delete:true,natural_shopping_language:true,shopping_delete_undo:true,relative_reschedule_direct:true,multi_natural_shopping:true,no_op_update_guard:true,ultra_stress_hardened:true,generic_shift_duration_parser:true,timed_purchase_parser_v2:true,world_model_clear:true,shopping_clear_button:true,arabic_holiday_labels:true,v105_reliability_rewrite:true,v105_per_chat_queue:true,v105_intent_guard:true,v105_mixed_message_guard:true,v105_clear_everything:true,v106_durable_telegram_inbox:true,v106_cross_isolate_serialization:true,v106_crash_recovery:true,v106_subrequest_budget_safe:true,v106_ledger_confirmed_delivery:true,reliability_lock:true,operation_receipts:true,runtime_failure_log:true,health_db_probe:true,duration_conflicts:true,advance_alerts:true,snooze:true,general_chat:true,multi_user_isolation:true,fallback_models:REMINDER_MODELS.length});
 }
 if(request.method==="GET"&&url.pathname==="/health")return reliabilityHealth(env);
 if(request.method==="GET"&&url.pathname==="/diagnostics")return reliabilityDiagnostics(request,env);
@@ -623,6 +623,11 @@ try{const cutoff=new Date(Date.now()-7*86400000).toISOString();await env.DB.prep
 
 const V106_INBOX_LEASE_MS=90000;
 const V106_INBOX_MAX_ATTEMPTS=5;
+const V106_INBOX_BATCH_SIZE=4;
+const V106_LEASE_RETRY_COUNT=12;
+const V106_LEASE_RETRY_DELAY_MS=180;
+const V106_INTER_UPDATE_DELAY_MS=90;
+const sleepV106=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function newQueueOwnerV106(){return `Q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
 function isoAfterV106(ms){return new Date(Date.now()+ms).toISOString();}
 async function persistTelegramInboxV106(update,env){
@@ -636,10 +641,9 @@ async function persistTelegramInboxV106(update,env){
 }
 async function acquireChatLeaseV106(env,chatId,owner){
   const now=new Date().toISOString(),until=isoAfterV106(V106_INBOX_LEASE_MS);
-  await env.DB.prepare(`INSERT INTO telegram_chat_leases_v106(chat_id,owner_token,lease_until,acquired_at) VALUES (?,?,?,?)
+  const row=await env.DB.prepare(`INSERT INTO telegram_chat_leases_v106(chat_id,owner_token,lease_until,acquired_at) VALUES (?,?,?,?)
     ON CONFLICT(chat_id) DO UPDATE SET owner_token=excluded.owner_token,lease_until=excluded.lease_until,acquired_at=excluded.acquired_at
-    WHERE telegram_chat_leases_v106.lease_until<=excluded.acquired_at`).bind(String(chatId),owner,until,now).run();
-  const row=await env.DB.prepare(`SELECT owner_token FROM telegram_chat_leases_v106 WHERE chat_id=? LIMIT 1`).bind(String(chatId)).first();
+    WHERE telegram_chat_leases_v106.lease_until<=excluded.acquired_at RETURNING owner_token`).bind(String(chatId),owner,until,now).first();
   return String(row?.owner_token||'')===owner;
 }
 async function renewChatLeaseV106(env,chatId,owner){
@@ -655,9 +659,14 @@ async function nextInboxRowV106(env,chatId){
 async function drainTelegramInboxV106(env,chatId){
   if(!env?.DB)return;
   const owner=newQueueOwnerV106();
-  if(!(await acquireChatLeaseV106(env,chatId,owner)))return;
+  let acquired=false;
+  for(let retry=0;retry<V106_LEASE_RETRY_COUNT;retry++){
+    if(await acquireChatLeaseV106(env,chatId,owner)){acquired=true;break;}
+    await sleepV106(V106_LEASE_RETRY_DELAY_MS+Math.floor(Math.random()*50));
+  }
+  if(!acquired)return;
   try{
-    for(let i=0;i<100;i++){
+    for(let i=0;i<V106_INBOX_BATCH_SIZE;i++){
       const row=await nextInboxRowV106(env,chatId);if(!row)break;
       const now=new Date().toISOString(),until=isoAfterV106(V106_INBOX_LEASE_MS);
       const upd=await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? WHERE update_id=? AND chat_id=? AND status IN ('pending','processing') AND (status='pending' OR lease_until IS NULL OR lease_until<=?) RETURNING attempts`)
@@ -674,7 +683,10 @@ async function drainTelegramInboxV106(env,chatId){
       try{
         await renewChatLeaseV106(env,chatId,owner);
         await enqueueTelegramUpdateV105(update,env);
+        const ledger=await env.DB.prepare(`SELECT status,error_text FROM telegram_updates WHERE update_id=? LIMIT 1`).bind(String(row.update_id)).first();
+        if(String(ledger?.status||'')!=='done')throw new Error(String(ledger?.error_text||'Telegram update did not commit'));
         await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status='done',last_error=NULL,lease_until=NULL,updated_at=? WHERE update_id=?`).bind(new Date().toISOString(),String(row.update_id)).run();
+        if(i+1<V106_INBOX_BATCH_SIZE)await sleepV106(V106_INTER_UPDATE_DELAY_MS);
       }catch(e){
         const err=safeError(e);const terminal=attempts>=V106_INBOX_MAX_ATTEMPTS;
         await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status=?,last_error=?,lease_until=NULL,updated_at=? WHERE update_id=?`).bind(terminal?'failed':'pending',err,new Date().toISOString(),String(row.update_id)).run();
@@ -686,7 +698,7 @@ async function drainTelegramInboxV106(env,chatId){
 }
 async function drainPendingTelegramInboxV106(env){
   if(!env?.DB)return;
-  const rows=(await env.DB.prepare(`SELECT DISTINCT chat_id FROM telegram_inbox_v106 WHERE status='pending' OR (status='processing' AND (lease_until IS NULL OR lease_until<=?)) LIMIT 50`).bind(new Date().toISOString()).all())?.results||[];
+  const rows=(await env.DB.prepare(`SELECT DISTINCT chat_id FROM telegram_inbox_v106 WHERE status='pending' OR (status='processing' AND (lease_until IS NULL OR lease_until<=?)) LIMIT 1`).bind(new Date().toISOString()).all())?.results||[];
   for(const row of rows)await drainTelegramInboxV106(env,String(row.chat_id));
 }
 async function cleanupTelegramInboxV106(env){
@@ -14657,6 +14669,8 @@ function runV10SelfTests(){
   add("incident id format",/^SA-[A-Z0-9]+-[A-Z0-9]{5}$/.test(newIncidentId()));
   add("v106 durable inbox lease",V106_INBOX_LEASE_MS>=TOTAL_AI_BUDGET_MS*2,String(V106_INBOX_LEASE_MS));
   add("v106 inbox retry budget",V106_INBOX_MAX_ATTEMPTS>=3,String(V106_INBOX_MAX_ATTEMPTS));
+  add("v106 subrequest batch budget",V106_INBOX_BATCH_SIZE<=4,String(V106_INBOX_BATCH_SIZE));
+  add("v106 lease retry budget",V106_LEASE_RETRY_COUNT<=16,String(V106_LEASE_RETRY_COUNT));
   const passed=tests.filter(x=>x.ok).length;return{ok:passed===tests.length,passed,total:tests.length,tests};
 }
 async function selfTestEndpoint(request,env){const url=new URL(request.url);const key=url.searchParams.get("key")||"";if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:"غير مصرح"},401);return json({version:V10_VERSION,...runV10SelfTests()});}

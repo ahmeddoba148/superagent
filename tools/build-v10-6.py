@@ -67,6 +67,11 @@ rep(schema_anchor,schema_add,'V10.6 inbox schema')
 queue_anchor='''const V105_CHAT_QUEUES=new Map();'''
 queue_helpers='''const V106_INBOX_LEASE_MS=90000;
 const V106_INBOX_MAX_ATTEMPTS=5;
+const V106_INBOX_BATCH_SIZE=4;
+const V106_LEASE_RETRY_COUNT=12;
+const V106_LEASE_RETRY_DELAY_MS=180;
+const V106_INTER_UPDATE_DELAY_MS=90;
+const sleepV106=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function newQueueOwnerV106(){return `Q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
 function isoAfterV106(ms){return new Date(Date.now()+ms).toISOString();}
 async function persistTelegramInboxV106(update,env){
@@ -80,10 +85,9 @@ async function persistTelegramInboxV106(update,env){
 }
 async function acquireChatLeaseV106(env,chatId,owner){
   const now=new Date().toISOString(),until=isoAfterV106(V106_INBOX_LEASE_MS);
-  await env.DB.prepare(`INSERT INTO telegram_chat_leases_v106(chat_id,owner_token,lease_until,acquired_at) VALUES (?,?,?,?)
+  const row=await env.DB.prepare(`INSERT INTO telegram_chat_leases_v106(chat_id,owner_token,lease_until,acquired_at) VALUES (?,?,?,?)
     ON CONFLICT(chat_id) DO UPDATE SET owner_token=excluded.owner_token,lease_until=excluded.lease_until,acquired_at=excluded.acquired_at
-    WHERE telegram_chat_leases_v106.lease_until<=excluded.acquired_at`).bind(String(chatId),owner,until,now).run();
-  const row=await env.DB.prepare(`SELECT owner_token FROM telegram_chat_leases_v106 WHERE chat_id=? LIMIT 1`).bind(String(chatId)).first();
+    WHERE telegram_chat_leases_v106.lease_until<=excluded.acquired_at RETURNING owner_token`).bind(String(chatId),owner,until,now).first();
   return String(row?.owner_token||'')===owner;
 }
 async function renewChatLeaseV106(env,chatId,owner){
@@ -99,9 +103,14 @@ async function nextInboxRowV106(env,chatId){
 async function drainTelegramInboxV106(env,chatId){
   if(!env?.DB)return;
   const owner=newQueueOwnerV106();
-  if(!(await acquireChatLeaseV106(env,chatId,owner)))return;
+  let acquired=false;
+  for(let retry=0;retry<V106_LEASE_RETRY_COUNT;retry++){
+    if(await acquireChatLeaseV106(env,chatId,owner)){acquired=true;break;}
+    await sleepV106(V106_LEASE_RETRY_DELAY_MS+Math.floor(Math.random()*50));
+  }
+  if(!acquired)return;
   try{
-    for(let i=0;i<100;i++){
+    for(let i=0;i<V106_INBOX_BATCH_SIZE;i++){
       const row=await nextInboxRowV106(env,chatId);if(!row)break;
       const now=new Date().toISOString(),until=isoAfterV106(V106_INBOX_LEASE_MS);
       const upd=await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? WHERE update_id=? AND chat_id=? AND status IN ('pending','processing') AND (status='pending' OR lease_until IS NULL OR lease_until<=?) RETURNING attempts`)
@@ -118,7 +127,10 @@ async function drainTelegramInboxV106(env,chatId){
       try{
         await renewChatLeaseV106(env,chatId,owner);
         await enqueueTelegramUpdateV105(update,env);
+        const ledger=await env.DB.prepare(`SELECT status,error_text FROM telegram_updates WHERE update_id=? LIMIT 1`).bind(String(row.update_id)).first();
+        if(String(ledger?.status||'')!=='done')throw new Error(String(ledger?.error_text||'Telegram update did not commit'));
         await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status='done',last_error=NULL,lease_until=NULL,updated_at=? WHERE update_id=?`).bind(new Date().toISOString(),String(row.update_id)).run();
+        if(i+1<V106_INBOX_BATCH_SIZE)await sleepV106(V106_INTER_UPDATE_DELAY_MS);
       }catch(e){
         const err=safeError(e);const terminal=attempts>=V106_INBOX_MAX_ATTEMPTS;
         await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status=?,last_error=?,lease_until=NULL,updated_at=? WHERE update_id=?`).bind(terminal?'failed':'pending',err,new Date().toISOString(),String(row.update_id)).run();
@@ -130,7 +142,7 @@ async function drainTelegramInboxV106(env,chatId){
 }
 async function drainPendingTelegramInboxV106(env){
   if(!env?.DB)return;
-  const rows=(await env.DB.prepare(`SELECT DISTINCT chat_id FROM telegram_inbox_v106 WHERE status='pending' OR (status='processing' AND (lease_until IS NULL OR lease_until<=?)) LIMIT 50`).bind(new Date().toISOString()).all())?.results||[];
+  const rows=(await env.DB.prepare(`SELECT DISTINCT chat_id FROM telegram_inbox_v106 WHERE status='pending' OR (status='processing' AND (lease_until IS NULL OR lease_until<=?)) LIMIT 1`).bind(new Date().toISOString()).all())?.results||[];
   for(const row of rows)await drainTelegramInboxV106(env,String(row.chat_id));
 }
 async function cleanupTelegramInboxV106(env){
@@ -149,12 +161,14 @@ rep(old,new,'inbox cleanup')
 
 # User-facing setup/version labels.
 s=s.replace('سوبر إيجنت 10.5 جاهز للعمل','سوبر إيجنت 10.6 جاهز للعمل')
-s=s.replace('v105_clear_everything:true','v105_clear_everything:true,v106_durable_telegram_inbox:true,v106_cross_isolate_serialization:true,v106_crash_recovery:true')
+s=s.replace('v105_clear_everything:true','v105_clear_everything:true,v106_durable_telegram_inbox:true,v106_cross_isolate_serialization:true,v106_crash_recovery:true,v106_subrequest_budget_safe:true,v106_ledger_confirmed_delivery:true')
 
 # Self-test coverage for the new release invariants.
 needle='''  add("incident id format",/^SA-[A-Z0-9]+-[A-Z0-9]{5}$/.test(newIncidentId()));'''
 extra=needle+'''\n  add("v106 durable inbox lease",V106_INBOX_LEASE_MS>=TOTAL_AI_BUDGET_MS*2,String(V106_INBOX_LEASE_MS));
-  add("v106 inbox retry budget",V106_INBOX_MAX_ATTEMPTS>=3,String(V106_INBOX_MAX_ATTEMPTS));'''
+  add("v106 inbox retry budget",V106_INBOX_MAX_ATTEMPTS>=3,String(V106_INBOX_MAX_ATTEMPTS));
+  add("v106 subrequest batch budget",V106_INBOX_BATCH_SIZE<=4,String(V106_INBOX_BATCH_SIZE));
+  add("v106 lease retry budget",V106_LEASE_RETRY_COUNT<=16,String(V106_LEASE_RETRY_COUNT));'''
 rep(needle,extra,'V10.6 selftests')
 
 out.write_text(s,encoding='utf-8')
