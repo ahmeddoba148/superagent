@@ -1,0 +1,97 @@
+name: Deploy V10.5 Staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.STAGING_TELEGRAM_WEBHOOK_SECRET }}
+      STAGING_SETUP_KEY: ${{ secrets.STAGING_SETUP_KEY }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate staging-only secrets
+        run: |
+          set -euo pipefail
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_TELEGRAM_WEBHOOK_SECRET STAGING_SETUP_KEY STAGING_OMNIAI_API_KEY; do
+            if [ -z "${!v:-}" ]; then echo "Missing secret: $v"; exit 1; fi
+          done
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Resolve or create isolated D1 database
+        id: d1
+        run: |
+          set -euo pipefail
+          NAME="superagent-v105-staging"
+          LIST=$(npx wrangler d1 list --json)
+          ID=$(node -e 'const x=JSON.parse(process.argv[1]); const r=x.find(v=>v.name===process.argv[2]); if(r) process.stdout.write(r.uuid||r.id||"")' "$LIST" "$NAME")
+          if [ -z "$ID" ]; then
+            CREATE=$(npx wrangler d1 create "$NAME" --json)
+            ID=$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.uuid||x.id||x.d1_databases?.[0]?.uuid||"")' "$CREATE")
+          fi
+          test -n "$ID"
+          echo "database_id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build staging Wrangler config
+        run: |
+          node -e 'const fs=require("fs"); let s=fs.readFileSync("wrangler.staging.template.jsonc","utf8"); s=s.replace("__D1_DATABASE_ID__",process.argv[1]); fs.writeFileSync("wrangler.staging.jsonc",s)' "${{ steps.d1.outputs.database_id }}"
+
+      - name: Upload Worker secrets
+        run: |
+          set -euo pipefail
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.staging.jsonc
+
+      - name: Deploy staging Worker
+        id: deploy
+        run: |
+          set -euo pipefail
+          OUT=$(npx wrangler deploy --config wrangler.staging.jsonc 2>&1 | tee /tmp/deploy.log)
+          URL=$(grep -Eo 'https://[^ ]+\.workers\.dev' /tmp/deploy.log | tail -1)
+          if [ -z "$URL" ]; then
+            echo "Could not detect workers.dev URL"; cat /tmp/deploy.log; exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize staging bot and Telegram webhook
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          curl -fsS "$URL/setup?key=$(python - <<'PY'
+import os, urllib.parse
+print(urllib.parse.quote(os.environ['STAGING_SETUP_KEY'], safe=''))
+PY
+)&force=1"
+
+      - name: Live smoke tests
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          echo "Staging URL: $URL"
+          curl -fsS "$URL/"
+          curl -fsS "$URL/health"
+          curl -fsS "$URL/selftest?key=$(python - <<'PY'
+import os, urllib.parse
+print(urllib.parse.quote(os.environ['STAGING_SETUP_KEY'], safe=''))
+PY
+)" | tee /tmp/selftest.json
+          node -e 'const x=require("/tmp/selftest.json"); if(!x.ok) process.exit(1)'
+
+      - name: Publish staging URL
+        run: |
+          echo "## V10.5 Staging" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
