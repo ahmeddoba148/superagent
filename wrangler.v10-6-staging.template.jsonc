@@ -3,11 +3,12 @@
   "name": "superagent-v106-staging",
   "main": "./SuperAgent_V10_6_Zero_Known_Failures.js",
   "compatibility_date": "2026-08-16",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": true,
   "preview_urls": true,
   "vars": {
     "PUBLIC_BOT": "false",
-    "V106_STAGING_BUILD": "subrequest-fix-1"
+    "V106_STAGING_BUILD": "self-continuation-1"
   },
   "d1_databases": [
     {
