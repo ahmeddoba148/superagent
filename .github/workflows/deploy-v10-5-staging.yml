@@ -25,25 +25,29 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
-      STAGING_TELEGRAM_WEBHOOK_SECRET: ${{ secrets.STAGING_TELEGRAM_WEBHOOK_SECRET }}
-      STAGING_SETUP_KEY: ${{ secrets.STAGING_SETUP_KEY }}
       STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
       STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate staging-only secrets
+      - name: Validate required staging secrets
         run: |
           set -euo pipefail
           missing=0
-          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_TELEGRAM_WEBHOOK_SECRET STAGING_SETUP_KEY STAGING_OMNIAI_API_KEY STAGING_ADMIN_CHAT_ID; do
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_OMNIAI_API_KEY STAGING_ADMIN_CHAT_ID; do
             if [ -z "${!v:-}" ]; then
               echo "Missing secret: $v"
               missing=1
             fi
           done
           test "$missing" -eq 0
+
+      - name: Generate ephemeral staging security keys
+        run: |
+          set -euo pipefail
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
       - name: Install Wrangler
         run: npm install --no-save wrangler@latest
