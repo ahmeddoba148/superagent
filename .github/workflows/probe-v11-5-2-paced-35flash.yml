@@ -1,0 +1,23 @@
+name: Paced V11.5.2 Gemini 3.5 Flash Stability
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths: ['.github/workflows/probe-v11-5-2-paced-35flash.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Six paced live rounds with bounded 429 recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const model='gemini::gemini-3.5-flash',endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY,sleep=m=>new Promise(r=>setTimeout(r,m));
+          async function raw(round,attempt){const c=new AbortController(),tm=setTimeout(()=>c.abort(),7000),t=Date.now();try{const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});const txt=await r.text();let content='';try{content=String(JSON.parse(txt)?.choices?.[0]?.message?.content||'').trim()}catch{}return{round,attempt,ok:r.ok&&content.length>0,status:r.status,ms:Date.now()-t,content:content.slice(0,30),error:r.ok?null:txt.slice(0,180)}}catch(e){return{round,attempt,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const rounds=[];for(let r=1;r<=6;r++){let a=await raw(r,1);if(!a.ok&&(a.status===429||a.status===0)){await sleep(12000);const b=await raw(r,2);a={...a,retry:b,ok:b.ok,recovered:b.ok,status:b.status,final_ms:b.ms}}rounds.push(a);console.log(JSON.stringify(a));if(r<6)await sleep(10000)}const good=rounds.filter(x=>x.ok);const result={ok:good.length===6,model,rounds:6,successes:good.length,samples:rounds};console.log('FINAL='+JSON.stringify(result));if(!result.ok)process.exit(1)})();
+          NODE
