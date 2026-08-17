@@ -16,13 +16,19 @@ function explicitMinuteCountV125(text){
 }
 function explicitPrayerRuleHintV125(text){
   const t=normalizeText(text).toLowerCase();
-  const prayers=[['Fajr',/(?:الفجر|\bفجر\b)/u],['Dhuhr',/(?:الظهر|\bظهر\b)/u],['Asr',/(?:العصر|\bعصر\b)/u],['Maghrib',/(?:المغرب|\bمغرب\b)/u],['Isha',/(?:العشاء|\bعشاء\b)/u]];
-  const hit=prayers.find(([,re])=>re.test(t));
+  const prayers=[
+    {name:'Fajr',re:/(?:الفجر|\bفجر\b)/u},
+    {name:'Dhuhr',re:/(?:الظهر|\bظهر\b)/u},
+    {name:'Asr',re:/(?:العصر|\bعصر\b)/u},
+    {name:'Maghrib',re:/(?:المغرب|\bمغرب\b)/u},
+    {name:'Isha',re:/(?:العشاء|\bعشاء\b)/u}
+  ];
+  const hit=prayers.find(x=>x.re.test(t));
   if(!hit)return null;
   const minutes=explicitMinuteCountV125(t);
   let offset=0;
   if(/قبل/u.test(t))offset=-(minutes??0);else if(/بعد/u.test(t))offset=minutes??0;
-  return {prayer:hit[0],offset_minutes:offset};
+  return {prayer:hit.name,offset_minutes:offset};
 }
 function explicitBriefHintV125(text){
   const t=normalizeText(text).toLowerCase(),times=extractExplicitTimesV125(t),time=times[0]||null;
@@ -81,4 +87,4 @@ if(src.includes(missingMarker))src=src.replace(missingMarker,'const missing=grou
 
 const buf=Buffer.from(src,'utf8');
 fs.writeFileSync(file,buf);
-console.log(JSON.stringify({ok:true,sha256:crypto.createHash('sha256').update(buf).digest('hex'),bytes:buf.length,patch:'life-grounding-v1'}));
+console.log(JSON.stringify({ok:true,sha256:crypto.createHash('sha256').update(buf).digest('hex'),bytes:buf.length,patch:'life-grounding-v2'}));
