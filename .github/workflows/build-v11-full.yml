@@ -7,6 +7,7 @@ on:
     paths:
       - tools/build_v11.mjs
       - tools/patch_build_v11.mjs
+      - tools/patch_v11_shopping_hotfix.mjs
       - .github/workflows/build-v11-full.yml
   workflow_dispatch:
 
@@ -28,14 +29,19 @@ jobs:
         run: node tools/patch_build_v11.mjs
       - name: Generate V11 from full V10.7.1 engine
         run: node tools/build_v11.mjs
+      - name: Apply deterministic shopping-list hotfix
+        run: node tools/patch_v11_shopping_hotfix.mjs
       - name: JavaScript syntax check
         run: node --check SuperAgent_V11_FULL.js
-      - name: Explicit regression check for reported VS Code errors
+      - name: Explicit regression checks
         shell: bash
         run: |
           set -euo pipefail
           ! grep -Fq '||(?:shopping&&' SuperAgent_V11_FULL.js
           ! grep -Fq 'e.v11_failures=failures' SuperAgent_V11_FULL.js
+          grep -Fq 'const plan=intent?.shopping||intent?.shopping_plan' SuperAgent_V11_FULL.js
+          grep -Fq '_v11_model:"deterministic:explicit-shopping-list"' SuperAgent_V11_FULL.js
+          grep -Fq 'explicitShoppingUnitsV11.length>=2' SuperAgent_V11_FULL.js
       - name: V11 structural certification
         shell: bash
         run: |
@@ -64,13 +70,13 @@ jobs:
           test "$bytes" -gt 390000
           test "$lines" -gt 14000
           sha256sum SuperAgent_V11_FULL.js | tee V11_SHA256.txt
-          printf 'V11 structural certification PASS\nbytes=%s\nlines=%s\nfast=10\ncomplex=10\nrouter=3\nnode_check=PASS\nreported_vscode_diagnostics=FIXED\n' "$bytes" "$lines" > V11_BUILD_REPORT.txt
+          printf 'V11 structural certification PASS\nbytes=%s\nlines=%s\nfast=10\ncomplex=10\nrouter=3\nnode_check=PASS\nreported_vscode_diagnostics=FIXED\nshopping_plan_field=FIXED\nexplicit_multiline_shopping=DETERMINISTIC\n' "$bytes" "$lines" > V11_BUILD_REPORT.txt
       - name: Commit corrected V11
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tools/build_v11.mjs SuperAgent_V11_FULL.js V11_SHA256.txt V11_BUILD_REPORT.txt
+          git add SuperAgent_V11_FULL.js V11_SHA256.txt V11_BUILD_REPORT.txt
           git diff --cached --quiet && exit 0
-          git commit -m 'Fix SuperAgent V11 VS Code diagnostics'
+          git commit -m 'Fix V11 long shopping list latency and completeness'
           git push origin HEAD:superagent-v11-full-router
