@@ -1,0 +1,23 @@
+name: Quota-paced Gemini 3.5 Flash production stability
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths: ['.github/workflows/probe-v11-5-2-quota-paced-35flash.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Three production-shaped rounds spaced 70 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const model='gemini::gemini-3.5-flash',endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY,sleep=m=>new Promise(r=>setTimeout(r,m));
+          async function one(round){const c=new AbortController(),tm=setTimeout(()=>c.abort(),2700),t=Date.now();try{const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'system',content:'أنت مساعد مختصر. رد مباشرة.'},{role:'user',content:'رد بكلمة OK فقط'}],temperature:0.35,max_tokens:900,stream:false}),signal:c.signal});const raw=await r.text();let content='';try{content=String(JSON.parse(raw)?.choices?.[0]?.message?.content||'').trim()}catch{}return{round,ok:r.ok&&content.length>0,status:r.status,ms:Date.now()-t,content:content.slice(0,40),error:r.ok?null:raw.slice(0,220)}}catch(e){return{round,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const a=[];for(let r=1;r<=3;r++){const x=await one(r);a.push(x);console.log(JSON.stringify(x));if(r<3)await sleep(70000)}const result={ok:a.every(x=>x.ok),model,rounds:3,successes:a.filter(x=>x.ok).length,samples:a};console.log('FINAL='+JSON.stringify(result));if(!result.ok)process.exit(1)})();
+          NODE
