@@ -12,8 +12,6 @@ function re(pattern,replacement,label){
   if(s===before)throw new Error(`missing V11.4 regex anchor: ${label}`);
 }
 
-// V11.4 keeps the V11.3 hardening layer, removes provider diversity on purpose,
-// and uses one simple Google-only chain: primary + two sequential fallbacks.
 s='/* SuperAgent V11.4 FULL — Google-only stable 3-model chain: Gemini 3.5 Flash-Lite primary, Gemini 3.1 Flash-Lite fallback 1, Gemini 3.6 Flash fallback 2. V11.3 reliability hardening retained; AI router remains removed. */\n'+s;
 
 one('const V10_VERSION="11.3.0";const V10_NAME="سوبر إيجنت V11.3 — سلسلة 3 موديلات + طبقة تحقق واعتمادية";',
@@ -45,7 +43,6 @@ one("await sendText(env,chatId,'أنا سوبر إيجنت V11.3 🤖 — مسا
     "await sendText(env,chatId,'أنا سوبر إيجنت V11.4 🤖 — مساعدك الشخصي لتنظيم يومك ومواعيدك ومشترياتك وذاكرتك ومهامك من الكلام الطبيعي.');",
     'identity');
 
-// Update inherited chain assertions so /selftest certifies the V11.4 order instead of V11.2's old providers.
 one('push("v112_primary_is_oss20",PRIMARY_MODEL.id==="groq::openai/gpt-oss-20b",PRIMARY_MODEL.id);',
     'push("v114_primary_is_gemini35_lite",PRIMARY_MODEL.id==="gemini::gemini-3.5-flash-lite",PRIMARY_MODEL.id);',
     'primary selftest');
@@ -56,7 +53,6 @@ one('push("v112_fallback2_is_qwen36",FALLBACK_MODELS[1]?.id==="groq::qwen/qwen3.
     'push("v114_fallback2_is_gemini36_flash",FALLBACK_MODELS[1]?.id==="gemini::gemini-3.6-flash",FALLBACK_MODELS[1]?.id||"");',
     'fallback2 selftest');
 
-// /ready?all=1 now proves each of the three configured models can answer through the real OmniAI binding.
 one("const url=new URL(request.url),key=url.searchParams.get('key')||'';if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:'غير مصرح'},401);\n  const base={ok:false,version:V10_VERSION,db:false,omniai:false,primary_model:PRIMARY_MODEL.id,probe_model:null,attempts:[]};",
     "const url=new URL(request.url),key=url.searchParams.get('key')||'';if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:'غير مصرح'},401);\n  const probeAll=url.searchParams.get('all')==='1';\n  const base={ok:false,version:V10_VERSION,db:false,omniai:false,primary_model:PRIMARY_MODEL.id,probe_model:null,attempts:[]};",
     'ready all flag');
@@ -76,11 +72,11 @@ function runV114PureSelfTests(){
   add('v114 fallback1 Gemini 3.1 Flash-Lite',ids[1]==='gemini::gemini-3.1-flash-lite',ids[1]||'');
   add('v114 fallback2 Gemini 3.6 Flash',ids[2]==='gemini::gemini-3.6-flash',ids[2]||'');
   add('v114 Google-only provider chain',ids.every(x=>x.startsWith('gemini::')),JSON.stringify(ids));
-  add('v114 router remains removed',typeof routeRequestV11==='undefined'||true,'v11_semantic_router=false contract');
+  add('v114 planner has no router call',!parseIntentWithFallback.toString().includes('routeRequestV11('),parseIntentWithFallback.name);
   add('v114 primary role',MODEL_CHAIN[0]?.role==='primary',MODEL_CHAIN[0]?.role||'');
   add('v114 fallback roles',MODEL_CHAIN[1]?.role==='fallback_1'&&MODEL_CHAIN[2]?.role==='fallback_2',MODEL_CHAIN.slice(1).map(x=>x.role).join(','));
   add('v114 total AI budget bounded',TOTAL_AI_BUDGET_MS===10000,String(TOTAL_AI_BUDGET_MS));
-  add('v114 chat budget bounded',V112_CHAT_TOTAL_BUDGET_MS===7600&&V112_CHAT_TIMEOUT_MS===2700,`${V112_CHAT_TOTAL_BUDGET_MS}/${V112_CHAT_TIMEOUT_MS}`);
+  add('v114 chat budget bounded',V112_CHAT_TOTAL_BUDGET_MS===7600&&V112_CHAT_TIMEOUT_MS===2700,String(V112_CHAT_TOTAL_BUDGET_MS)+'/'+String(V112_CHAT_TIMEOUT_MS));
   const passed=tests.filter(x=>x.ok).length;return{ok:passed===tests.length,passed,total:tests.length,tests};
 }
 `;
