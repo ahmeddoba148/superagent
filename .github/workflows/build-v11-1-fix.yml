@@ -6,6 +6,7 @@ on:
       - superagent-v11-1-fix
     paths:
       - tools/build_v11_1_fix.mjs
+      - tools/patch_v111fix_builder.mjs
       - .github/workflows/build-v11-1-fix.yml
   workflow_dispatch:
 
@@ -23,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Patch builder template literals
+        run: node tools/patch_v111fix_builder.mjs
       - name: Build V11.1 FIX from V11.1
         run: node tools/build_v11_1_fix.mjs
       - name: JavaScript syntax check
