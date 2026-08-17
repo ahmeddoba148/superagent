@@ -1,0 +1,114 @@
+{
+  "ok": true,
+  "version": "11.6",
+  "started": "2026-08-17T17:44:45.912Z",
+  "finished": "2026-08-17T17:46:00.640Z",
+  "scenario_count": 26,
+  "passes": [
+    {
+      "name": "identity",
+      "detail": "attempts=1 ms=1655"
+    },
+    {
+      "name": "casual egyptian",
+      "detail": "attempts=1 ms=3452"
+    },
+    {
+      "name": "lease collision self recovery",
+      "detail": "attempts=1 ms=5412"
+    },
+    {
+      "name": "shopping multiline preserves 11",
+      "detail": "items=11"
+    },
+    {
+      "name": "shopping view",
+      "detail": "attempts=1 ms=1484"
+    },
+    {
+      "name": "exact reminder persisted",
+      "detail": "[{\"local_date\":\"2026-11-03\",\"local_time\":\"19:23\"}]"
+    },
+    {
+      "name": "relative reminder",
+      "detail": "attempts=1 ms=3410"
+    },
+    {
+      "name": "daily recurrence",
+      "detail": "attempts=1 ms=5399"
+    },
+    {
+      "name": "free-time query",
+      "detail": "attempts=1 ms=3455"
+    },
+    {
+      "name": "today",
+      "detail": "attempts=1 ms=1501"
+    },
+    {
+      "name": "tomorrow",
+      "detail": "attempts=1 ms=1511"
+    },
+    {
+      "name": "week",
+      "detail": "attempts=1 ms=1523"
+    },
+    {
+      "name": "month",
+      "detail": "attempts=1 ms=1482"
+    },
+    {
+      "name": "list",
+      "detail": "attempts=1 ms=1493"
+    },
+    {
+      "name": "recurring",
+      "detail": "attempts=1 ms=1504"
+    },
+    {
+      "name": "location",
+      "detail": "attempts=1 ms=1487"
+    },
+    {
+      "name": "memory",
+      "detail": "attempts=1 ms=1461"
+    },
+    {
+      "name": "audit",
+      "detail": "attempts=1 ms=1484"
+    },
+    {
+      "name": "undo",
+      "detail": "attempts=1 ms=1528"
+    },
+    {
+      "name": "live context",
+      "detail": "attempts=1 ms=1454"
+    },
+    {
+      "name": "prayer awareness",
+      "detail": "attempts=1 ms=3461"
+    },
+    {
+      "name": "holiday awareness",
+      "detail": "attempts=1 ms=3421"
+    },
+    {
+      "name": "context follow-up",
+      "detail": "attempts=1 ms=3365"
+    },
+    {
+      "name": "idempotency duplicate exactly once",
+      "detail": "rows=1 attempts=1"
+    },
+    {
+      "name": "same-chat burst serialization",
+      "detail": "[1,1,1]"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    }
+  ],
+  "runtime_failures": []
+}
