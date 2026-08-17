@@ -1,0 +1,17 @@
+{
+  "build": "SuperAgent V11.1 FULL",
+  "version": "11.1.0",
+  "sha256": "06d8f3a3437c8680946023264d9435184dba9978af83aa8d5151e4660aac917a",
+  "bytes": 407058,
+  "lines": 15176,
+  "base_v10_7_1_named_functions": 367,
+  "retained_named_functions": 367,
+  "missing_functions": [],
+  "base_v10_7_1_tables": 36,
+  "retained_tables": 36,
+  "missing_tables": [],
+  "checks_passed": 57,
+  "checks_total": 57,
+  "failed_checks": [],
+  "note": "Structural/CI parity plus syntax checks do not replace live Cloudflare/Telegram/provider testing."
+}
