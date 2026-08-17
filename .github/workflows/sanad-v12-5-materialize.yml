@@ -1,0 +1,31 @@
+name: Sanad V12.5 Materialize Source
+on:
+  push:
+    branches: [sanad-v12-5-full-life]
+    paths:
+      - ".github/workflows/sanad-v12-5-materialize.yml"
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build exact source
+        run: node tools/build_sanad_v12_5.mjs
+      - name: Persist generated worker
+        run: |
+          git config user.name "github-actions-bot"
+          git config user.email "41898282+github-actions-bot@users.noreply.github.com"
+          git add -f Sanad_V12_5_FULL.js
+          if git diff --cached --quiet; then
+            echo "Source already materialized"
+          else
+            git commit -m "Materialize Sanad V12.5 worker for certification fixes"
+            git push origin HEAD:sanad-v12-5-full-life
+          fi
