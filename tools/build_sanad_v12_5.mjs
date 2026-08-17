@@ -89,6 +89,18 @@ const repairMarker = '      for(const [i,s] of (Array.isArray(repair?.steps)?rep
 if (!src.includes(repairMarker)) throw new Error('repair marker missing');
 src = src.replace(repairMarker, '      const groundedRepairSteps=groundExplicitTemporalFactsV125(text,Array.isArray(repair?.steps)?repair.steps.slice(0,MAX_REPAIR_STEPS):[]);\n      for(const [i,s] of groundedRepairSteps.entries()){');
 
+const promptNeedle = 'خطتك قد تحتوي عدة أدوات بالترتيب. لا تطلب توضيحًا إلا لو لا يمكن اتخاذ قرار آمن ومعقول.';
+if (!src.includes(promptNeedle)) throw new Error('brain prompt marker missing');
+src = src.replace(promptNeedle, promptNeedle + '\nإذا كانت خطوة لاحقة تحتاج ID أو قيمة من نتيجة خطوة سابقة، استخدم مرجعًا نصيًا بالشكل "$step:N.id" حيث N رقم الخطوة السابقة. مثال: إنشاء مشروع ثم مهمة داخله = projects.create ثم project_tasks.create مع project_id="$step:1.id".');
+
+const complexNeedle = '  const complex=steps.length>=DEEP_PLAN_STEP_THRESHOLD||steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.risky)||String(user?.deep_reasoning_mode||"auto")==="on";';
+if (!src.includes(complexNeedle)) throw new Error('complex marker missing');
+src = src.replace(complexNeedle, '  const complex=steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.mutation)||steps.length>=DEEP_PLAN_STEP_THRESHOLD||steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.risky)||String(user?.deep_reasoning_mode||"auto")==="on";');
+
+const criticNeedle = 'أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\\';
+if (!src.includes(criticNeedle)) throw new Error('critic marker missing');
+src = src.replace(criticNeedle, 'أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لو خطوة تعتمد على نتيجة خطوة قبلها استخدم $step:N.field مثل $step:1.id، وتأكد أن كل جزء صريح من طلب المستخدم له خطوة تنفيذ فعلية. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\\');
+
 const finalBuffer = Buffer.from(src, 'utf8');
 const sha = crypto.createHash('sha256').update(finalBuffer).digest('hex');
 fs.writeFileSync(new URL('../Sanad_V12_5_FULL.js', import.meta.url), finalBuffer);
