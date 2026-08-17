@@ -1,0 +1,55 @@
+name: Build SuperAgent V11.1 Full
+
+on:
+  push:
+    branches:
+      - superagent-v11-1
+    paths:
+      - tools/build_v11_1.mjs
+      - tools/certify_v11_1.mjs
+      - .github/workflows/build-v11-1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-v11-1:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build V11.1 from certified V11
+        run: node tools/build_v11_1.mjs
+      - name: JavaScript syntax check
+        run: node --check SuperAgent_V11_1_FULL.js
+      - name: Feature parity and latency certification
+        run: node tools/certify_v11_1.mjs
+      - name: Explicit V11.1 gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'const V10_VERSION="11.1.0"' SuperAgent_V11_1_FULL.js
+          grep -q 'const TOTAL_AI_BUDGET_MS=12000;' SuperAgent_V11_1_FULL.js
+          grep -q 'const V106_INBOX_LEASE_MS=30000;' SuperAgent_V11_1_FULL.js
+          grep -q 'Promise.any(attempts)' SuperAgent_V11_1_FULL.js
+          grep -q '_v111_hedged:true' SuperAgent_V11_1_FULL.js
+          grep -q 'deterministic:explicit-shopping-list' SuperAgent_V11_1_FULL.js
+          grep -q 'shop:toggle:' SuperAgent_V11_1_FULL.js
+          grep -q 'اضغط على أي صنف لتعلّمه تم شراؤه' SuperAgent_V11_1_FULL.js
+          ! grep -Fq '||(?:shopping&&' SuperAgent_V11_1_FULL.js
+          ! grep -Fq 'e.v11_failures=failures' SuperAgent_V11_1_FULL.js
+      - name: Commit V11.1 generated release
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_1_FULL.js V11_1_CERTIFICATION.json V11_1_BUILD_REPORT.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build SuperAgent V11.1 full fast interactive release'
+          git push origin HEAD:superagent-v11-1
