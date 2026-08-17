@@ -1,0 +1,55 @@
+name: V11.3 Live Telegram Staging Certification
+
+on:
+  push:
+    branches: [superagent-v11-3-live-test]
+    paths:
+      - '.github/workflows/v11-3-live-telegram-staging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v11-3-live-telegram-staging
+  cancel-in-progress: true
+
+jobs:
+  live-certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v113-staging.ahmeddoba91.workers.dev
+      STAGING_DB: superagent-v106-staging
+      STAGING_CONFIG: wrangler.v113.staging.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore and run exact V11.3 live certification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/v113_live_ci_payload.part0 tools/v113_live_ci_payload.part1 > /tmp/v113-live-ci.b64
+          test "$(sha256sum /tmp/v113-live-ci.b64 | awk '{print $1}')" = "696c56825fa7526a9356c66784a364058dbd18b943e0c665ec7dc070f2d35ac2"
+          base64 -d /tmp/v113-live-ci.b64 | gunzip > /tmp/v113-live-ci.sh
+          test "$(sha256sum /tmp/v113-live-ci.sh | awk '{print $1}')" = "c2acecbada7882a729e5b68c9ec5f58584744152756203b5c02d7846b3da959a"
+          chmod +x /tmp/v113-live-ci.sh
+          /tmp/v113-live-ci.sh
+      - name: Upload live staging evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.3-Live-Staging-Evidence
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            V11_3_LIVE_STAGING_REPORT.json
+            V11_3_LIVE_STAGING_REPORT.txt
