@@ -1,0 +1,45 @@
+name: Probe V11.5 Gemini Candidates
+on:
+  push:
+    branches: [superagent-v11-5-hardening]
+    paths: ['.github/workflows/probe-v11-5-gemini-candidates.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      URL: https://superagent-v115-modelprobe.ahmeddoba91.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Deploy and probe candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > /tmp/probe.mjs <<'EOF'
+          const URL='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const MODELS=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-2.5-flash-lite','gemini::gemini-flash-lite-latest','gemini::gemini-3.5-flash','gemini::gemini-3.6-flash'];
+          async function one(env,model,structured=false){const c=new AbortController(),timer=setTimeout(()=>c.abort(),6500),t=Date.now();try{const body={model,messages:[{role:'user',content:structured?'رجع JSON فقط بالشكل ده: {"ok":true}':'رد بكلمة OK فقط'}],max_tokens:20,stream:false};if(structured)body.response_format={type:'json_object'};const r=await env.OMNIAI_SERVICE.fetch(new Request(URL,{method:'POST',headers:{Authorization:`Bearer ${env.OMNIAI_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal}));const raw=await r.text();return{ok:r.ok,status:r.status,ms:Date.now()-t,body:raw.slice(0,220)};}catch(e){return{ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(timer)}}
+          export default{async fetch(req,env){if(req.headers.get('X-Probe-Key')!==env.PROBE_KEY)return new Response('no',{status:401});const results=[];for(const model of MODELS){results.push({model,plain:await one(env,model,false),json:await one(env,model,true)});}return Response.json({results});}};
+          EOF
+          cat > wrangler.probe.jsonc <<'EOF'
+          {"name":"superagent-v115-modelprobe","main":"/tmp/probe.mjs","compatibility_date":"2026-08-17","services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          cp /tmp/probe.mjs probe-v115.mjs
+          sed -i 's#"/tmp/probe.mjs"#"probe-v115.mjs"#' wrangler.probe.jsonc
+          npx wrangler deploy --config wrangler.probe.jsonc >/dev/null
+          export PROBE_KEY="$(openssl rand -hex 24)"; echo "::add-mask::$PROBE_KEY"
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.probe.jsonc >/dev/null
+          printf '%s' "$PROBE_KEY" | npx wrangler secret put PROBE_KEY --config wrangler.probe.jsonc >/dev/null
+          sleep 6
+          curl -fsS -H "X-Probe-Key: $PROBE_KEY" "$URL" | tee /tmp/probe.json
+          node - <<'NODE'
+          const x=require('/tmp/probe.json');for(const r of x.results)console.log(JSON.stringify({model:r.model,plain:{ok:r.plain.ok,status:r.plain.status,ms:r.plain.ms},json:{ok:r.json.ok,status:r.json.status,ms:r.json.ms}}));
+          NODE
