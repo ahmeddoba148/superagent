@@ -1,7 +1,7 @@
 import fs from'node:fs';
 const U=process.env.URL,K=process.env.SETUP_KEY;
 if(!U||!K)throw Error('URL/SETUP_KEY missing');
-const exp=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-2.5-flash-lite'];
+const exp=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3-flash-preview'];
 const rounds=Number(process.env.STABILITY_ROUNDS||6),samples=[];
 for(let i=0;i<rounds;i++){
   const t=Date.now(),r=await fetch(U+'/ready?all=1',{headers:{'X-SuperAgent-Key':K}}),x=await r.json();
