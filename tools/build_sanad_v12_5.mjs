@@ -76,6 +76,14 @@ function groundExplicitTemporalFactsV125(text,steps){
     return {...step,args};
   });
 }
+function explicitProjectTaskHintV125(text){
+  const t=normalizeText(text);
+  if(!/(?:مهمة|مهمه)/u.test(t))return null;
+  let m=t.match(/(?:مهمة|مهمه)\s*(?:اسمها|اسمها\s*:|بعنوان|عنوانها)?\s*([^،,.؛]+?)(?=$|\s+(?:وبعد|وبعدين|وكمان|وخلي|وحط|وضيف|وحدد|واعتمد)\b)/u);
+  if(!m)m=t.match(/(?:مهمة|مهمه)\s*(?:اسمها|بعنوان|عنوانها)?\s*(.+)$/u);
+  const title=normalizeText(m?.[1]||"").replace(/^(?:اسمها|بعنوان)\s+/u,"").trim();
+  return title&&title.length<=180?title:null;
+}
 `;
 
 let src = baseSrc;
@@ -93,13 +101,46 @@ const promptNeedle = 'خطتك قد تحتوي عدة أدوات بالترتي�
 if (!src.includes(promptNeedle)) throw new Error('brain prompt marker missing');
 src = src.replace(promptNeedle, promptNeedle + '\nإذا كانت خطوة لاحقة تحتاج ID أو قيمة من نتيجة خطوة سابقة، استخدم مرجعًا نصيًا بالشكل "$step:N.id" حيث N رقم الخطوة السابقة. مثال: إنشاء مشروع ثم مهمة داخله = projects.create ثم project_tasks.create مع project_id="$step:1.id".');
 
-const complexNeedle = '  const complex=steps.length>=DEEP_PLAN_STEP_THRESHOLD||steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.risky)||String(user?.deep_reasoning_mode||"auto")==="on";';
-if (!src.includes(complexNeedle)) throw new Error('complex marker missing');
-src = src.replace(complexNeedle, '  const complex=steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.mutation)||steps.length>=DEEP_PLAN_STEP_THRESHOLD||steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.risky)||String(user?.deep_reasoning_mode||"auto")==="on";');
-
 const criticNeedle = 'أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\\';
 if (!src.includes(criticNeedle)) throw new Error('critic marker missing');
 src = src.replace(criticNeedle, 'أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لو خطوة تعتمد على نتيجة خطوة قبلها استخدم $step:N.field مثل $step:1.id، وتأكد أن كل جزء صريح من طلب المستخدم له خطوة تنفيذ فعلية. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\\');
+
+const completionMarker = '  let failed=observations.filter(x=>!x.ok);';
+if (!src.includes(completionMarker)) throw new Error('completion marker missing');
+const completionBlock = String.raw`  if(hasMutation){
+    const successfulProject=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);
+    const hasProjectTask=observations.some(x=>x?.tool==="project_tasks.create"&&x?.ok);
+    const explicitTask=explicitProjectTaskHintV125(text);
+    if(successfulProject&&!hasProjectTask&&explicitTask){
+      const tool="project_tasks.create",args={project_id:Number(successfulProject.id),title:explicitTask};
+      const result=await executeTool(env,{chatId,operationId,stepKey:"coverage:project_task",tool,args,user});
+      observations.push({step:observations.length+1,tool,coverage:true,...result});stepResults.push(result);
+    }
+    if(Date.now()<deadline-2600){
+      try{
+        const completion=await callBrainJson(env,`أنت Goal Completion Gate لسند V12.5. مهمتك الوحيدة اكتشاف أي جزء صريح من طلب المستخدم لم يتم تنفيذه بعد. لا تعيد أي خطوة نجحت، ولا تضف تحسينات من عندك. لو الطلب مكتمل أرجع {"complete":true,"steps":[]}. لو ناقص أرجع {"complete":false,"steps":[...]} بالأدوات الناقصة فقط. استخدم $step:N.field لو خطوة ناقصة تعتمد على نتيجة خطوة سابقة. راجع خصوصًا الطلبات متعددة المجالات والعلاقات مثل مشروع + مهمة بداخله.\
+طلب المستخدم: \${text}\
+الخطة الأصلية: \${JSON.stringify(steps).slice(0,12000)}\
+النتائج المنفذة: \${JSON.stringify(observations).slice(0,18000)}\
+الأدوات: \${JSON.stringify(TOOL_SPECS)}`,text,deadline);
+        const missing=groundExplicitTemporalFactsV125(text,Array.isArray(completion?.steps)?completion.steps.slice(0,MAX_REPAIR_STEPS):[]);
+        for(const [j,s] of missing.entries()){
+          const tool=String(s?.tool||"");if(!TOOL_SPECS[tool]||TOOL_SPECS[tool].risky&&!forcedSteps&&!looksExplicitlyConfirmed(text))continue;
+          let args=resolveStepRefsV125(s?.args||{},stepResults);
+          if(tool==="project_tasks.create"&&!Number(args?.project_id)){
+            const p=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);
+            if(p)args={...args,project_id:Number(p.id)};
+          }
+          const duplicate=observations.some(o=>o?.ok&&o?.tool===tool&&JSON.stringify(o?.args||null)===JSON.stringify(args||null));
+          if(duplicate)continue;
+          const result=await executeTool(env,{chatId,operationId,stepKey:`completion:\${j+1}:\${tool}`,tool,args,user});
+          observations.push({step:observations.length+1,tool,completion:true,args,...result});stepResults.push(result);
+        }
+      }catch(e){await reportFailure(env,chatId,"goal_completion",e,{operationId,text:normalizeText(text).slice(0,300)});}
+    }
+  }
+  let failed=observations.filter(x=>!x.ok);`;
+src = src.replace(completionMarker, completionBlock);
 
 const finalBuffer = Buffer.from(src, 'utf8');
 const sha = crypto.createHash('sha256').update(finalBuffer).digest('hex');
