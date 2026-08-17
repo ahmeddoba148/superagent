@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sanad-v12-5-certification-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   certify:
     runs-on: ubuntu-latest
@@ -34,6 +38,7 @@ jobs:
           node-version: 22
 
       - name: Rebuild V12.5 source deterministically
+        id: build
         run: |
           node tools/build_sanad_v12_5.mjs | tee /tmp/build.json
           node - <<'NODE'
@@ -43,6 +48,7 @@ jobs:
           NODE
 
       - name: Syntax TypeScript and anti-suppression gates
+        id: syntax
         run: |
           node --check Sanad_V12_5_FULL.js
           npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_5_FULL.js
@@ -50,6 +56,7 @@ jobs:
           if grep -En 'eval\(|new Function\(' Sanad_V12_5_FULL.js; then exit 1; fi
 
       - name: Pure architecture and explicit-grounding gates
+        id: pure
         run: |
           cp Sanad_V12_5_FULL.js /tmp/sanad125.mjs
           cat >> /tmp/sanad125.mjs <<'NODE'
@@ -70,6 +77,7 @@ jobs:
           [ "$(grep -c '^async function runAgent' Sanad_V12_5_FULL.js)" = "1" ]
 
       - name: Deploy isolated staging
+        id: deploy
         run: |
           npm install --no-save wrangler@latest >/dev/null
           cat > "$WRANGLER_CONFIG" <<'JSON'
@@ -78,6 +86,7 @@ jobs:
           npx wrangler deploy --config "$WRANGLER_CONFIG" >/dev/null
 
       - name: Configure staging secrets
+        id: secrets
         run: |
           WEBHOOK_SECRET="$(openssl rand -hex 32)"
           SETUP_KEY="$(openssl rand -hex 32)"
@@ -92,6 +101,7 @@ jobs:
           printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config "$WRANGLER_CONFIG" >/dev/null
 
       - name: Endpoint and deep D1 gates
+        id: deep
         run: |
           retry(){ name=$1; shift; for i in 1 2 3 4 5 6 7 8 9 10; do code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true); echo "$name attempt=$i http=$code"; [ "$code" = 200 ] && return 0; sleep 3; done; cat "/tmp/$name.json" || true; return 1; }
           retry setup -X POST -H "X-Sanad-Key: $SETUP_KEY" "$URL/setup"
@@ -109,9 +119,11 @@ jobs:
           NODE
 
       - name: Live Egyptian natural-language matrix
+        id: live
         run: node tools/live_sanad_v12_5.mjs
 
       - name: Build certification
+        id: cert
         run: |
           SHA=$(sha256sum Sanad_V12_5_FULL.js | awk '{print $1}'); export SHA
           node - <<'NODE'
@@ -124,11 +136,40 @@ jobs:
           NODE
 
       - name: Commit certified reports
+        id: commitcert
         run: |
           git config user.name github-actions-bot
           git config user.email 41898282+github-actions-bot@users.noreply.github.com
           git add Sanad_V12_5_FULL.js SANAD_V12_5_LIVE_REPORT.json SANAD_V12_5_CERTIFICATION.json
           git commit -m "Live-certify Sanad V12.5 Full-Life Agent" || exit 0
+          git push origin HEAD:sanad-v12-5-full-life
+
+      - name: Publish CI status
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SYNTAX_OUTCOME: ${{ steps.syntax.outcome }}
+          PURE_OUTCOME: ${{ steps.pure.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          DEEP_OUTCOME: ${{ steps.deep.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          CERT_OUTCOME: ${{ steps.cert.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commitcert.outcome }}
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const names=['build','syntax','pure','deploy','secrets','deep','live','cert','commit'];
+          const keys=['BUILD_OUTCOME','SYNTAX_OUTCOME','PURE_OUTCOME','DEPLOY_OUTCOME','SECRETS_OUTCOME','DEEP_OUTCOME','LIVE_OUTCOME','CERT_OUTCOME','COMMIT_OUTCOME'];
+          const stages=Object.fromEntries(names.map((n,i)=>[n,process.env[keys[i]]||'unknown']));
+          const failed=Object.entries(stages).filter(([,v])=>v==='failure').map(([k])=>k);
+          const status={ok:failed.length===0&&stages.live==='success'&&stages.cert==='success',version:'12.5.0',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,head_sha:process.env.GITHUB_SHA,stages,failed,updated_at:new Date().toISOString()};
+          fs.writeFileSync('SANAD_V12_5_CI_STATUS.json',JSON.stringify(status,null,2));
+          NODE
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add SANAD_V12_5_CI_STATUS.json
+          git commit -m "Record Sanad V12.5 CI status" || exit 0
           git push origin HEAD:sanad-v12-5-full-life
 
       - uses: actions/upload-artifact@v4
