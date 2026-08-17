@@ -20,7 +20,6 @@ once('{short:"G3.6-F",name:"Gemini 3.6 Flash",id:"gemini::gemini-3.6-flash",time
 s=s.replaceAll('gemini::gemini-3.6-flash','gemini::gemini-flash-lite-latest');
 s=s.replaceAll('Gemini 3.6 Flash','Gemini Flash-Lite Latest');
 s=s.replaceAll('G3.6-F','GL-Latest');
-once('const TOTAL_AI_BUDGET_MS=10000;','const TOTAL_AI_BUDGET_MS=12000;','fallback budget');
 s=s.replaceAll('Math.min(3600,Math.max(1800,Number(model.timeoutMs||2500)+350))','Math.min(5500,Math.max(1800,Number(model.timeoutMs||2500)+350))');
 
 s=s.replaceAll('url.searchParams.get("key")||""','adminKeyFromRequestV115(request)');
@@ -49,6 +48,6 @@ const ids=[...chain[1].matchAll(/id:"([^"]+)"/g)].map(x=>x[1]);
 const expected=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-flash-lite-latest'];
 if(JSON.stringify(ids)!==JSON.stringify(expected))throw new Error('V11.5 model chain changed unexpectedly: '+JSON.stringify(ids));
 fs.writeFileSync(outPath,s);
-const cert={version:'11.5.0',sha256:crypto.createHash('sha256').update(s).digest('hex'),bytes:Buffer.byteLength(s),lines:s.split(/\n/).length,models:expected,model_selection_note:'Fallback 2 changed to gemini-flash-lite-latest after live probe: 200 plain + 200 structured JSON; gemini-3.6-flash timed out/rate-limited during certification.',hardening:{current_data_gate:true,personalization_context_gate:true,direct_mutation_exception_disarm:true,queue_heartbeat:true,voice_deadline:true,chat_rate_limit:true,transport_purge_after_clear:true,non_mutating_world_updates:true,fast_schema_marker:true,continuation_timeout:true,header_admin_auth:true,brief_windows:true,branding_v115:true,chat_failure_incident:true,duplicate_direct_handler_removed:true,holiday_failure_not_cached:true,accurate_model_timeout:true}};
+const cert={version:'11.5.0',sha256:crypto.createHash('sha256').update(s).digest('hex'),bytes:Buffer.byteLength(s),lines:s.split(/\n/).length,models:expected,model_selection_note:'Fallback 2 changed to gemini-flash-lite-latest after live probe: 200 plain + 200 structured JSON; gemini-3.6-flash timed out/rate-limited during certification. Total AI budget remains 10s so the hardened fallback chain does not regress normal latency.',hardening:{current_data_gate:true,personalization_context_gate:true,direct_mutation_exception_disarm:true,queue_heartbeat:true,voice_deadline:true,chat_rate_limit:true,transport_purge_after_clear:true,non_mutating_world_updates:true,fast_schema_marker:true,continuation_timeout:true,header_admin_auth:true,brief_windows:true,branding_v115:true,chat_failure_incident:true,duplicate_direct_handler_removed:true,holiday_failure_not_cached:true,accurate_model_timeout:true}};
 fs.writeFileSync('V11_5_CERTIFICATION.json',JSON.stringify(cert,null,2));
 console.log(JSON.stringify(cert,null,2));
