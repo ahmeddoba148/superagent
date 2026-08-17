@@ -1,0 +1,30 @@
+name: Probe V11.5.1 Google Candidates
+on:
+  push:
+    branches: [superagent-v11-5-1-final]
+    paths: ['.github/workflows/probe-v1151-google-candidates.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Probe candidates through real OmniAI
+        shell: bash
+        run: |
+          cat > /tmp/probe.mjs <<'NODE'
+          import fs from'node:fs';
+          const models=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.5-flash','gemini::gemini-3.6-flash'];
+          const out={started:new Date().toISOString(),rounds:4,models:{}};
+          for(const model of models){const a=[];for(let i=0;i<4;i++){const c=new AbortController(),timer=setTimeout(()=>c.abort(),6500),t=Date.now();let status=0,error=null,ok=false;try{const r=await fetch('https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+process.env.KEY,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة OK فقط'}],max_tokens:20,stream:false}),signal:c.signal});status=r.status;const txt=await r.text();ok=r.ok&&txt.length>0;if(!r.ok)error=txt.slice(0,220)}catch(e){error=e.name+': '+e.message}finally{clearTimeout(timer)}a.push({round:i+1,ok,status,latency_ms:Date.now()-t,error});await new Promise(r=>setTimeout(r,1200))}out.models[model]={successes:a.filter(x=>x.ok).length,total:a.length,min_ms:Math.min(...a.filter(x=>x.ok).map(x=>x.latency_ms),999999),max_ms:Math.max(0,...a.filter(x=>x.ok).map(x=>x.latency_ms)),samples:a}}
+          out.finished=new Date().toISOString();fs.writeFileSync('V11_5_1_CANDIDATE_PROBE.json',JSON.stringify(out,null,2));console.log(JSON.stringify(out));
+          NODE
+          node /tmp/probe.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: V11.5.1-Google-Candidate-Probe
+          path: V11_5_1_CANDIDATE_PROBE.json
