@@ -6,7 +6,6 @@ on:
       - superagent-v11-full-router
     paths:
       - tools/build_v11.mjs
-      - tools/patch_build_v11.mjs
       - .github/workflows/build-v11-full.yml
   workflow_dispatch:
 
@@ -24,8 +23,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Patch builder compatibility anchors
-        run: node tools/patch_build_v11.mjs
       - name: Generate V11 from full V10.7.1 engine
         run: node tools/build_v11.mjs
       - name: JavaScript syntax check
@@ -37,11 +34,14 @@ jobs:
           test "$(grep -o 'tier:\"easy\"' SuperAgent_V11_FULL.js | wc -l)" -eq 10
           test "$(grep -o 'tier:\"complex\"' SuperAgent_V11_FULL.js | wc -l)" -eq 10
           grep -q 'const ROUTER_MODELS=' SuperAgent_V11_FULL.js
+          test "$(grep -o 'short:\"R-' SuperAgent_V11_FULL.js | wc -l)" -eq 3
           grep -q 'gemini::gemini-3.5-flash-lite' SuperAgent_V11_FULL.js
           grep -q 'groq::openai/gpt-oss-20b' SuperAgent_V11_FULL.js
           grep -q 'mistral::ministral-8b-latest' SuperAgent_V11_FULL.js
           grep -q 'V11_SHOPPING_ENTITY_DROP' SuperAgent_V11_FULL.js
           grep -q 'v11_long_shopping_preserves_11_units' SuperAgent_V11_FULL.js
+          grep -q 'async function parseIntentWithFallbackLegacy' SuperAgent_V11_FULL.js
+          grep -q 'async function parseIntentWithFallback(env,userText,validationContext)' SuperAgent_V11_FULL.js
           grep -q 'v106_durable_telegram_inbox:true' SuperAgent_V11_FULL.js
           grep -q 'planner_executor_verifier:true' SuperAgent_V11_FULL.js
           grep -q 'event_dependencies:true' SuperAgent_V11_FULL.js
@@ -52,10 +52,10 @@ jobs:
           grep -q 'long_term_memory:true' SuperAgent_V11_FULL.js
           bytes=$(wc -c < SuperAgent_V11_FULL.js)
           lines=$(wc -l < SuperAgent_V11_FULL.js)
-          test "$bytes" -gt 380000
+          test "$bytes" -gt 390000
           test "$lines" -gt 14000
           sha256sum SuperAgent_V11_FULL.js | tee V11_SHA256.txt
-          printf 'V11 structural certification PASS\nbytes=%s\nlines=%s\nfast=10\ncomplex=10\nrouter=3\n' "$bytes" "$lines" > V11_BUILD_REPORT.txt
+          printf 'V11 structural certification PASS\nbytes=%s\nlines=%s\nfast=10\ncomplex=10\nrouter=3\nnode_check=PASS\n' "$bytes" "$lines" > V11_BUILD_REPORT.txt
       - name: Commit generated V11
         shell: bash
         run: |
