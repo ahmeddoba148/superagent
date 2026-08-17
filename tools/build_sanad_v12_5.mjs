@@ -107,39 +107,33 @@ src = src.replace(criticNeedle, 'أنت مراجع خطط سند V12.5. راجع
 
 const completionMarker = '  let failed=observations.filter(x=>!x.ok);';
 if (!src.includes(completionMarker)) throw new Error('completion marker missing');
-const completionBlock = String.raw`  if(hasMutation){
-    const successfulProject=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);
-    const hasProjectTask=observations.some(x=>x?.tool==="project_tasks.create"&&x?.ok);
-    const explicitTask=explicitProjectTaskHintV125(text);
-    if(successfulProject&&!hasProjectTask&&explicitTask){
-      const tool="project_tasks.create",args={project_id:Number(successfulProject.id),title:explicitTask};
-      const result=await executeTool(env,{chatId,operationId,stepKey:"coverage:project_task",tool,args,user});
-      observations.push({step:observations.length+1,tool,coverage:true,...result});stepResults.push(result);
-    }
-    if(Date.now()<deadline-2600){
-      try{
-        const completion=await callBrainJson(env,`أنت Goal Completion Gate لسند V12.5. مهمتك الوحيدة اكتشاف أي جزء صريح من طلب المستخدم لم يتم تنفيذه بعد. لا تعيد أي خطوة نجحت، ولا تضف تحسينات من عندك. لو الطلب مكتمل أرجع {"complete":true,"steps":[]}. لو ناقص أرجع {"complete":false,"steps":[...]} بالأدوات الناقصة فقط. استخدم $step:N.field لو خطوة ناقصة تعتمد على نتيجة خطوة سابقة. راجع خصوصًا الطلبات متعددة المجالات والعلاقات مثل مشروع + مهمة بداخله.\
-طلب المستخدم: \${text}\
-الخطة الأصلية: \${JSON.stringify(steps).slice(0,12000)}\
-النتائج المنفذة: \${JSON.stringify(observations).slice(0,18000)}\
-الأدوات: \${JSON.stringify(TOOL_SPECS)}`,text,deadline);
-        const missing=groundExplicitTemporalFactsV125(text,Array.isArray(completion?.steps)?completion.steps.slice(0,MAX_REPAIR_STEPS):[]);
-        for(const [j,s] of missing.entries()){
-          const tool=String(s?.tool||"");if(!TOOL_SPECS[tool]||TOOL_SPECS[tool].risky&&!forcedSteps&&!looksExplicitlyConfirmed(text))continue;
-          let args=resolveStepRefsV125(s?.args||{},stepResults);
-          if(tool==="project_tasks.create"&&!Number(args?.project_id)){
-            const p=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);
-            if(p)args={...args,project_id:Number(p.id)};
-          }
-          const duplicate=observations.some(o=>o?.ok&&o?.tool===tool&&JSON.stringify(o?.args||null)===JSON.stringify(args||null));
-          if(duplicate)continue;
-          const result=await executeTool(env,{chatId,operationId,stepKey:`completion:\${j+1}:\${tool}`,tool,args,user});
-          observations.push({step:observations.length+1,tool,completion:true,args,...result});stepResults.push(result);
-        }
-      }catch(e){await reportFailure(env,chatId,"goal_completion",e,{operationId,text:normalizeText(text).slice(0,300)});}
-    }
-  }
-  let failed=observations.filter(x=>!x.ok);`;
+const completionBlock = [
+'  if(hasMutation){',
+'    const successfulProject=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);',
+'    const hasProjectTask=observations.some(x=>x?.tool==="project_tasks.create"&&x?.ok);',
+'    const explicitTask=explicitProjectTaskHintV125(text);',
+'    if(successfulProject&&!hasProjectTask&&explicitTask){',
+'      const tool="project_tasks.create",args={project_id:Number(successfulProject.id),title:explicitTask};',
+'      const result=await executeTool(env,{chatId,operationId,stepKey:"coverage:project_task",tool,args,user});',
+'      observations.push({step:observations.length+1,tool,coverage:true,args,...result});stepResults.push(result);',
+'    }',
+'    if(Date.now()<deadline-2600){',
+'      try{',
+'        const completionPrompt=["أنت Goal Completion Gate لسند V12.5. اكتشف فقط أي جزء صريح من طلب المستخدم لم يتم تنفيذه بعد.","لا تعيد أي خطوة نجحت ولا تضف تحسينات من عندك. لو مكتمل أرجع JSON {\\"complete\\":true,\\"steps\\":[]} ولو ناقص أرجع الأدوات الناقصة فقط.","استخدم $step:N.field لو خطوة تعتمد على نتيجة خطوة سابقة، وراجع الطلبات متعددة المجالات والعلاقات.","طلب المستخدم: "+text,"الخطة الأصلية: "+JSON.stringify(steps).slice(0,12000),"النتائج المنفذة: "+JSON.stringify(observations).slice(0,18000),"الأدوات: "+JSON.stringify(TOOL_SPECS)].join("\\n");',
+'        const completion=await callBrainJson(env,completionPrompt,text,deadline);',
+'        const missing=groundExplicitTemporalFactsV125(text,Array.isArray(completion?.steps)?completion.steps.slice(0,MAX_REPAIR_STEPS):[]);',
+'        for(const [j,s] of missing.entries()){',
+'          const tool=String(s?.tool||"");if(!TOOL_SPECS[tool]||TOOL_SPECS[tool].risky&&!forcedSteps&&!looksExplicitlyConfirmed(text))continue;',
+'          let args=resolveStepRefsV125(s?.args||{},stepResults);',
+'          if(tool==="project_tasks.create"&&!Number(args?.project_id)){const p=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);if(p)args={...args,project_id:Number(p.id)};}',
+'          const result=await executeTool(env,{chatId,operationId,stepKey:"completion:"+(j+1)+":"+tool,tool,args,user});',
+'          observations.push({step:observations.length+1,tool,completion:true,args,...result});stepResults.push(result);',
+'        }',
+'      }catch(e){await reportFailure(env,chatId,"goal_completion",e,{operationId,text:normalizeText(text).slice(0,300)});}',
+'    }',
+'  }',
+'  let failed=observations.filter(x=>!x.ok);'
+].join('\n');
 src = src.replace(completionMarker, completionBlock);
 
 const finalBuffer = Buffer.from(src, 'utf8');
