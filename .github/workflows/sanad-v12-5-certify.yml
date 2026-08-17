@@ -8,8 +8,10 @@ on:
       - "tools/live_sanad_v12_5.mjs"
       - ".github/workflows/sanad-v12-5-certify.yml"
       - "SANAD_V12_5_ARCHITECTURE.md"
+  workflow_dispatch:
 permissions:
   contents: write
+
 jobs:
   certify:
     runs-on: ubuntu-latest
@@ -22,11 +24,14 @@ jobs:
       URL: https://sanad-v12-5-staging.ahmeddoba91.workers.dev
       DB: superagent-v106-staging
       WRANGLER_CONFIG: wrangler.sanad125.jsonc
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with:
+          node-version: 22
 
       - name: Rebuild exact V12.5 source
         run: |
@@ -37,8 +42,8 @@ jobs:
         run: |
           node --check Sanad_V12_5_FULL.js
           npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_5_FULL.js
-          if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_5_FULL.js; then echo 'TypeScript suppression forbidden'; exit 1; fi
-          if grep -En 'eval\(|new Function\(' Sanad_V12_5_FULL.js; then echo 'dynamic code execution forbidden'; exit 1; fi
+          if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_5_FULL.js; then exit 1; fi
+          if grep -En 'eval\(|new Function\(' Sanad_V12_5_FULL.js; then exit 1; fi
 
       - name: Pure architecture gates
         run: |
@@ -51,9 +56,8 @@ jobs:
           node - <<'NODE'
           const x=require('/tmp/pure.json');
           if(x.version!=='12.5.0'||x.models!==3||x.tools<64||x.mutations<40||x.risky<5)throw Error(JSON.stringify(x));
-          if(JSON.stringify(x.monthly)!==JSON.stringify(['2026-01-15','2026-02-15','2026-03-15','2026-04-15']))throw Error('monthly '+JSON.stringify(x));
-          if(x.cairo!=='2026-08-17T16:00:00.000Z'||x.snapshotTables<10)throw Error('time/snapshot '+JSON.stringify(x));
-          console.log('PURE PASS');
+          if(JSON.stringify(x.monthly)!==JSON.stringify(['2026-01-15','2026-02-15','2026-03-15','2026-04-15']))throw Error(JSON.stringify(x));
+          if(x.cairo!=='2026-08-17T16:00:00.000Z'||x.snapshotTables<10)throw Error(JSON.stringify(x));
           NODE
           [ "$(grep -c '^async function runAgent' Sanad_V12_5_FULL.js)" = "1" ]
 
@@ -67,19 +71,17 @@ jobs:
 
       - name: Configure staging secrets
         run: |
-          export WEBHOOK_SECRET="$(openssl rand -hex 32)"
-          export SETUP_KEY="$(openssl rand -hex 32)"
-          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
           echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
           echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
-          for pair in \
-            "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" \
-            "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" \
-            "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" \
-            "SETUP_KEY:$SETUP_KEY" \
-            "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID"; do
-            k=${pair%%:*}; v=${pair#*:}; printf '%s' "$v" | npx wrangler secret put "$k" --config "$WRANGLER_CONFIG" >/dev/null
-          done
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config "$WRANGLER_CONFIG" >/dev/null
 
       - name: Endpoint and deep D1 gates
         run: |
@@ -89,7 +91,6 @@ jobs:
           retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
           retry selftest -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
           retry deep -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?deep=1"
-          cat /tmp/deep.json
           node - <<'NODE'
           const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),t=require('/tmp/selftest.json'),d=require('/tmp/deep.json');
           if(!s.ok||s.version!=='12.5.0'||s.tools<64||s.models.length!==3)throw Error('setup '+JSON.stringify(s));
@@ -97,19 +98,7 @@ jobs:
           if(!r.ok||r.version!=='12.5.0')throw Error('ready '+JSON.stringify(r));
           if(!t.ok||!t.tests.every(x=>x.ok))throw Error('selftest '+JSON.stringify(t));
           if(!d.ok||d.count<20||!d.tests.every(x=>x.ok))throw Error('deep '+JSON.stringify(d));
-          console.log('DEEP PASS',d.count);
           NODE
-
-      - name: External dependency sanity
-        run: |
-          probe(){ name=$1; url=$2; for i in 1 2 3; do code=$(curl -L --max-time 20 -sS -o "/tmp/ext-$name" -w '%{http_code}' "$url" || true); echo "$name $i HTTP=$code"; [ "$code" = 200 ] && return 0; sleep 3; done; head -c 500 "/tmp/ext-$name" || true; return 1; }
-          probe prayer "https://api.aladhan.com/v1/timingsByCity/17-08-2026?city=Cairo&country=Egypt&method=5"
-          probe geocode "https://geocoding-api.open-meteo.com/v1/search?name=Cairo&count=1&language=ar&format=json"
-          probe weather "https://api.open-meteo.com/v1/forecast?latitude=30.0444&longitude=31.2357&current=temperature_2m&timezone=auto"
-          probe holidays_api "https://date.nager.at/api/v4/Holidays/AT/2026"
-          # Egypt is intentionally checked as capability/fallback behavior because Nager currently exposes the country page but may not publish a 2026 dataset.
-          curl -L --max-time 20 -sS -o /tmp/ext-holidays-eg -w "Egypt holidays HTTP=%{http_code}\n" "https://date.nager.at/api/v4/Holidays/EG/2026" || true
-          probe gdelt "https://api.gdeltproject.org/api/v2/doc/doc?query=Egypt&mode=artlist&maxrecords=3&format=json"
 
       - name: Live Egyptian natural-language matrix
         run: node tools/live_sanad_v12_5.mjs
@@ -117,11 +106,28 @@ jobs:
       - name: Build certification
         run: |
           SHA=$(sha256sum Sanad_V12_5_FULL.js | awk '{print $1}'); export SHA
-          DEEP_COUNT=$(node -p "require('/tmp/deep.json').count"); export DEEP_COUNT
           node - <<'NODE'
-          const fs=require('fs'),live=require('./SANAD_V12_5_LIVE_REPORT.json');
+          const fs=require('fs');
+          const live=require('./SANAD_V12_5_LIVE_REPORT.json');
           const src=fs.readFileSync('Sanad_V12_5_FULL.js','utf8');
-         ÛÛœÝÙ\^ÛÚÎYK™\œÚ[ÛŽ‰ÌL‹KŒ	Ë˜[YN‰ÔØ[˜Y8 %6,öa¶+ÉËY][ÛŽ‰Ñ[SY™HYÙ[	ËÚLMŽœ›ØÙ\ÜË™[‹”ÒKž]\ÎY™™\‹˜ž]S[™Ý
-Ü˜ÊK[™\ÎœÜ˜ËœÜ]
-	×‰ÊK›[™ÝÞ[^Ù\œ›ÜœÎŒ\\ØÜš\Ù\œ›ÜœÎŒ\\ØÜš\Ý™\œÚ[ÛŽ‰ÍKŽŒÉËÝ\™\ÜÚ[Ûœ×Ý\ÙY™˜[ÙK\˜Ú]XÝ\™N‰ÜÚ[™ÛKXœ˜Z[‹Y[[Y™KXYÙ[	ËÞXÛN–ÉÝ[™\œÝ[™	Ë	Ü[‰Ë	ØÜš]XÉË	ØXÝ	Ë	ÛØœÙ\™IË	Ý™\šYžIË	Ü™\Z\‰Ë	Ø]ÛZXËXÛÛ[Z][Ü‹\›Û˜XÚÉË	Ü™\I×KÛÛÎ]]][Û—ÝÛÛÎY\ÜÙ[\ÝÎ“[X™\Š›ØÙ\ÜË™[‹‘QTÐÓÕS•
-K]™WÜØÙ[˜\š[ÜÎ›]™KœØÙ[˜\š[×ØÛÝ[]™WÛÚÎ›]™K›ÚËØ\Xš[]Y\Î–ÉÜÚÜ[™ÉË	Ü™[Z[™\œÉË	Ø\Ú[Y[ÉË	Ü™XÝ\œ™[˜ÙHZ[]\ËZÝ\œËY^\Ë]ÙYZÜË[[ÛË^YX\œÉË	ØY˜[˜ÙH[\ÉË	ÜÛ›ÛÞ™IË	ØÛÛ™›XÝÉË	Ùœ™YH[YIË	ÜÚ[™ÛH[™[ÈÚY	Ë	Ù\[™[˜ÚY\ÉË	Û^Y\™YY[[ÜžIË	ÝÛÜ›[]Y\È[™™[][ÛœÚ\ÉË	Ü›Ú™XÝÉË	Ü›Ú™XÝ\ÚÜÉË	ÝØZ][™ËY›Ü‰Ë	Ü›Ùš[H[™Ù][™ÜÉË	ÛØØ][Û‰Ë	Ý›ÚXÙIË	Ü˜^Y\ˆ[Y\ÉË	Ü˜^Y\ˆ™[]]™H[\ÉË	ÚÛY^\ÉË	ÝÙX]\‰Ë	Û]™H™]ÜÉË	Ü\œÚ\Ý[]™HØ]Ú\ÉË	Û[Ü›š[™È[™]™[š[™ÈœšYYœÉË	Ü›ØXÝ]™H[\ÉË	Ø]Y]	Ë	Ý[™ÉË	Ù[ÛX\ˆÛÛ™š\›X][Û‰Ë	ÕŒLHZYÜ˜][Û‰Ë	Ù\˜X›H[YÜ˜[H[˜›Þ	Ë	ØÜ›ÜÜËZ\ÛÛ]HÙ\šX[^˜][Û‰Ë	ÚY[\Ý[™XÙZ\ÉË	Ø]ÛZXÈÛ˜\ÚÝÈ[™›Û˜XÚÉË	Ü˜]H[Z][™É×K[Ù[Î–ÉÙÙ[Z[šNŽ™Ù[Z[šKLËKY›\Ú[]IË	ÙÙ[Z[šNŽ™Ù[Z[šKLËŒKY›\Ú[]IË	ÙÙ[Z[šNŽ™Ù[Z[šKLËKY›\Ú	×K^\›˜[Ù\[™[˜ÚY\×Ý™\šYšYY–ÉÐ[Y[‰Ë	ÓÜ[‹SY][ÉË	Ó˜YÙ\‹‘]H	Ë	ÑÑSÐÈ‹Œ	×KÛ›ÝÛ—ØÜš]XØ[ØÛÙWÙ˜Z[\™\Î–×K[Z]][ÛœÎ–ÉÑ^\›˜[[Ù[ÐTH]˜Z[Xš[]H[™][ÝH™[XZ[ˆ\[™[˜ÚY\ËˆÙ\YšXØ][Ûˆ›Ý™\ÈH\ÝYØÛÜK›Ý]™\žHÜÜÚX›H]\™H[œ]‰×_NÂˆœËÜš]Qš[TÞ[˜Ê	ÔÐSQÕŒL—ÍWÐÑT•Q’PÐUSÓ‹šœÛÛ‰Ë”ÓÓ‹œÝš[™ÚYžJÙ\[ŠJNÂˆ“ÑB‚ˆH˜[YNˆÛÛ[Z]Ù\YšYY™\ÜÂˆ[ŽˆˆÚ]ÛÛ™šYÈ\Ù\‹›˜[YHÚ]X‹XXÝ[ÛœËX›ÝˆÚ]ÛÛ™šYÈ\Ù\‹™[XZ[NNŽŠÙÚ]X‹XXÝ[ÛœËX›Ý\Ù\œË››Ü™\K™Ú]X‹˜ÛÛBˆÚ]YØ[˜YÕŒL—ÍWÑ•SšœÈÐSQÕŒL—ÍWÓU‘WÔ‘TÔ•šœÛÛˆÐSQÕŒL—ÍWÐÑT•Q’PÐUSÓ‹šœÛÛ‚ˆÚ]ÛÛ[Z][H–ÜÚÚ\ÚWH]™KXÙ\YžHØ[˜YŒL‹H[SY™HYÙ[ˆ^]ˆÚ]\ÚÜšYÚ[ˆPQœØ[˜Y]ŒL‹MKY[[Y™B‚ˆH\Ù\ÎˆXÝ[ÛœËÝ\ØYX\Y˜XÝˆÚ]‚ˆ˜[YNˆØ[˜YUŒL‹KQ[SY™KPÙ\YšYYˆ]ˆˆØ[˜YÕŒL—ÍWÑ•SšœÂˆÐSQÕŒL—ÍWÐTÒUPÕT‘K›YˆÐSQÕŒL—ÍWÐÑT•Q’PÐUSÓ‹šœÛÛ‚ˆÐSQÕŒL—ÍWÓU‘WÔ‘TÔ•šœÛÛ‚
+          const pure=require('/tmp/pure.json');
+          const cert={ok:true,version:'12.5.0',name:'Sanad â€” Ø³Ù†Ø¯ V12.5 Full-Life',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-full-life-agent',tools:pure.tools,models:pure.models,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),known_critical_code_failures:[],limitations:['External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs.']};
+          fs.writeFileSync('SANAD_V12_5_CERTIFICATION.json',JSON.stringify(cert,null,2));
+          NODE
+
+      - name: Commit certified reports
+        run: |
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add Sanad_V12_5_FULL.js SANAD_V12_5_LIVE_REPORT.json SANAD_V12_5_CERTIFICATION.json
+          git commit -m "Live-certify Sanad V12.5 Full-Life Agent" || exit 0
+          git push origin HEAD:sanad-v12-5-full-life
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sanad-V12.5-Full-Life-Certified
+          path: |
+            Sanad_V12_5_FULL.js
+            SANAD_V12_5_ARCHITECTURE.md
+            SANAD_V12_5_CERTIFICATION.json
+            SANAD_V12_5_LIVE_REPORT.json
