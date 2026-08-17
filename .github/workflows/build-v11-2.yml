@@ -1,0 +1,180 @@
+name: Build SuperAgent V11.2 Full
+
+on:
+  push:
+    branches:
+      - superagent-v11-2-simple-3models
+    paths:
+      - tools/build_v11_2.mjs
+      - .github/workflows/build-v11-2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-v11-2:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Generate V11.2
+        run: node tools/build_v11_2.mjs
+
+      - name: JavaScript syntax and module-load checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check SuperAgent_V11_2_FULL.js
+          cp SuperAgent_V11_2_FULL.js /tmp/superagent_v112.mjs
+          node -e "import('/tmp/superagent_v112.mjs').then(()=>console.log('module-load PASS'))"
+
+      - name: Router-removal and exact-model audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'const V10_VERSION="11.2.0"' SuperAgent_V11_2_FULL.js
+          grep -q 'const MODEL_CHAIN=' SuperAgent_V11_2_FULL.js
+          grep -q 'const PRIMARY_MODEL=MODEL_CHAIN\[0\]' SuperAgent_V11_2_FULL.js
+          grep -q 'const FALLBACK_MODELS=MODEL_CHAIN.slice(1)' SuperAgent_V11_2_FULL.js
+          grep -q 'const REMINDER_MODELS=MODEL_CHAIN' SuperAgent_V11_2_FULL.js
+          test "$(grep -o 'role:\"primary\"' SuperAgent_V11_2_FULL.js | wc -l)" -eq 1
+          test "$(grep -o 'role:\"fallback_1\"' SuperAgent_V11_2_FULL.js | wc -l)" -eq 1
+          test "$(grep -o 'role:\"fallback_2\"' SuperAgent_V11_2_FULL.js | wc -l)" -eq 1
+          grep -q 'id:"groq::openai/gpt-oss-20b"' SuperAgent_V11_2_FULL.js
+          grep -q 'id:"gemini::gemini-3.5-flash-lite"' SuperAgent_V11_2_FULL.js
+          grep -q 'id:"groq::qwen/qwen3.6-27b"' SuperAgent_V11_2_FULL.js
+          ! grep -q 'const FAST_MODELS=' SuperAgent_V11_2_FULL.js
+          ! grep -q 'const COMPLEX_MODELS=' SuperAgent_V11_2_FULL.js
+          ! grep -q 'const ROUTER_MODELS=' SuperAgent_V11_2_FULL.js
+          ! grep -q 'function v11RouteAxes' SuperAgent_V11_2_FULL.js
+          ! grep -q 'routeRequestV11' SuperAgent_V11_2_FULL.js
+          ! grep -q 'v11RankModels' SuperAgent_V11_2_FULL.js
+          ! grep -q 'v11ProviderDiverse' SuperAgent_V11_2_FULL.js
+          ! grep -q 'V11_ROUTER_BUDGET_MS' SuperAgent_V11_2_FULL.js
+          ! grep -q 'V111_EASY_PLAN_BUDGET_MS' SuperAgent_V11_2_FULL.js
+          ! grep -q 'V111_COMPLEX_PLAN_BUDGET_MS' SuperAgent_V11_2_FULL.js
+          ! grep -q 'V111FIX_CHAT_MODELS' SuperAgent_V11_2_FULL.js
+          ! grep -q '_v111_hedged:true' SuperAgent_V11_2_FULL.js
+          grep -q 'v11_semantic_router:false' SuperAgent_V11_2_FULL.js
+          grep -q 'v112_router_removed:true' SuperAgent_V11_2_FULL.js
+          grep -q 'v112_simple_three_model_chain:true' SuperAgent_V11_2_FULL.js
+
+      - name: Known-bug and latency audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Fq '||(?:shopping' SuperAgent_V11_2_FULL.js
+          ! grep -Fq '.v11_failures=' SuperAgent_V11_2_FULL.js
+          grep -q 'const TOTAL_AI_BUDGET_MS=6200' SuperAgent_V11_2_FULL.js
+          grep -q 'const V112_CHAT_TOTAL_BUDGET_MS=4600' SuperAgent_V11_2_FULL.js
+          grep -q 'timeoutMs:1600,role:"primary"' SuperAgent_V11_2_FULL.js
+          grep -q 'timeoutMs:1900,role:"fallback_1"' SuperAgent_V11_2_FULL.js
+          grep -q 'timeoutMs:2300,role:"fallback_2"' SuperAgent_V11_2_FULL.js
+          grep -q 'deterministic:explicit-shopping-list' SuperAgent_V11_2_FULL.js
+          grep -q 'shop:toggle:' SuperAgent_V11_2_FULL.js
+          grep -q 'tryV112FastChat' SuperAgent_V11_2_FULL.js
+          grep -q 'تمام يا معلم 😄 إنت عامل إيه؟' SuperAgent_V11_2_FULL.js
+
+      - name: Execute V11.2 pure self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp SuperAgent_V11_2_FULL.js /tmp/v112-selftest.mjs
+          cat >> /tmp/v112-selftest.mjs <<'NODE'
+          const __tests=runV11PureSelfTests();
+          console.log(JSON.stringify(__tests,null,2));
+          const __failed=__tests.filter(x=>!x.ok);
+          if(__failed.length){console.error('SELFTEST FAIL',__failed);process.exit(1);}
+          if(__tests.length<9){console.error('SELFTEST COUNT TOO LOW');process.exit(1);}
+          NODE
+          node /tmp/v112-selftest.mjs
+
+      - name: Full-file structural parity and line-by-line sanity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs');
+          const crypto=require('crypto');
+          const base=fs.readFileSync('SuperAgent_V10_7_Universal_Agent.js','utf8');
+          const prev=fs.readFileSync('SuperAgent_V11_1_FIX.js','utf8');
+          const out=fs.readFileSync('SuperAgent_V11_2_FULL.js','utf8');
+          const funcs=s=>new Set([...s.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(m=>m[1]));
+          const tables=s=>new Set([...s.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gi)].map(m=>m[1]));
+          const bf=funcs(base), of=funcs(out), bt=tables(base), ot=tables(out);
+          const missingFunctions=[...bf].filter(x=>!of.has(x));
+          const missingTables=[...bt].filter(x=>!ot.has(x));
+          const lines=out.split(/\n/);
+          const badLines=[];
+          for(let i=0;i<lines.length;i++){
+            const line=lines[i];
+            if(line.includes('\u0000')||/^(<<<<<<<|=======|>>>>>>>)/.test(line))badLines.push(i+1);
+          }
+          const modelBlock=out.slice(out.indexOf('const MODEL_CHAIN=['),out.indexOf('const PRIMARY_MODEL='));
+          const activeModelIds=[...modelBlock.matchAll(/id:"([^"]+)"/g)].map(m=>m[1]);
+          const expected=['groq::openai/gpt-oss-20b','gemini::gemini-3.5-flash-lite','groq::qwen/qwen3.6-27b'];
+          const exactModels=JSON.stringify(activeModelIds)===JSON.stringify(expected);
+          const checks={
+            syntax_checked:true,
+            version:out.includes('const V10_VERSION="11.2.0"'),
+            router_removed:!out.includes('const ROUTER_MODELS=')&&!out.includes('function v11RouteAxes'),
+            exact_three_models:exactModels,
+            primary_plus_two_fallbacks:out.includes('const FALLBACK_MODELS=MODEL_CHAIN.slice(1)'),
+            direct_egyptian_chat:out.includes('tryV112FastChat')&&out.includes('اتكلم بالمصري الطبيعي جدًا'),
+            deterministic_long_shopping:out.includes('deterministic:explicit-shopping-list'),
+            shopping_todo:out.includes('shop:toggle:'),
+            durable_inbox:out.includes('v106_durable_telegram_inbox:true'),
+            planner_executor_verifier:out.includes('planner_executor_verifier:true'),
+            audit_undo:out.includes('audit_undo:true'),
+            voice:out.includes('voice_first:true'),
+            recurrence:out.includes('universal_recurrence:true'),
+            life_os:out.includes('life_os:true'),
+            dependencies:out.includes('event_dependencies:true'),
+            memory:out.includes('long_term_memory:true'),
+            no_missing_v10_7_1_named_functions:missingFunctions.length===0,
+            no_missing_v10_7_1_tables:missingTables.length===0,
+            no_conflict_or_nul_lines:badLines.length===0,
+            size_not_accidentally_truncated:Buffer.byteLength(out)>390000,
+            line_count_not_accidentally_truncated:lines.length>14500
+          };
+          const failed=Object.entries(checks).filter(([,v])=>!v).map(([k])=>k);
+          if(failed.length||missingFunctions.length||missingTables.length||badLines.length){
+            console.error({failed,missingFunctions,missingTables,badLines,activeModelIds});process.exit(1);
+          }
+          const sha=crypto.createHash('sha256').update(out).digest('hex');
+          const report={
+            build:'SuperAgent V11.2 FULL',version:'11.2.0',sha256:sha,
+            bytes:Buffer.byteLength(out),lines:lines.length,
+            source_v11_1_fix_bytes:Buffer.byteLength(prev),
+            active_models:activeModelIds,
+            router:false,
+            base_v10_7_1_named_functions:bf.size,
+            retained_named_functions:[...bf].filter(x=>of.has(x)).length,
+            missing_functions:missingFunctions,
+            base_v10_7_1_tables:bt.size,
+            retained_tables:[...bt].filter(x=>ot.has(x)).length,
+            missing_tables:missingTables,
+            checks,failed_checks:failed,
+            note:'Full-file static/CI audit and pure self-tests passed. Live Cloudflare/Telegram/provider latency still requires real deployment measurement.'
+          };
+          fs.writeFileSync('V11_2_CERTIFICATION.json',JSON.stringify(report,null,2));
+          fs.writeFileSync('V11_2_BUILD_REPORT.txt',`V11.2 certification PASS\nversion=11.2.0\nrouter=false\nmodels=3\nbytes=${report.bytes}\nlines=${report.lines}\nbase_functions=${bf.size}\nretained_functions=${report.retained_named_functions}\nbase_tables=${bt.size}\nretained_tables=${report.retained_tables}\nsha256=${sha}\n`);
+          fs.writeFileSync('V11_2_SHA256.txt',`${sha}  SuperAgent_V11_2_FULL.js\n`);
+          NODE
+
+      - name: Commit generated V11.2 release
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_2_FULL.js V11_2_CERTIFICATION.json V11_2_BUILD_REPORT.txt V11_2_SHA256.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build SuperAgent V11.2 simple 3-model release'
+          git push origin HEAD:superagent-v11-2-simple-3models
