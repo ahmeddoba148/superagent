@@ -14,6 +14,8 @@ V12.5 هو دمج **عقل V12 الواحد** مع القدرات العملية
 5. العمليات الحساسة مثل clear/forget/undo الشامل تحتاج تأكيدًا صريحًا في المحادثة.
 6. كل مستخدم معزول بالـchat_id، مع durable inbox وD1 lease للتسلسل عبر isolates.
 7. V11 data migration best-effort/idempotent إلى جداول Sanad الجديدة.
+8. الطلبات الصريحة ذات الحقائق الزمنية/الحياتية تمر عبر deterministic grounding قبل التنفيذ.
+9. Goal Completion Gate يراجع الأجزاء الصريحة غير المنفذة قبل اعتبار العملية مكتملة.
 
 ## الأدوات — 64 Tool
 ### المشتريات
@@ -87,3 +89,5 @@ Scheduled worker يدير:
 - duplicate + same-chat burst tests
 - false-success audit = 0
 - runtime failures = 0 within certification run
+
+Certification trigger: life-grounding-v2 / 2026-08-18.
