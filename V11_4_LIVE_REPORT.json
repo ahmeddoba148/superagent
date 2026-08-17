@@ -1,0 +1,98 @@
+{
+  "ok": true,
+  "version": "11.4.0",
+  "sha256": "99a42dec5ca74665f84c54806dfdbf0f3557ab3b5ad7eded5051065eb3ce6dbc",
+  "started": "2026-08-17T06:03:36.020Z",
+  "finished": "2026-08-17T06:04:07.540Z",
+  "models": {
+    "primary": "gemini::gemini-3.5-flash-lite",
+    "fallbacks": [
+      "gemini::gemini-3.1-flash-lite",
+      "gemini::gemini-3.6-flash"
+    ]
+  },
+  "ready_all": [
+    {
+      "model": "gemini::gemini-3.5-flash-lite",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1563
+    },
+    {
+      "model": "gemini::gemini-3.1-flash-lite",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1026
+    },
+    {
+      "model": "gemini::gemini-3.6-flash",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1316
+    }
+  ],
+  "passes": [
+    {
+      "name": "identity",
+      "detail": "ms=2188"
+    },
+    {
+      "name": "egyptian casual",
+      "detail": "ms=2192"
+    },
+    {
+      "name": "AI direct chat",
+      "detail": "ms=3195"
+    },
+    {
+      "name": "shopping 11/11",
+      "detail": "items=11 ms=4655"
+    },
+    {
+      "name": "reminder exact",
+      "detail": "rows=1 attempts=1 ms=4674"
+    },
+    {
+      "name": "idempotent duplicate",
+      "detail": "rows=1 ms=5203"
+    },
+    {
+      "name": "same-chat burst",
+      "detail": "[1,1,1]"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    }
+  ],
+  "runtime_failures": [],
+  "model_stats": [
+    {
+      "model_id": "gemini::gemini-3.5-flash-lite",
+      "attempts": 164,
+      "successes": 154,
+      "failures": 10,
+      "last_latency_ms": 1833,
+      "last_error": null,
+      "updated_at": "2026-08-17T06:03:56.860Z"
+    },
+    {
+      "model_id": "gemini::gemini-3.6-flash",
+      "attempts": 78,
+      "successes": 10,
+      "failures": 68,
+      "last_latency_ms": 738,
+      "last_error": "429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.6-flash\nPlease retry in 49.878456099s.",
+      "updated_at": "2026-08-16T20:52:10.075Z"
+    },
+    {
+      "model_id": "gemini::gemini-3.1-flash-lite",
+      "attempts": 8,
+      "successes": 0,
+      "failures": 8,
+      "last_latency_ms": 3000,
+      "last_error": "الموديل اتأخر عن المهلة المحددة.",
+      "updated_at": "2026-08-16T19:17:05.680Z"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "version": "11.4.0",
+  "sha256": "99a42dec5ca74665f84c54806dfdbf0f3557ab3b5ad7eded5051065eb3ce6dbc",
+  "bytes": 458386,
+  "lines": 15656,
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3.6-flash"
+  ],
+  "base_v113_functions": 408,
+  "retained_functions": 408,
+  "missing_functions": [],
+  "base_v113_tables": 36,
+  "retained_tables": 36,
+  "missing_tables": [],
+  "checks": {
+    "version": true,
+    "chain": true,
+    "google_only": true,
+    "router_off": true,
+    "identity": true,
+    "setup": true,
+    "functions": true,
+    "tables": true
+  },
+  "failed_checks": []
+}
