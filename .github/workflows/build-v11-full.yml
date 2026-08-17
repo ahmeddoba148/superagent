@@ -1,0 +1,64 @@
+name: Build SuperAgent V11 Full
+
+on:
+  push:
+    branches:
+      - superagent-v11-full-router
+    paths:
+      - tools/build_v11.mjs
+      - .github/workflows/build-v11-full.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-v11:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Generate V11 from full V10.7.1 engine
+        run: node tools/build_v11.mjs
+      - name: JavaScript syntax check
+        run: node --check SuperAgent_V11_FULL.js
+      - name: V11 structural certification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -o 'tier:\"easy\"' SuperAgent_V11_FULL.js | wc -l)" -eq 10
+          test "$(grep -o 'tier:\"complex\"' SuperAgent_V11_FULL.js | wc -l)" -eq 10
+          grep -q 'const ROUTER_MODELS=' SuperAgent_V11_FULL.js
+          grep -q 'gemini::gemini-3.5-flash-lite' SuperAgent_V11_FULL.js
+          grep -q 'groq::openai/gpt-oss-20b' SuperAgent_V11_FULL.js
+          grep -q 'mistral::ministral-8b-latest' SuperAgent_V11_FULL.js
+          grep -q 'V11_SHOPPING_ENTITY_DROP' SuperAgent_V11_FULL.js
+          grep -q 'v11_long_shopping_preserves_11_units' SuperAgent_V11_FULL.js
+          grep -q 'v106_durable_telegram_inbox:true' SuperAgent_V11_FULL.js
+          grep -q 'planner_executor_verifier:true' SuperAgent_V11_FULL.js
+          grep -q 'event_dependencies:true' SuperAgent_V11_FULL.js
+          grep -q 'interactive_shopping:true' SuperAgent_V11_FULL.js
+          grep -q 'voice_first:true' SuperAgent_V11_FULL.js
+          grep -q 'audit_undo:true' SuperAgent_V11_FULL.js
+          grep -q 'universal_recurrence:true' SuperAgent_V11_FULL.js
+          grep -q 'long_term_memory:true' SuperAgent_V11_FULL.js
+          bytes=$(wc -c < SuperAgent_V11_FULL.js)
+          lines=$(wc -l < SuperAgent_V11_FULL.js)
+          test "$bytes" -gt 380000
+          test "$lines" -gt 14000
+          sha256sum SuperAgent_V11_FULL.js | tee V11_SHA256.txt
+          printf 'V11 structural certification PASS\nbytes=%s\nlines=%s\nfast=10\ncomplex=10\nrouter=3\n' "$bytes" "$lines" > V11_BUILD_REPORT.txt
+      - name: Commit generated V11
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_FULL.js V11_SHA256.txt V11_BUILD_REPORT.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build SuperAgent V11 full semantic router'
+          git push origin HEAD:superagent-v11-full-router
