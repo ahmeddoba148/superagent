@@ -535,6 +535,7 @@ function brainSystemPrompt(context) {
 هدفك فهم المقصد الحقيقي من الكلام الطبيعي المصري، لا انتظار كلمات سحرية.
 أنت لا تدّعي تنفيذ شيء. أي تغيير لازم يتم من خلال tool ثم verification حقيقي.
 خطتك قد تحتوي عدة أدوات بالترتيب. لا تطلب توضيحًا إلا لو لا يمكن اتخاذ قرار آمن ومعقول.
+إذا كانت خطوة لاحقة تحتاج ID أو قيمة من نتيجة خطوة سابقة، استخدم مرجعًا نصيًا بالشكل "$step:N.id" حيث N رقم الخطوة السابقة. مثال: إنشاء مشروع ثم مهمة داخله = projects.create ثم project_tasks.create مع project_id="$step:1.id".
 لا تستخدم regex ذهنيًا ولا تتطلب صيغة أوامر. استخدم السياق والذاكرة والحالة.
 للعمليات الحساسة الواسعة مثل clear/forget الكامل: اطلب confirmation ولا تنفذها مباشرة.
 إذا كان الكلام مجرد محادثة ولا يحتاج أدوات، أعد reply طبيعي بالمصري.
@@ -556,6 +557,142 @@ ${JSON.stringify(TOOL_SPECS)}
 ${JSON.stringify(context).slice(0,28000)}`;
 }
 
+
+function digitsAsciiV125(value) {
+  const ar="٠١٢٣٤٥٦٧٨٩",fa="۰۱۲۳۴۵۶۷۸۹";
+  return String(value||"").replace(/[٠-٩]/g,c=>String(ar.indexOf(c))).replace(/[۰-۹]/g,c=>String(fa.indexOf(c)));
+}
+function clockValueV125(hourRaw,minuteRaw,modifier,daypart){
+  let h=Number(hourRaw),m=minuteRaw==null||minuteRaw===""?0:Number(minuteRaw);
+  const mod=normalizeText(modifier||"").replace(/\s+/g,"");
+  if(/نص|نصف/.test(mod))m=30;
+  else if(/وربع|والربع/.test(mod))m=15;
+  else if(/إلاربع|الاربع/.test(mod)){h-=1;m=45;if(h<0)h=23;}
+  if(!Number.isInteger(h)||!Number.isInteger(m)||h<0||h>23||m<0||m>59)return null;
+  const p=normalizeText(daypart||"").toLowerCase();
+  const pm=/(?:^م$|مساء|المساء|بالليل|ليل|الظهر|ظهر|العصر)/.test(p),am=/(?:^ص$|صباح|الصبح|الصباح|الفجر)/.test(p);
+  if(pm&&h<12)h+=12;
+  if(am&&h===12)h=0;
+  if(h>23)return null;
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
+}
+function extractExplicitTimesV125(text){
+  const t=digitsAsciiV125(normalizeText(text));
+  const found=[];
+  const add=(h,m,mod,part)=>{const v=clockValueV125(h,m,mod,part);if(v&&!found.includes(v))found.push(v);};
+  const daypartPattern='ص|م|صباحا|صباحًا|الصبح|الصباح|مساء|مساءً|المساء|بالليل|ليلا|ليلًا|الظهر|ظهرا|ظهرًا|العصر';
+  const cue=/(?:الساعة|الساعه|ساعة|ساعه)\s*(\d{1,2})(?:\s*[:：٫.]\s*(\d{1,2}))?(?:\s*(ونص|ونصف|والنصف|وربع|والربع|إلا\s*ربع|الا\s*ربع))?/g;
+  for(const m of t.matchAll(cue)){
+    const end=(m.index||0)+m[0].length,after=t.slice(end,end+32),part=(after.match(new RegExp('^\\s*('+daypartPattern+')(?=$|[^\\p{L}\\d])','u'))||[])[1]||'';
+    add(m[1],m[2],m[3],part);
+  }
+  const part=/(?:^|[^\d])(\d{1,2})(?:\s*[:：٫.]\s*(\d{1,2}))?\s*(ص|م|صباحا|صباحًا|الصبح|الصباح|مساء|مساءً|المساء|بالليل|ليلا|ليلًا|الظهر|ظهرا|ظهرًا|العصر)(?=$|[^\p{L}\d])/gu;
+  for(const m of t.matchAll(part))add(m[1],m[2],"",m[3]);
+  const clock24=/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/g;
+  for(const m of t.matchAll(clock24)){
+    const end=(m.index||0)+m[0].length,after=t.slice(end,end+32);
+    if(new RegExp('^\\s*('+daypartPattern+')(?=$|[^\\p{L}\\d])','u').test(after))continue;
+    add(m[1],m[2],"","");
+  }
+  return found;
+}
+function explicitDateV125(text){
+  const t=digitsAsciiV125(normalizeText(text)).toLowerCase();
+  const months={"يناير":1,"فبراير":2,"مارس":3,"أبريل":4,"ابريل":4,"مايو":5,"يونيو":6,"يوليو":7,"أغسطس":8,"اغسطس":8,"سبتمبر":9,"أكتوبر":10,"اكتوبر":10,"نوفمبر":11,"ديسمبر":12};
+  let m=t.match(/(?:يوم\s+)?([0-3]?\d)\s+(يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)\s+(\d{4})/);
+  let d,mo,y;
+  if(m){d=Number(m[1]);mo=months[m[2]];y=Number(m[3]);}
+  else{m=t.match(/(?:يوم\s+)?([0-3]?\d)[\/-]([01]?\d)[\/-](\d{4})/);if(!m)return null;d=Number(m[1]);mo=Number(m[2]);y=Number(m[3]);}
+  const probe=new Date(Date.UTC(y,mo-1,d));
+  if(probe.getUTCFullYear()!==y||probe.getUTCMonth()!==mo-1||probe.getUTCDate()!==d)return null;
+  return String(y).padStart(4,"0")+"-"+String(mo).padStart(2,"0")+"-"+String(d).padStart(2,"0");
+}
+function groundExplicitTemporalFactsV125(text,steps){
+  const times=extractExplicitTimesV125(text),date=explicitDateV125(text);
+  return (Array.isArray(steps)?steps:[]).map(step=>{
+    const tool=String(step?.tool||""),raw=step?.args&&typeof step.args==="object"&&!Array.isArray(step.args)?step.args:{},args={...raw};
+    if(tool==="recurrence.create"){
+      if(times.length){const rule=args.rule&&typeof args.rule==="object"&&!Array.isArray(args.rule)?{...args.rule}:{};rule.times=[...times];args.rule=rule;}
+      if(date)args.start_date=date;
+    }
+    if(tool==="reminders.create"){
+      if(times.length===1)args.local_time=times[0];
+      if(date)args.local_date=date;
+    }
+    return {...step,args};
+  });
+}
+function explicitProjectTaskHintV125(text){
+  const t=normalizeText(text);
+  if(!/(?:مهمة|مهمه)/u.test(t))return null;
+  let m=t.match(/(?:مهمة|مهمه)\s*(?:اسمها|اسمها\s*:|بعنوان|عنوانها)?\s*([^،,.؛]+?)(?=$|\s+(?:وبعد|وبعدين|وكمان|وخلي|وحط|وضيف|وحدد|واعتمد)\b)/u);
+  if(!m)m=t.match(/(?:مهمة|مهمه)\s*(?:اسمها|بعنوان|عنوانها)?\s*(.+)$/u);
+  const title=normalizeText(m?.[1]||"").replace(/^(?:اسمها|بعنوان)\s+/u,"").trim();
+  return title&&title.length<=180?title:null;
+}
+
+
+function explicitMinuteCountV125(text){
+  const t=digitsAsciiV125(normalizeText(text)).toLowerCase();
+  const m=t.match(/(?:ب)?(\d{1,3}|خمس|خمسه|خمسة|عشر|عشرة|عشره|ربع|خمستاشر|خمسة عشر|خمس عشرة|عشرين|عشرون|تلت|ثلث|نص|نصف|تلاتين|ثلاثين|اربعين|أربعين|خمسه واربعين|خمسة واربعين|خمسة وأربعين)\s*(?:دقيقه|دقيقة|دقايق|دقائق|د)?/u);
+  if(!m)return null;
+  if(/^\d+$/.test(m[1]))return Math.min(180,Math.max(0,Number(m[1])));
+  const w=normalizeText(m[1]).replace(/أ/g,'ا');
+  const map={خمس:5,خمسه:5,خمسة:5,عشر:10,عشرة:10,عشره:10,ربع:15,خمستاشر:15,'خمسة عشر':15,'خمس عشرة':15,عشرين:20,عشرون:20,تلت:20,ثلث:20,نص:30,نصف:30,تلاتين:30,ثلاثين:30,اربعين:40,'خمسه واربعين':45,'خمسة واربعين':45,'خمسة وأربعين':45};
+  return Number(map[w]??map[m[1]]??0)||null;
+}
+function explicitPrayerRuleHintV125(text){
+  const t=normalizeText(text).toLowerCase();
+  const prayers=[
+    {name:'Fajr',re:/(?:الفجر|\bفجر\b)/u},
+    {name:'Dhuhr',re:/(?:الظهر|\bظهر\b)/u},
+    {name:'Asr',re:/(?:العصر|\bعصر\b)/u},
+    {name:'Maghrib',re:/(?:المغرب|\bمغرب\b)/u},
+    {name:'Isha',re:/(?:العشاء|\bعشاء\b)/u}
+  ];
+  const hit=prayers.find(x=>x.re.test(t));
+  if(!hit)return null;
+  const minutes=explicitMinuteCountV125(t);
+  let offset=0;
+  if(/قبل/u.test(t))offset=-(minutes??0);else if(/بعد/u.test(t))offset=minutes??0;
+  return {prayer:hit.name,offset_minutes:offset};
+}
+function explicitBriefHintV125(text){
+  const t=normalizeText(text).toLowerCase(),times=extractExplicitTimesV125(t),time=times[0]||null;
+  if(/(?:ملخص|الملخص).*(?:الصباحي|الصباح)|(?:الصباحي|الصباح).*(?:ملخص|الملخص)/u.test(t))return {morning_brief_enabled:1,...(time?{morning_brief_time:time}:{})};
+  if(/(?:ملخص|الملخص).*(?:المسائي|المساء)|(?:المسائي|المساء).*(?:ملخص|الملخص)/u.test(t))return {evening_brief_enabled:1,...(time?{evening_brief_time:time}:{})};
+  return null;
+}
+function groundExplicitLifeFactsV125(text,steps){
+  const prayer=explicitPrayerRuleHintV125(text),brief=explicitBriefHintV125(text),task=explicitProjectTaskHintV125(text);
+  const out=(Array.isArray(steps)?steps:[]).map(s=>({...(s||{}),args:s?.args&&typeof s.args==='object'&&!Array.isArray(s.args)?{...s.args}:{}}));
+  if(prayer){
+    const i=out.findIndex(s=>String(s?.tool||'')==='prayer.rules.create');
+    if(i>=0)out[i]={...out[i],args:{...out[i].args,...prayer}};
+  }
+  if(brief){
+    const i=out.findIndex(s=>String(s?.tool||'')==='settings.update');
+    if(i>=0)out[i]={...out[i],args:{...out[i].args,...brief}};
+  }
+  if(task){
+    const pi=out.findIndex(s=>String(s?.tool||'')==='projects.create');
+    const ti=out.findIndex(s=>String(s?.tool||'')==='project_tasks.create');
+    if(pi>=0&&ti>=0&&!out[ti]?.args?.project_id)out[ti]={...out[ti],args:{...out[ti].args,project_id:'$step:'+(pi+1)+'.id'}};
+  }
+  return out;
+}
+function augmentExplicitLifeStepsV125(text,steps){
+  let out=groundExplicitLifeFactsV125(text,steps);
+  const prayer=explicitPrayerRuleHintV125(text),brief=explicitBriefHintV125(text),task=explicitProjectTaskHintV125(text);
+  if(prayer&&!out.some(s=>String(s?.tool||'')==='prayer.rules.create'))out.push({tool:'prayer.rules.create',args:prayer});
+  if(brief&&!out.some(s=>String(s?.tool||'')==='settings.update'))out.push({tool:'settings.update',args:brief});
+  if(task){
+    const pi=out.findIndex(s=>String(s?.tool||'')==='projects.create');
+    if(pi>=0&&!out.some(s=>String(s?.tool||'')==='project_tasks.create'))out.push({tool:'project_tasks.create',args:{project_id:'$step:'+(pi+1)+'.id',title:task}});
+  }
+  return out.slice(0,MAX_AGENT_STEPS);
+}
+
 async function runAgent(env,{chatId,text,user,operationId}) {
   const pending=await getPendingActionV125(env,chatId);
   let forcedSteps=null;
@@ -568,11 +705,13 @@ async function runAgent(env,{chatId,text,user,operationId}) {
   let plan=forcedSteps?{goal:"confirmed pending action",steps:forcedSteps,reply:""}:await callBrainJson(env,brainSystemPrompt(context),text,deadline);
   if(plan?.needs_clarification)return String(plan.clarification_question||"محتاج منك توضيح صغير.");
   let steps=Array.isArray(plan?.steps)?plan.steps.slice(0,MAX_AGENT_STEPS):[];
+  steps=augmentExplicitLifeStepsV125(text,steps);
   if(!steps.length)return normalizeText(plan?.reply||"أنا معاك.");
   const complex=steps.length>=DEEP_PLAN_STEP_THRESHOLD||steps.some(s=>TOOL_SPECS[String(s?.tool||"")]?.risky)||String(user?.deep_reasoning_mode||"auto")==="on";
   if(complex&&!forcedSteps&&Date.now()<deadline-2500){
-    try{const critic=await callBrainJson(env,`أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\nطلب: ${text}\nالخطة: ${JSON.stringify(steps)}\nالحالة: ${JSON.stringify(context.state).slice(0,14000)}\nالأدوات: ${JSON.stringify(TOOL_SPECS)}`,text,deadline);if(Array.isArray(critic?.steps)&&critic.steps.length)steps=critic.steps.slice(0,MAX_AGENT_STEPS);}catch{}
+    try{const critic=await callBrainJson(env,`أنت مراجع خطط سند V12.5. راجع الخطة التالية مقابل طلب المستخدم والحالة. أصلح فقط الأخطاء: الأدوات الناقصة، IDs الخاطئة، الترتيب، أو خطوة قد تسبب false-success. لو خطوة تعتمد على نتيجة خطوة قبلها استخدم $step:N.field مثل $step:1.id، وتأكد أن كل جزء صريح من طلب المستخدم له خطوة تنفيذ فعلية. لا تضف خطوات بلا داع. أرجع JSON فقط {"steps":[...]}.\nطلب: ${text}\nالخطة: ${JSON.stringify(steps)}\nالحالة: ${JSON.stringify(context.state).slice(0,14000)}\nالأدوات: ${JSON.stringify(TOOL_SPECS)}`,text,deadline);if(Array.isArray(critic?.steps)&&critic.steps.length)steps=critic.steps.slice(0,MAX_AGENT_STEPS);}catch{}
   }
+  steps=groundExplicitLifeFactsV125(text,groundExplicitTemporalFactsV125(text,steps));
   const risky=steps.filter(s=>TOOL_SPECS[String(s?.tool||"")]?.risky);
   if(risky.length&&!forcedSteps&&!looksExplicitlyConfirmed(text)){
     await savePendingActionV125(env,chatId,text,steps);
@@ -589,11 +728,36 @@ async function runAgent(env,{chatId,text,user,operationId}) {
     const result=await executeTool(env,{chatId,operationId,stepKey:`${i+1}:${tool}`,tool,args,user});
     const obs={step:i+1,tool,...result};observations.push(obs);stepResults.push(result);
   }
+  if(hasMutation){
+    const successfulProject=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);
+    const hasProjectTask=observations.some(x=>x?.tool==="project_tasks.create"&&x?.ok);
+    const explicitTask=explicitProjectTaskHintV125(text);
+    if(successfulProject&&!hasProjectTask&&explicitTask){
+      const tool="project_tasks.create",args={project_id:Number(successfulProject.id),title:explicitTask};
+      const result=await executeTool(env,{chatId,operationId,stepKey:"coverage:project_task",tool,args,user});
+      observations.push({step:observations.length+1,tool,coverage:true,args,...result});stepResults.push(result);
+    }
+    if(Date.now()<deadline-2600){
+      try{
+        const completionPrompt=["أنت Goal Completion Gate لسند V12.5. اكتشف فقط أي جزء صريح من طلب المستخدم لم يتم تنفيذه بعد.","لا تعيد أي خطوة نجحت ولا تضف تحسينات من عندك. لو مكتمل أرجع JSON {\"complete\":true,\"steps\":[]} ولو ناقص أرجع الأدوات الناقصة فقط.","استخدم $step:N.field لو خطوة تعتمد على نتيجة خطوة سابقة، وراجع الطلبات متعددة المجالات والعلاقات.","طلب المستخدم: "+text,"الخطة الأصلية: "+JSON.stringify(steps).slice(0,12000),"النتائج المنفذة: "+JSON.stringify(observations).slice(0,18000),"الأدوات: "+JSON.stringify(TOOL_SPECS)].join("\n");
+        const completion=await callBrainJson(env,completionPrompt,text,deadline);
+        const missing=groundExplicitLifeFactsV125(text,groundExplicitTemporalFactsV125(text,Array.isArray(completion?.steps)?completion.steps.slice(0,MAX_REPAIR_STEPS):[]));
+        for(const [j,s] of missing.entries()){
+          const tool=String(s?.tool||"");if(!TOOL_SPECS[tool]||TOOL_SPECS[tool].risky&&!forcedSteps&&!looksExplicitlyConfirmed(text))continue;
+          let args=resolveStepRefsV125(s?.args||{},stepResults);
+          if(tool==="project_tasks.create"&&!Number(args?.project_id)){const p=observations.slice().reverse().find(x=>x?.tool==="projects.create"&&x?.ok&&Number(x?.id)>0);if(p)args={...args,project_id:Number(p.id)};}
+          const result=await executeTool(env,{chatId,operationId,stepKey:"completion:"+(j+1)+":"+tool,tool,args,user});
+          observations.push({step:observations.length+1,tool,completion:true,args,...result});stepResults.push(result);
+        }
+      }catch(e){await reportFailure(env,chatId,"goal_completion",e,{operationId,text:normalizeText(text).slice(0,300)});}
+    }
+  }
   let failed=observations.filter(x=>!x.ok);
   if(failed.length&&Date.now()<deadline-1800){
     try{
       const repair=await callBrainJson(env,`أنت سند في Repair Loop. لا تعيد أي خطوة نجحت. أصلح الفشل باستخدام الأدوات فقط، واستعمل IDs من النتائج. أرجع JSON فقط {"steps":[...]}.\nطلب المستخدم: ${text}\nالنتائج: ${JSON.stringify(observations).slice(0,18000)}\nالأدوات: ${JSON.stringify(TOOL_SPECS)}`,text,deadline);
-      for(const [i,s] of (Array.isArray(repair?.steps)?repair.steps.slice(0,MAX_REPAIR_STEPS):[]).entries()){
+      const groundedRepairSteps=groundExplicitLifeFactsV125(text,groundExplicitTemporalFactsV125(text,Array.isArray(repair?.steps)?repair.steps.slice(0,MAX_REPAIR_STEPS):[]));
+      for(const [i,s] of groundedRepairSteps.entries()){
         const tool=String(s?.tool||"");if(!TOOL_SPECS[tool]||TOOL_SPECS[tool].risky&&!forcedSteps&&!looksExplicitlyConfirmed(text))continue;
         const args=resolveStepRefsV125(s?.args||{},stepResults),result=await executeTool(env,{chatId,operationId,stepKey:`repair:${i+1}:${tool}`,tool,args,user});observations.push({step:`repair-${i+1}`,tool,...result});stepResults.push(result);
       }
