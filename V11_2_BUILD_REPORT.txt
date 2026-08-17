@@ -1,0 +1,11 @@
+V11.2 certification PASS
+version=11.2.0
+router=false
+models=3
+bytes=402097
+lines=15165
+base_functions=367
+retained_functions=367
+base_tables=36
+retained_tables=36
+sha256=30b2f1489cd03284739bf298be72947f7615c9af06b140404832a31700dbb7b6
