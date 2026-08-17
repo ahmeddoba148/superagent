@@ -6,7 +6,6 @@ on:
       - superagent-v11-full-router
     paths:
       - tools/build_v11.mjs
-      - tools/patch_build_v11.mjs
       - tools/patch_v11_shopping_hotfix.mjs
       - .github/workflows/build-v11-full.yml
   workflow_dispatch:
@@ -25,8 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply V11 source diagnostics fixes
-        run: node tools/patch_build_v11.mjs
       - name: Generate V11 from full V10.7.1 engine
         run: node tools/build_v11.mjs
       - name: Apply deterministic shopping-list hotfix
