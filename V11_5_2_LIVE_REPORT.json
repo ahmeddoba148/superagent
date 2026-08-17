@@ -1,21 +1,21 @@
 {
   "ok": true,
   "version": "11.5.2",
-  "started": "2026-08-17T16:11:38.438Z",
-  "finished": "2026-08-17T16:14:10.987Z",
+  "started": "2026-08-17T17:29:10.475Z",
+  "finished": "2026-08-17T17:30:42.742Z",
   "scenario_count": 26,
   "passes": [
     {
       "name": "identity",
-      "detail": "attempts=1 ms=3733"
+      "detail": "attempts=1 ms=13769"
     },
     {
       "name": "casual egyptian",
-      "detail": "attempts=1 ms=5674"
+      "detail": "attempts=1 ms=3618"
     },
     {
       "name": "lease collision self recovery",
-      "detail": "attempts=1 ms=7751"
+      "detail": "attempts=1 ms=5598"
     },
     {
       "name": "shopping multiline preserves 11",
@@ -23,7 +23,7 @@
     },
     {
       "name": "shopping view",
-      "detail": "attempts=1 ms=3634"
+      "detail": "attempts=1 ms=1540"
     },
     {
       "name": "exact reminder persisted",
@@ -31,71 +31,71 @@
     },
     {
       "name": "relative reminder",
-      "detail": "attempts=1 ms=11824"
+      "detail": "attempts=1 ms=3544"
     },
     {
       "name": "daily recurrence",
-      "detail": "attempts=1 ms=11960"
+      "detail": "attempts=1 ms=5605"
     },
     {
       "name": "free-time query",
-      "detail": "attempts=1 ms=5989"
+      "detail": "attempts=1 ms=3824"
     },
     {
       "name": "today",
-      "detail": "attempts=1 ms=3718"
+      "detail": "attempts=1 ms=1524"
     },
     {
       "name": "tomorrow",
-      "detail": "attempts=1 ms=3640"
+      "detail": "attempts=1 ms=1615"
     },
     {
       "name": "week",
-      "detail": "attempts=1 ms=3647"
+      "detail": "attempts=1 ms=1536"
     },
     {
       "name": "month",
-      "detail": "attempts=1 ms=3640"
+      "detail": "attempts=1 ms=1503"
     },
     {
       "name": "list",
-      "detail": "attempts=1 ms=3636"
+      "detail": "attempts=1 ms=1539"
     },
     {
       "name": "recurring",
-      "detail": "attempts=1 ms=3683"
+      "detail": "attempts=1 ms=1541"
     },
     {
       "name": "location",
-      "detail": "attempts=1 ms=3686"
+      "detail": "attempts=1 ms=1546"
     },
     {
       "name": "memory",
-      "detail": "attempts=1 ms=3668"
+      "detail": "attempts=1 ms=1550"
     },
     {
       "name": "audit",
-      "detail": "attempts=1 ms=3642"
+      "detail": "attempts=1 ms=1517"
     },
     {
       "name": "undo",
-      "detail": "attempts=1 ms=3633"
+      "detail": "attempts=1 ms=1545"
     },
     {
       "name": "live context",
-      "detail": "attempts=1 ms=3615"
+      "detail": "attempts=1 ms=1519"
     },
     {
       "name": "prayer awareness",
-      "detail": "attempts=1 ms=7667"
+      "detail": "attempts=1 ms=3627"
     },
     {
       "name": "holiday awareness",
-      "detail": "attempts=1 ms=5752"
+      "detail": "attempts=1 ms=3534"
     },
     {
       "name": "context follow-up",
-      "detail": "attempts=1 ms=5688"
+      "detail": "attempts=1 ms=3485"
     },
     {
       "name": "idempotency duplicate exactly once",
