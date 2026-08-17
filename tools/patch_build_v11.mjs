@@ -1,15 +1,17 @@
 import fs from 'node:fs';
 const p='tools/build_v11.mjs';
 let b=fs.readFileSync(p,'utf8');
-const lines=b.split('\n');
-const identity=lines.findIndex(x=>x.includes("'identity insertion'"));
-if(identity<0)throw new Error('identity insertion builder line not found');
-lines[identity]="{const m=s.indexOf('// V10.7: normal human language is interpreted semantically first.');if(m<0)throw new Error('V11 identity marker missing');s=s.slice(0,m)+'if(await handleV11Identity(text,env,chatId))return;\\n'+s.slice(m);}";
-const router=lines.findIndex(x=>x.includes("'router insertion'"));
-if(router<0)throw new Error('router insertion builder line not found');
-lines[router]="{const m=s.match(/async\\s+function\\s+parseIntentWithFallback\\s*\\(/);if(!m)throw new Error('parseIntentWithFallback definition missing');const p=m.index;console.log('V11_PARSE_DEF_SNIPPET_START\\n'+s.slice(p,p+12000)+'\\nV11_PARSE_DEF_SNIPPET_END');s=s.slice(0,p)+routerCode+'\\n'+s.slice(p);}";
-const loop=lines.findIndex(x=>x.includes("'parse model loop'"));
-if(loop<0)throw new Error('parse model loop builder line not found');
-lines[loop]="{const m=s.match(/async\\s+function\\s+parseIntentWithFallback\\s*\\(/);if(!m)throw new Error('parse def after router missing');const p=m.index;const q=s.indexOf('async function ',p+20);const seg=s.slice(p,q>p?q:p+30000);console.log('V11_PARSE_LOOP_SNIPPET_START\\n'+seg+'\\nV11_PARSE_LOOP_SNIPPET_END');throw new Error('V11_DEBUG_PARSE_LOOP');}";
-fs.writeFileSync(p,lines.join('\n'));
-console.log('patched V11 builder for exact parse definition discovery');
+
+const before=b;
+b=b.replace(
+  'const listLike=lines.length>=4||(?:shopping&&/[،,;]/.test(raw));',
+  'const listLike=lines.length>=4||(shopping&&/[،,;]/.test(raw));'
+);
+b=b.replace(
+  'const e=new Error("V11: كل محاولات الفهم والتحقق فشلت، لذلك لم يتم تنفيذ أي تغيير.");e.v11_failures=failures;throw e;',
+  'const e=Object.assign(new Error("V11: كل محاولات الفهم والتحقق فشلت، لذلك لم يتم تنفيذ أي تغيير."),{v11_failures:failures});throw e;'
+);
+
+if(b===before)throw new Error('V11 diagnostics patch anchors not found');
+fs.writeFileSync(p,b);
+console.log('patched V11 diagnostics: invalid expression + Error custom property');
