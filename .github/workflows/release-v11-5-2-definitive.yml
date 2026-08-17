@@ -1,0 +1,139 @@
+name: SuperAgent V11.5.2 Definitive Full Certification
+on:
+  push:
+    branches:
+      - superagent-v11-5-2-final
+    paths:
+      - .github/workflows/release-v11-5-2-definitive.yml
+permissions:
+  contents: write
+jobs:
+  certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v1152-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Live model decision and build exact V11.5.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');
+          const endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY;
+          async function probe(model,json=false){const c=new AbortController(),tm=setTimeout(()=>c.abort(),7000),t=Date.now();try{const body={model,messages:[{role:'user',content:json?'رجع JSON فقط: {"ok":true}':'رد بكلمة OK فقط'}],max_tokens:32,stream:false};if(json)body.response_format={type:'json_object'};const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify(body),signal:c.signal});const raw=await r.text();return{ok:r.ok,status:r.status,ms:Date.now()-t,body:raw.slice(0,450)}}catch(e){return{ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const requested='gemini::gemini-2.5-flash-lite',safe='gemini::gemini-3-flash-preview';const plain=await probe(requested),json=await probe(requested,true);const selected=plain.ok&&json.ok?requested:safe;const decision={requested,selected,requested_plain:plain,requested_json:json,reason:selected===requested?'requested model live':'requested model unavailable; safe certified fallback retained',checked_at:new Date().toISOString()};fs.writeFileSync('/tmp/model-decision.json',JSON.stringify(decision,null,2));fs.appendFileSync(process.env.GITHUB_ENV,'THIRD_MODEL='+selected+'\n');let s=fs.readFileSync('SuperAgent_V11_5_1_FULL.js','utf8');s='/* SuperAgent V11.5.2 FINAL — V11.5.1 hardening retained; live-validated three-model chain; full regression/staging certification. */\n'+s;s=s.replace('const V10_VERSION="11.5.1"','const V10_VERSION="11.5.2"').replace('const V10_NAME="سوبر إيجنت V11.5.1','const V10_NAME="سوبر إيجنت V11.5.2').replace('سوبر إيجنت V11.5.1 جاهز للعمل','سوبر إيجنت V11.5.2 جاهز للعمل').replace('v11_5_1:true,v1151_final:true','v11_5_1:true,v11_5_2:true,v1151_final:true');if(selected===requested)s=s.replace('{short:"G3-FP",name:"Gemini 3 Flash Preview",id:"gemini::gemini-3-flash-preview",timeoutMs:3000,role:"fallback_2",tags:["chat","shopping","schedule","coding","json","arabic"]}','{short:"G2.5-L",name:"Gemini 2.5 Flash-Lite",id:"gemini::gemini-2.5-flash-lite",timeoutMs:3000,role:"fallback_2",tags:["chat","shopping","schedule","coding","json","arabic"]}');fs.writeFileSync('SuperAgent_V11_5_2_FULL.js',s);console.log(JSON.stringify({requested,selected,plain_status:plain.status,json_status:json.status}));})();
+          NODE
+          node --check SuperAgent_V11_5_2_FULL.js
+          cp SuperAgent_V11_5_2_FULL.js /tmp/v1152.mjs
+          node -e "import('/tmp/v1152.mjs').then(()=>console.log('module-load PASS'))"
+          SHA=$(sha256sum SuperAgent_V11_5_2_FULL.js | awk '{print $1}')
+          echo "V1152_SHA=$SHA" >> "$GITHUB_ENV"
+
+      - name: Critical static structural and regression audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');const a=fs.readFileSync('SuperAgent_V11_5_1_FULL.js','utf8'),b=fs.readFileSync('SuperAgent_V11_5_2_FULL.js','utf8');
+          const funcs=s=>(s.match(/\b(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/g)||[]).map(x=>x.replace(/\s+/g,' ')).sort();const tables=s=>[...s.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/g)].map(x=>x[1]).sort();const chain=[...b.matchAll(/id:"(gemini::[^"]+)"[^\n]+role:"(primary|fallback_1|fallback_2)"/g)].slice(0,3).map(x=>({id:x[1],role:x[2]}));const expected=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite',process.env.THIRD_MODEL];
+          const checks={version:b.includes('const V10_VERSION="11.5.2"'),exactThree:chain.length===3,modelOrder:JSON.stringify(chain.map(x=>x.id))===JSON.stringify(expected),modelRoles:JSON.stringify(chain.map(x=>x.role))===JSON.stringify(['primary','fallback_1','fallback_2']),functionsRetained:JSON.stringify(funcs(a))===JSON.stringify(funcs(b)),tablesRetained:JSON.stringify(tables(a))===JSON.stringify(tables(b)),routerRemoved:b.includes('v112_router_removed:true'),noEval:!/(^|[^\w])eval\s*\(|new\s+Function\s*\(/.test(b),noQuerySecrets:!/[?&](?:key|token|secret)=\$\{/.test(b),telegramAuth:b.includes('X-Telegram-Bot-Api-Secret-Token'),adminHeader:b.includes('X-SuperAgent-Key'),durableInbox:b.includes('telegram_inbox_v106'),queueDrain:b.includes('drainTelegramInboxV106'),idempotency:b.includes('telegram_idempotency:true'),undo:b.includes('audit_undo:true'),conflicts:b.includes('duration_conflicts:true'),recurrence:b.includes('universal_recurrence:true'),memory:b.includes('long_term_memory:true'),world:b.includes('live_world_news:true'),voice:b.includes('voice_first:true'),location:b.includes('per_user_location:true'),prayer:b.includes('prayer_awareness:true'),holidays:b.includes('public_holidays:true'),shopping:b.includes('interactive_shopping:true'),dependencies:b.includes('event_dependencies:true'),planner:b.includes('planner_executor_verifier:true')};const failed=Object.entries(checks).filter(([,v])=>!v).map(([k])=>k);if(failed.length)throw Error('critical audit failed '+failed.join(','));fs.writeFileSync('/tmp/structural.json',JSON.stringify({ok:true,checks,functions:funcs(b).length,tables:tables(b).length,models:expected},null,2));console.log('STATIC AUDIT PASS',Object.keys(checks).length,'checks');
+          NODE
+          cp SuperAgent_V11_5_2_FULL.js /tmp/self.mjs
+          printf '\nconsole.log(JSON.stringify({v10:runV10SelfTests(),v11:runV11PureSelfTests(),v113:runV113PureSelfTests(),v114:runV114PureSelfTests(),v115:runV115PureSelfTests()}));\n' >> /tmp/self.mjs
+          node /tmp/self.mjs | tail -1 > /tmp/pure.json
+          node - <<'NODE'
+          const x=require('/tmp/pure.json');if(!x.v10?.ok)throw Error('v10 fail');if(!Array.isArray(x.v11)||!x.v11.every(z=>z.ok))throw Error('v11 fail');for(const k of ['v113','v114','v115'])if(!x[k]?.ok)throw Error(k+' fail');console.log('PURE REGRESSION PASS');
+          NODE
+
+      - name: Deploy isolated V11.5.2 staging and configure secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > wrangler.v1152.jsonc <<'EOF'
+          {"name":"superagent-v1152-staging","main":"SuperAgent_V11_5_2_FULL.js","compatibility_date":"2026-08-17","vars":{"PUBLIC_BOT":"false","V1152_STAGING_BUILD":"definitive"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config wrangler.v1152.jsonc >/dev/null
+          WEBHOOK_SECRET=$(openssl rand -hex 32); SETUP_KEY=$(openssl rand -hex 32)
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"; echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY"; do k=${pair%%:*}; v=${pair#*:}; printf '%s' "$v" | npx wrangler secret put "$k" --config wrangler.v1152.jsonc >/dev/null; done
+
+      - name: Propagation-safe endpoint setup health readiness and selftest
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry(){ name=$1; shift; for i in 1 2 3 4 5 6 7 8 9 10; do code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true); echo "$name attempt=$i http=$code"; if [ "$code" = 200 ]; then return 0; fi; sleep 3; done; cat "/tmp/$name.json" || true; return 1; }
+          unauth=$(curl -sS -o /tmp/noauth.json -w '%{http_code}' "$URL/ready?key=$SETUP_KEY" || true); test "$unauth" = 401
+          retry setup -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1"
+          node - <<'NODE'
+          const x=require('/tmp/setup.json'),e=['gemini::gemini-3.1-flash-lite',process.env.THIRD_MODEL];if(!x.ok||x.models_total!==3||x.primary_model!=='gemini::gemini-3.5-flash-lite'||JSON.stringify(x.fallback_models)!==JSON.stringify(e)||x.router!==false)throw Error(JSON.stringify(x));
+          NODE
+          retry health "$URL/health"
+          node -e 'const x=require("/tmp/health.json");if(!x.ok||x.version!=="11.5.2"||!x.db||!x.omniai_service||Number(x.recent_failures_1h||0)<0)throw Error(JSON.stringify(x))'
+          retry ready -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/ready"
+          node -e 'const x=require("/tmp/ready.json");if(!x.ok||x.version!=="11.5.2"||!x.db||!x.omniai||x.primary_model!=="gemini::gemini-3.5-flash-lite")throw Error(JSON.stringify(x))'
+          retry selftest -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/selftest"
+          node -e 'const x=require("/tmp/selftest.json");if(!x.ok||x.version!=="11.5.2"||!x.v10?.ok)throw Error(JSON.stringify(x))'
+
+      - name: Eight rounds per model live stability
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs'),sleep=m=>new Promise(r=>setTimeout(r,m));const models=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite',process.env.THIRD_MODEL],endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY;
+          async function one(model,round){const c=new AbortController(),tm=setTimeout(()=>c.abort(),7000),t=Date.now();try{const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة OK فقط'}],max_tokens:24,stream:false}),signal:c.signal});const raw=await r.text();return{model,round,ok:r.ok&&raw.length>0,status:r.status,latency_ms:Date.now()-t,error:r.ok?null:raw.slice(0,240)}}catch(e){return{model,round,ok:false,status:0,latency_ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const samples=[];for(const m of models)for(let r=1;r<=8;r++){samples.push(await one(m,r));await sleep(400)}const per={};let ok=true;for(const m of models){const a=samples.filter(x=>x.model===m),g=a.filter(x=>x.ok);per[m]={successes:g.length,total:8,min_ms:g.length?Math.min(...g.map(x=>x.latency_ms)):null,max_ms:g.length?Math.max(...g.map(x=>x.latency_ms)):null,avg_ms:g.length?Math.round(g.reduce((s,x)=>s+x.latency_ms,0)/g.length):null};if(g.length!==8)ok=false}const out={ok,version:'11.5.2',rounds:8,requests:samples.length,per_model:per,samples};fs.writeFileSync('V11_5_2_MODEL_STABILITY.json',JSON.stringify(out,null,2));console.log(JSON.stringify(per));if(!ok)throw Error('stability failed')})();
+          NODE
+
+      - name: Real Telegram scenario matrix with D1 verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/live.mjs <<'NODE'
+          import{execFileSync}from'node:child_process';import fs from'node:fs';const U=process.env.URL,D=process.env.DB,C=String(process.env.STAGING_ADMIN_CHAT_ID||''),S=process.env.WEBHOOK_SECRET,cfg='wrangler.v1152.jsonc',sleep=m=>new Promise(r=>setTimeout(r,m)),esc=s=>String(s).replaceAll("'","''");if(!U||!D||!C||!S)throw Error('env missing');function q(sql){return JSON.parse(execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',cfg,'--command',sql,'--json'],{encoding:'utf8'}))?.[0]?.results||[]}let seq=2152000000+(Date.now()%3000000),mid=720000,started=new Date().toISOString(),passes=[];async function post(text,id=++seq){const body={update_id:id,message:{message_id:++mid,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'V1152'},text}},t=Date.now(),r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status);return{id,t,text}}async function wait(id,max=80000){let row,end=Date.now()+max;while(Date.now()<end){row=q(`SELECT status,attempts,last_error FROM telegram_inbox_v106 WHERE update_id='${id}' LIMIT 1`)[0];if(row?.status==='done')return row;if(row?.status==='failed')throw Error('failed '+id+' '+row.last_error);await sleep(450)}throw Error('timeout '+id+' '+JSON.stringify(row))}function ok(name,c,d=''){if(!c)throw Error('FAIL '+name+' '+d);passes.push({name,detail:String(d)});console.log('PASS',name,d)}async function proc(name,text){const x=await post(text),r=await wait(x.id);ok(name,r.attempts===1,'attempts='+r.attempts+' ms='+(Date.now()-x.t));return{x,r}}
+          q(`DELETE FROM shopping_sessions WHERE chat_id='${esc(C)}';DELETE FROM smart_list_items WHERE chat_id='${esc(C)}';DELETE FROM smart_lists WHERE chat_id='${esc(C)}';DELETE FROM reminders WHERE chat_id='${esc(C)}' AND title LIKE '%V1152LIVE%';`);
+          await proc('identity','انت اسمك اي');await proc('egyptian casual chat','عامل اي يا صاحبي');let x=await post('سعر الدولار؟'),r=await wait(x.id),last=q(`SELECT content FROM conversation_messages WHERE chat_id='${esc(C)}' AND role='assistant' ORDER BY id DESC LIMIT 1`)[0]?.content||'';ok('current-data safe',r.attempts===1&&last.length>0,last.slice(0,120));
+          const list='بص عاوز اشتري\nعيش تورتيلا\nعيش توست\nفينو اسود\nفصوص رومي\nشيدر طبيعي\nكاجو\nفستق\nكوفي شيك\nحليب دينا\nايس كريم دينا\nوبطاطس طبيعية';x=await post(list);r=await wait(x.id);let rows=q(`SELECT title FROM smart_list_items WHERE chat_id='${esc(C)}' AND status='pending'`);ok('shopping multiline 11 entities',r.attempts===1&&rows.length===11,'items='+rows.length);await proc('shopping command','/shopping');
+          x=await post('فكرني يوم 3 نوفمبر 2026 الساعة 7:23 مساء أراجع V1152LIVE-SINGLE');r=await wait(x.id);rows=q(`SELECT local_date,local_time FROM reminders WHERE chat_id='${esc(C)}' AND title LIKE '%V1152LIVE-SINGLE%' AND cancelled=0`);ok('exact reminder DB',r.attempts===1&&rows.length===1&&rows[0].local_date==='2026-11-03'&&rows[0].local_time==='19:23',JSON.stringify(rows));
+          await proc('relative reminder','فكرني بعد 37 دقيقة أراجع V1152LIVE-RELATIVE');await proc('daily recurrence','فكرني كل يوم الساعة 8:17 مساء أراجع V1152LIVE-DAILY');await proc('schedule conflict language','عندي وقت فاضي بكرة بين 6 و10 بالليل؟');await proc('reschedule language','انقل تذكير V1152LIVE-SINGLE ليوم 5 نوفمبر الساعة 8 مساء');
+          await proc('today command','/today');await proc('tomorrow command','/tomorrow');await proc('week command','/week');await proc('month command','/month');await proc('all reminders command','/list');await proc('recurring command','/recurring');await proc('location command','/where');await proc('memory command','/memory');await proc('audit command','/audit');await proc('undo command','/undo');await proc('live command','/live');await proc('prayer awareness','مواقيت الصلاة النهاردة في القاهرة');await proc('holiday awareness','اقرب اجازة رسمية امتى؟');await proc('context followup','طب وبعدها بكام يوم؟');await proc('mixed natural request','اشتري لبن وفكرني بكرة الساعة 9 الصبح اكلم المورد');
+          const dup=++seq;await Promise.all([post('فكرني يوم 4 نوفمبر 2026 الساعة 7:25 مساء أراجع V1152LIVE-IDEMP',dup),post('فكرني يوم 4 نوفمبر 2026 الساعة 7:25 مساء أراجع V1152LIVE-IDEMP',dup)]);r=await wait(dup);rows=q(`SELECT id FROM reminders WHERE chat_id='${esc(C)}' AND title LIKE '%V1152LIVE-IDEMP%' AND cancelled=0`);ok('duplicate exactly once',rows.length===1,'rows='+rows.length+' attempts='+r.attempts);const a=await post('/shopping'),b=await post('/today'),c=await post('صباح الفل');const rr=await Promise.all([wait(a.id),wait(b.id),wait(c.id)]);ok('same-chat burst serialization',rr.every(z=>z.attempts===1),JSON.stringify(rr.map(z=>z.attempts)));const failures=q(`SELECT scope,error_text,created_at FROM runtime_failures WHERE created_at>='${started}'`);ok('runtime failures zero',failures.length===0,JSON.stringify(failures));fs.writeFileSync('V11_5_2_LIVE_REPORT.json',JSON.stringify({ok:true,version:'11.5.2',sha256:process.env.V1152_SHA,started,finished:new Date().toISOString(),scenario_count:passes.length,passes,runtime_failures:failures},null,2));
+          NODE
+          node /tmp/live.mjs
+
+      - name: Produce final certification and commit certified files
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs'),decision=require('/tmp/model-decision.json'),structural=require('/tmp/structural.json'),pure=require('/tmp/pure.json'),stability=require('./V11_5_2_MODEL_STABILITY.json'),live=require('./V11_5_2_LIVE_REPORT.json'),health=require('/tmp/health.json'),ready=require('/tmp/ready.json');const src=fs.readFileSync('SuperAgent_V11_5_2_FULL.js','utf8');const pureOK=pure.v10?.ok&&Array.isArray(pure.v11)&&pure.v11.every(x=>x.ok)&&pure.v113?.ok&&pure.v114?.ok&&pure.v115?.ok;const cert={ok:!!(structural.ok&&pureOK&&stability.ok&&live.ok&&health.ok&&ready.ok),version:'11.5.2',sha256:process.env.V1152_SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,models:['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite',process.env.THIRD_MODEL],requested_fallback_2:'gemini::gemini-2.5-flash-lite',model_decision:decision,structural_checks:structural.checks,pure_regression_ok:!!pureOK,model_stability:stability.per_model,live_scenarios:live.scenario_count,live_ok:live.ok,health_ok:health.ok,ready_ok:ready.ok,known_critical_failures:[]};if(!cert.ok)throw Error('final gate failed '+JSON.stringify(cert));fs.writeFileSync('V11_5_2_CERTIFICATION.json',JSON.stringify(cert,null,2));console.log(JSON.stringify({ok:true,version:cert.version,models:cert.models,live_scenarios:cert.live_scenarios}));
+          NODE
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add -- SuperAgent_V11_5_2_FULL.js V11_5_2_CERTIFICATION.json V11_5_2_MODEL_STABILITY.json V11_5_2_LIVE_REPORT.json
+          git commit -m "Build and live-certify definitive SuperAgent V11.5.2"
+          git push origin HEAD:superagent-v11-5-2-final
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.5.2-Definitive
+          path: |
+            SuperAgent_V11_5_2_FULL.js
+            V11_5_2_CERTIFICATION.json
+            V11_5_2_MODEL_STABILITY.json
+            V11_5_2_LIVE_REPORT.json
