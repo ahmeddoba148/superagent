@@ -1,0 +1,27 @@
+name: Probe V11.5.2 Third Fallback Stability
+on:
+  push:
+    branches:
+      - superagent-v11-5-2-final
+    paths:
+      - .github/workflows/probe-v11-5-2-third-fallback.yml
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Eight live rounds for each fallback candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const models=['gemini::gemini-3-flash-preview','gemini::gemini-flash-lite-latest','gemini::gemini-3.5-flash','gemini::gemini-3.6-flash'];
+          const endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY,sleep=m=>new Promise(r=>setTimeout(r,m));
+          async function one(model,round){const c=new AbortController(),tm=setTimeout(()=>c.abort(),9000),t=Date.now();try{const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة OK فقط بدون أي شرح'}],max_tokens:96,stream:false}),signal:c.signal});const raw=await r.text();let parsed=null,content='';try{parsed=JSON.parse(raw);content=String(parsed?.choices?.[0]?.message?.content||'').trim()}catch{}return{round,http_ok:r.ok,status:r.status,content_ok:content.length>0,content:content.slice(0,80),ms:Date.now()-t,error:r.ok?null:raw.slice(0,250)}}catch(e){return{round,http_ok:false,status:0,content_ok:false,content:'',ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const summary={};for(const model of models){const samples=[];for(let r=1;r<=8;r++){samples.push(await one(model,r));await sleep(450)}const good=samples.filter(x=>x.http_ok&&x.content_ok);summary[model]={successes:good.length,total:8,min_ms:good.length?Math.min(...good.map(x=>x.ms)):null,max_ms:good.length?Math.max(...good.map(x=>x.ms)):null,avg_ms:good.length?Math.round(good.reduce((s,x)=>s+x.ms,0)/good.length):null,samples};console.log(JSON.stringify({model,...summary[model]}))}console.log('FINAL='+JSON.stringify(summary))})();
+          NODE
