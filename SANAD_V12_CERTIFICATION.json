@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "version": "12.0.0",
+  "name": "Sanad — سند",
+  "sha256": "5d7b410dd08807e69e0945e6c7e5e0f25cf2bcb06b956e479ce7769ecfe11c91",
+  "bytes": 57381,
+  "lines": 817,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "architecture": "single-brain-agent-loop",
+  "cycle": [
+    "understand",
+    "plan",
+    "act",
+    "observe",
+    "verify",
+    "repair",
+    "reply"
+  ],
+  "tools": 20,
+  "live_scenarios": 8,
+  "live_ok": true,
+  "guarantees_tested": [
+    "durable inbox",
+    "telegram idempotency",
+    "verified shopping mutation",
+    "verified reminder mutation",
+    "memory tool",
+    "multi-tool request",
+    "no unverified mutation receipts"
+  ],
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3.5-flash"
+  ],
+  "known_critical_code_failures": [],
+  "limitations": [
+    "External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs."
+  ]
+}
