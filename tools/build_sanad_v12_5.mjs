@@ -34,12 +34,20 @@ function extractExplicitTimesV125(text){
   const t=digitsAsciiV125(normalizeText(text));
   const found=[];
   const add=(h,m,mod,part)=>{const v=clockValueV125(h,m,mod,part);if(v&&!found.includes(v))found.push(v);};
-  const cue=/(?:الساعة|الساعه|ساعة|ساعه)\s*(\d{1,2})(?:\s*[:：٫.]\s*(\d{1,2}))?(?:\s*(ونص|ونصف|والنصف|وربع|والربع|إلا\s*ربع|الا\s*ربع))?\s*(ص|م|صباحا|صباحًا|الصبح|الصباح|مساء|مساءً|المساء|بالليل|ليلا|ليلًا|الظهر|ظهرا|ظهرًا|العصر)?/g;
-  for(const m of t.matchAll(cue))add(m[1],m[2],m[3],m[4]);
+  const daypartPattern='ص|م|صباحا|صباحًا|الصبح|الصباح|مساء|مساءً|المساء|بالليل|ليلا|ليلًا|الظهر|ظهرا|ظهرًا|العصر';
+  const cue=/(?:الساعة|الساعه|ساعة|ساعه)\s*(\d{1,2})(?:\s*[:：٫.]\s*(\d{1,2}))?(?:\s*(ونص|ونصف|والنصف|وربع|والربع|إلا\s*ربع|الا\s*ربع))?/g;
+  for(const m of t.matchAll(cue)){
+    const end=(m.index||0)+m[0].length,after=t.slice(end,end+32),part=(after.match(new RegExp('^\\s*('+daypartPattern+')(?=$|[^\\p{L}\\d])','u'))||[])[1]||'';
+    add(m[1],m[2],m[3],part);
+  }
   const part=/(?:^|[^\d])(\d{1,2})(?:\s*[:：٫.]\s*(\d{1,2}))?\s*(ص|م|صباحا|صباحًا|الصبح|الصباح|مساء|مساءً|المساء|بالليل|ليلا|ليلًا|الظهر|ظهرا|ظهرًا|العصر)(?=$|[^\p{L}\d])/gu;
   for(const m of t.matchAll(part))add(m[1],m[2],"",m[3]);
   const clock24=/(?:^|[^\d])([01]?\d|2[0-3])\s*:\s*([0-5]\d)(?!\d)/g;
-  for(const m of t.matchAll(clock24))add(m[1],m[2],"","");
+  for(const m of t.matchAll(clock24)){
+    const end=(m.index||0)+m[0].length,after=t.slice(end,end+32);
+    if(new RegExp('^\\s*('+daypartPattern+')(?=$|[^\\p{L}\\d])','u').test(after))continue;
+    add(m[1],m[2],"","");
+  }
   return found;
 }
 function explicitDateV125(text){
