@@ -1,0 +1,7 @@
+V11 structural certification PASS
+bytes=404470
+lines=15145
+fast=10
+complex=10
+router=3
+node_check=PASS
