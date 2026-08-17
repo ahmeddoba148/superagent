@@ -5809,7 +5809,7 @@ const units=[];for(let i=1;i<lines.length;i++){let x=lines[i].replace(/^[\-–�
 }
 function normShoppingUnitV11(x){return normalizeArabicLoose(String(x||"")).toLowerCase().replace(/[^\p{L}\p{N}]+/gu," ").replace(/\s+/g," ").trim();}
 function shoppingPlanTitlesV11(intent){
-const plan=intent?.shopping_plan||intent?.shoppingPlan||intent?.plan||{};const ops=Array.isArray(plan?.operations)?plan.operations:Array.isArray(plan?.ops)?plan.ops:[];
+const plan=intent?.shopping||intent?.shopping_plan||intent?.shoppingPlan||intent?.plan||{};const ops=Array.isArray(plan?.operations)?plan.operations:Array.isArray(plan?.ops)?plan.ops:[];
 return ops.filter(op=>String(op?.op||op?.action||op?.type||"").toLowerCase()==="add").map(op=>String(op?.title||op?.name||op?.item||op?.args?.title||op?.args?.name||"")).filter(Boolean);
 }
 function assertShoppingEntityPreservationV11(intent,baseText){
@@ -5828,6 +5828,30 @@ const r2=v11RouteAxes("شيل الكبير وخلي اللي بعده قبل م�
 async function parseIntentWithFallback(env,userText,validationContext){
 const routeText=String(validationContext?.baseText||userText||"");
 const route=await routeRequestV11(env,routeText);
+const explicitShoppingUnitsV11=extractExplicitShoppingUnitsV11(routeText);
+if(route.task==="shopping"&&explicitShoppingUnitsV11.length>=2){
+  const seed={
+    action:"shopping",
+    needs_clarification:false,
+    question:"",
+    reply:"",
+    shopping:{
+      mode:"mutate",
+      query:"all",
+      query_value:"",
+      operations:explicitShoppingUnitsV11.map(title=>({
+        op:"add",target:"",title,replacement:"",quantity_value:null,quantity_unit:"",quantity_text:"",quantity_exact:false,factor:null,meta:{}
+      }))
+    }
+  };
+  const safetyContext={...(validationContext||{}),baseText:routeText};
+  const intent=validateAndNormalizeIntent(seed,safetyContext);
+  applySafetyFixes(intent,safetyContext);
+  finalSafetyCheck(intent,safetyContext);
+  assertShoppingEntityPreservationV11(intent,routeText);
+  Object.assign(intent,{_v11_route:route,_v11_model:"deterministic:explicit-shopping-list",_latency_ms:0});
+  return intent;
+}
 const firstPool=route.route==="complex"?COMPLEX_MODELS:FAST_MODELS;const secondPool=route.route==="complex"?FAST_MODELS:COMPLEX_MODELS;
 const rankedFirst=await v11RankModels(env,route,firstPool);const rankedSecond=await v11RankModels(env,route,secondPool);
 const candidates=[];for(const m of [...v11ProviderDiverse(rankedFirst,6),...rankedFirst,...v11ProviderDiverse(rankedSecond,4),...rankedSecond])if(!candidates.some(x=>x.id===m.id))candidates.push(m);
