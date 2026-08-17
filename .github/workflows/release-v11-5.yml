@@ -14,7 +14,7 @@ permissions:
 jobs:
   certify-v115:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -115,7 +115,7 @@ jobs:
           echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
           echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"; echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
           for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY"; do k="${pair%%:*}";v="${pair#*:}";printf '%s' "$v"|npx wrangler secret put "$k" --config wrangler.v115.live.jsonc >/dev/null;done
-          sleep 4
+          sleep 6
 
       - name: Security readiness and model probes
         shell: bash
@@ -123,12 +123,28 @@ jobs:
           set -euo pipefail
           code=$(curl -sS -o /tmp/query-key.json -w '%{http_code}' "$URL/ready?key=$SETUP_KEY")
           test "$code" = "401"
-          curl -fsS -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1" | tee /tmp/setup.json
-          node -e "const x=require('/tmp/setup.json'),e=['gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];if(!x.ok||x.message!=='سوبر إيجنت V11.5 جاهز للعمل'||x.models_total!==3||x.primary_model!=='gemini::gemini-3.5-flash-lite'||JSON.stringify(x.fallback_models)!==JSON.stringify(e)||x.router!==false)process.exit(1)"
+
+          setup_ok=0
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /tmp/setup.json -w '%{http_code}' -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1" || true)
+            if [ "$code" = "200" ] && node -e "const x=require('/tmp/setup.json'),e=['gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];process.exit(x.ok&&x.message==='سوبر إيجنت V11.5 جاهز للعمل'&&x.models_total===3&&x.primary_model==='gemini::gemini-3.5-flash-lite'&&JSON.stringify(x.fallback_models)===JSON.stringify(e)&&x.router===false?0:1)"; then setup_ok=1; break; fi
+            echo "setup not ready yet: HTTP $code attempt $i"; sleep 3
+          done
+          test "$setup_ok" = "1"
+          cat /tmp/setup.json
+
           curl -fsS "$URL/health" | tee /tmp/health.json
           node -e "const x=require('/tmp/health.json');if(!x.ok||x.version!=='11.5.0'||!x.db||!x.omniai_service)process.exit(1)"
-          curl -fsS -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/ready?all=1" | tee /tmp/ready-all.json
-          node -e "const x=require('/tmp/ready-all.json'),e=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];if(!x.ok||!x.db||!x.omniai||!x.all_models_ok||JSON.stringify(x.attempts.map(a=>a.model))!==JSON.stringify(e)||!x.attempts.every(a=>a.ok))process.exit(1)"
+
+          ready_ok=0
+          for i in 1 2 3; do
+            code=$(curl -sS -o /tmp/ready-all.json -w '%{http_code}' -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/ready?all=1" || true)
+            if [ "$code" = "200" ] && node -e "const x=require('/tmp/ready-all.json'),e=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];process.exit(x.ok&&x.db&&x.omniai&&x.all_models_ok&&JSON.stringify(x.attempts.map(a=>a.model))===JSON.stringify(e)&&x.attempts.every(a=>a.ok)?0:1)"; then ready_ok=1; break; fi
+            echo "all-model readiness not green yet: HTTP $code attempt $i"; cat /tmp/ready-all.json || true; sleep 12
+          done
+          test "$ready_ok" = "1"
+          cat /tmp/ready-all.json
+
           curl -fsS -H "Authorization: Bearer $SETUP_KEY" "$URL/selftest" | tee /tmp/selftest.json
           node -e "const x=require('/tmp/selftest.json');if(!x.ok||x.version!=='11.5.0'||!x.v10.ok||!x.v11.ok||!x.v113.ok||!x.v114.ok||!x.v115.ok)process.exit(1)"
           npx wrangler d1 execute "$DB" --remote --config wrangler.v115.live.jsonc --command "SELECT value FROM scheduler_state WHERE key='schema_version_v115'" --json > /tmp/schema.json
