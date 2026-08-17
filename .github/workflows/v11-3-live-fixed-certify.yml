@@ -3,7 +3,9 @@ name: V11.3 Live Fixed Telegram Certification
 on:
   push:
     branches: [superagent-v11-3-live-test]
-    paths: ['.github/workflows/v11-3-live-fixed-certify.yml']
+    paths:
+      - '.github/workflows/v11-3-live-fixed-certify.yml'
+      - 'tools/apply_v113_live_fixes.mjs'
   workflow_dispatch:
 
 jobs:
