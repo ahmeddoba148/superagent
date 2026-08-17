@@ -1,2 +1,2 @@
-Trigger definitive Sanad V12.5 certification after explicit PM time grounding fix.
-Commit target: 46dc37c1a229d82a47439e4d90e97d9f75681570
+Trigger definitive Sanad V12.5 certification after prayer + brief + dependency grounding fixes.
+Target patch commit: 953dc289e3e1ebf76d7b6d63769d4c55d60beed8
