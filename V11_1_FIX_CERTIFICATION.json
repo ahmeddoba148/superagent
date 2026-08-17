@@ -1,0 +1,32 @@
+{
+  "build": "SuperAgent V11.1 FIX",
+  "version": "11.1.1",
+  "sha256": "ff67b40e9d29103fd620194cc2fed939cfa1e17d2df4959aa7fed28a98277b36",
+  "bytes": 411564,
+  "lines": 15226,
+  "base_v10_7_1_named_functions": 367,
+  "retained_named_functions": 367,
+  "missing_functions": [],
+  "base_v10_7_1_tables": 36,
+  "retained_tables": 36,
+  "missing_tables": [],
+  "checks": {
+    "version": true,
+    "direct_chat": true,
+    "primary_plus_two_fallbacks": true,
+    "no_hedged_planner": true,
+    "shopping_todo": true,
+    "deterministic_long_shopping": true,
+    "durable_inbox": true,
+    "audit_undo": true,
+    "voice": true,
+    "recurrence": true,
+    "life_os": true,
+    "dependencies": true,
+    "memory": true,
+    "no_missing_base_functions": true,
+    "no_missing_base_tables": true
+  },
+  "failed_checks": [],
+  "note": "Static/CI parity and syntax certification; live Cloudflare/Telegram/provider latency must still be measured."
+}
