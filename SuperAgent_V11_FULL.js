@@ -5741,7 +5741,7 @@ const coding=/(?:كود|برمج|javascript|python|html|css|sql|api|bug|error|st
 const live=/(?:اخر الاخبار|آخر الأخبار|الجو|الطقس|سعر|حاليا|حالياً|live)/u.test(t);
 const multiDomain=(shopping&&schedule)||(coding&&(shopping||schedule))||(live&&mutation);
 const chain=/(?:وبعد(?:ها| كده)|وبعدين|ثم|لو .* اعمل|لما .* اعمل|بعد ما)/u.test(t);
-const listLike=lines.length>=4||(?:shopping&&/[،,;]/.test(raw));
+const listLike=lines.length>=4||(shopping&&/[،,;]/.test(raw));
 let route="easy",risk=destructive?"high":"low",needs_context=contextual,needs_tools=mutation||live,needs_reasoning=false,confidence=0.64,task="chat",reason="uncertain_local";
 if(shopping)task="shopping";else if(schedule)task="schedule";else if(coding)task="coding";else if(live)task="research";else if(mutation)task="state_edit";
 if(destructive||(contextual&&mutation)||multiDomain||chain){route="complex";needs_reasoning=true;confidence=destructive?0.96:0.93;reason=destructive?"destructive_or_bulk_state_change":"context_or_dependency_chain";}
@@ -5836,7 +5836,7 @@ for(const model of candidates){
 if(Date.now()-started>=TOTAL_AI_BUDGET_MS)break;
 try{const intent=await parseIntentWithFallbackLegacy(env,userText,validationContext,[model]);assertShoppingEntityPreservationV11(intent,routeText);intent._v11_route=route;intent._v11_model=model.id;return intent;}catch(error){failures.push({model:model.id,error:String(error?.message||error).slice(0,300)});}
 }
-const e=new Error("V11: كل محاولات الفهم والتحقق فشلت، لذلك لم يتم تنفيذ أي تغيير.");e.v11_failures=failures;throw e;
+const e=Object.assign(new Error("V11: كل محاولات الفهم والتحقق فشلت، لذلك لم يتم تنفيذ أي تغيير."),{v11_failures:failures});throw e;
 }
 async function parseIntentWithFallbackLegacy(env,userText,validationContext,V11_MODEL_POOL){
 const REMINDER_MODELS=Array.isArray(V11_MODEL_POOL)&&V11_MODEL_POOL.length?V11_MODEL_POOL:ALL_EXECUTION_MODELS;
