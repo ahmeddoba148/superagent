@@ -72,7 +72,7 @@ jobs:
           node -e "const x=require('/tmp/setup.json');if(!x.ok||x.message!=='سوبر إيجنت V11.3 جاهز للعمل'||x.fallback_count!==2||!Array.isArray(x.fallback_models))process.exit(1)"
           curl -fsS "$URL/health" | tee /tmp/health.json
           node -e "const x=require('/tmp/health.json');if(!x.ok||x.version!=='11.3.0'||!x.db||!x.omniai_service)process.exit(1)"
-          curl -fsS "$URL/ready" | tee /tmp/ready.json
+          curl -fsS "$URL/ready?key=$SETUP_KEY" | tee /tmp/ready.json
           node -e "const x=require('/tmp/ready.json');if(!x.ok||!x.db||!x.omniai)process.exit(1)"
           curl -fsS "$URL/selftest?key=$SETUP_KEY" | tee /tmp/selftest.json
           node -e "const x=require('/tmp/selftest.json');if(!x.ok||!x.v10.ok||!x.v11.ok||!x.v113.ok)process.exit(1)"
