@@ -4,6 +4,6 @@ let b=fs.readFileSync(p,'utf8');
 const lines=b.split('\n');
 const i=lines.findIndex(x=>x.includes("'identity insertion'"));
 if(i<0)throw new Error('identity insertion builder line not found');
-lines[i]="{const h=s.indexOf('async function handleTelegramUpdate(update,env){');const a=s.indexOf('await sendChatAction',h);if(h<0||a<0||a-h>12000)throw new Error('V11 identity insertion anchor not found');s=s.slice(0,a)+'if(await handleV11Identity(text,env,chatId))return;\\n'+s.slice(a);}";
+lines[i]="{const h=s.indexOf('async function handleTelegramUpdate(update,env){');if(h<0)throw new Error('handleTelegramUpdate anchor missing');console.log('V11_HANDLE_SNIPPET_START\\n'+s.slice(h,h+9000)+'\\nV11_HANDLE_SNIPPET_END');}";
 fs.writeFileSync(p,lines.join('\n'));
-console.log('patched V11 builder identity insertion');
+console.log('patched V11 builder for anchor discovery');
