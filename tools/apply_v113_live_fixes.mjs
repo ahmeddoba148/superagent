@@ -30,5 +30,27 @@ one("        await env.DB.prepare(`UPDATE telegram_inbox_v106 SET status=?,last_
 one("  if(!failed&&processed===V106_INBOX_BATCH_SIZE&&origin&&await hasRunnableInboxV106(env,chatId)){\n    await triggerDrainContinuationV106(env,chatId,origin);\n  }\n}",
     "  if(retryPending&&origin){\n    const delay=Math.min(1400,V113_TRANSIENT_RETRY_BASE_MS*Math.pow(2,Math.max(0,retryAttempt-1)))+Math.floor(Math.random()*90);\n    await sleepV106(delay);\n    await triggerDrainContinuationV106(env,chatId,origin);\n    return;\n  }\n  if(!failed&&processed===V106_INBOX_BATCH_SIZE&&origin&&await hasRunnableInboxV106(env,chatId)){\n    await triggerDrainContinuationV106(env,chatId,origin);\n  }\n}",
     'immediate continuation');
+const readyStart=s.indexOf('async function reliabilityReadyV113(request,env){');
+const readyEnd=s.indexOf('\n// Versioned identity.',readyStart);
+if(readyStart<0||readyEnd<0)throw new Error('missing V11.3 live-fix anchor: readiness function');
+const ready=`async function reliabilityReadyV113(request,env){
+  const url=new URL(request.url),key=url.searchParams.get('key')||'';if(!env.SETUP_KEY||key!==env.SETUP_KEY)return json({ok:false,error:'غير مصرح'},401);
+  const base={ok:false,version:V10_VERSION,db:false,omniai:false,primary_model:PRIMARY_MODEL.id,probe_model:null,attempts:[]};
+  try{
+    await ensureSchemaOnce(env);const p=await env.DB.prepare(\`SELECT 1 AS ok\`).first();base.db=Number(p?.ok||0)===1;
+    if(!env.OMNIAI_SERVICE||!env.OMNIAI_API_KEY)return json({...base,error:'ربط OmniAI ناقص'},503);
+    for(const model of MODEL_CHAIN){
+      const c=new AbortController(),timeout=Math.min(3600,Math.max(1800,Number(model.timeoutMs||2500)+350)),timer=setTimeout(()=>c.abort(),timeout),started=Date.now();
+      try{
+        const req=new Request(OMNIAI_INTERNAL_URL,{method:'POST',headers:{Authorization:\`Bearer \${env.OMNIAI_API_KEY}\`,'Content-Type':'application/json'},body:JSON.stringify({model:model.id,messages:[{role:'user',content:'رد بكلمة OK فقط'}],max_tokens:8,stream:false}),signal:c.signal});
+        const r=await env.OMNIAI_SERVICE.fetch(req);base.attempts.push({model:model.id,ok:r.ok,status:r.status,latency_ms:Date.now()-started});
+        if(r.ok){base.omniai=true;base.probe_model=model.id;break;}
+      }catch(e){base.attempts.push({model:model.id,ok:false,status:0,latency_ms:Date.now()-started,error:safeError(e)});}finally{clearTimeout(timer);}
+    }
+    return json({...base,ok:base.db&&base.omniai,...(!base.omniai?{error:'لم يستجب أي موديل في فحص الجاهزية'}:{})},base.db&&base.omniai?200:503);
+  }catch(e){return json({...base,error:safeError(e)},503);}
+}
+`;
+s=s.slice(0,readyStart)+ready+s.slice(readyEnd);
 fs.writeFileSync(file,s);
 console.log(JSON.stringify({file,bytes:Buffer.byteLength(s),lines:s.split(/\n/).length},null,2));
