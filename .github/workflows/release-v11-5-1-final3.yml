@@ -1,3 +1,4 @@
+# rerun after correcting runtime_failures.error_text in the certification harness
 name: Definitive SuperAgent V11.5.1 Certification
 on:
   push:
