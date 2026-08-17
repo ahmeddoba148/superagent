@@ -4,6 +4,7 @@ on:
     branches: [sanad-v12-5-full-life]
     paths:
       - "tools/build_sanad_v12_5.mjs"
+      - "tools/patch_sanad_v12_5_life_grounding.mjs"
       - "source_parts/**"
       - "tools/live_sanad_v12_5.mjs"
       - ".github/workflows/sanad-v12-5-certify.yml"
@@ -37,14 +38,15 @@ jobs:
         with:
           node-version: 22
 
-      - name: Rebuild V12.5 source deterministically
+      - name: Rebuild and life-ground V12.5 source deterministically
         id: build
         run: |
-          node tools/build_sanad_v12_5.mjs | tee /tmp/build.json
+          node tools/build_sanad_v12_5.mjs | tee /tmp/build-base.json
+          node tools/patch_sanad_v12_5_life_grounding.mjs | tee /tmp/build.json
           node - <<'NODE'
-          const b=require('/tmp/build.json');
-          if(!b.ok||!b.sha256||!b.base_sha256)throw Error(JSON.stringify(b));
-          console.log('BUILD SHA',b.sha256);
+          const b=require('/tmp/build-base.json'),p=require('/tmp/build.json');
+          if(!b.ok||!b.base_sha256||!p.ok||!p.sha256)throw Error(JSON.stringify({b,p}));
+          console.log('BUILD SHA',p.sha256);
           NODE
 
       - name: Syntax TypeScript and anti-suppression gates
@@ -55,7 +57,7 @@ jobs:
           if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_5_FULL.js; then exit 1; fi
           if grep -En 'eval\(|new Function\(' Sanad_V12_5_FULL.js; then exit 1; fi
 
-      - name: Pure architecture and explicit-grounding gates
+      - name: Pure architecture and grounding gates
         id: pure
         run: |
           cp Sanad_V12_5_FULL.js /tmp/sanad125.mjs
@@ -63,7 +65,10 @@ jobs:
           const monthly=generateRecurrenceOccurrencesV125({rule_json:JSON.stringify({unit:'months',every:1,times:['08:00']}),start_date:'2026-01-15',end_date:null,max_occurrences:null,fired_count:0,exceptions_json:'[]'},'2026-01-01','2026-04-30',20);
           const groundedMorning=groundExplicitTemporalFactsV125('من يوم 25 اغسطس 2026 فكرني كل يوم الساعة 8:15 الصبح أخد الدوا',[{tool:'recurrence.create',args:{title:'أخد الدوا',rule:{unit:'days',every:1,times:['09:00']},start_date:'2026-08-25'}}]);
           const groundedNight=groundExplicitTemporalFactsV125('فكرني يوم 3 نوفمبر 2026 الساعة 7:23 بالليل أكلم الدكتور',[{tool:'reminders.create',args:{title:'أكلم الدكتور',local_date:'2026-11-03',local_time:'07:23'}}]);
-          console.log(JSON.stringify({version:VERSION,models:MODEL_CHAIN.length,tools:Object.keys(TOOL_SPECS).length,mutations:Object.values(TOOL_SPECS).filter(x=>x.mutation).length,risky:Object.values(TOOL_SPECS).filter(x=>x.risky).length,monthly:monthly.map(x=>x.date),cairo:new Date(zonedLocalToEpochV125('2026-08-17','19:00','Africa/Cairo')).toISOString(),snapshotTables:SNAPSHOT_TABLES.length,groundedMorning:groundedMorning[0],groundedNight:groundedNight[0]}));
+          const prayer=explicitPrayerRuleHintV125('كل يوم نبهني قبل الفجر بعشر دقايق');
+          const brief=explicitBriefHintV125('شغللي الملخص الصباحي كل يوم الساعة 8 الصبح');
+          const augmented=augmentExplicitLifeStepsV125('اعمل مشروع اسمه تجهيز البيت وحط جواه مهمة اسمها مراجعة الكهرباء',[{tool:'projects.create',args:{title:'تجهيز البيت'}}]);
+          console.log(JSON.stringify({version:VERSION,models:MODEL_CHAIN.length,tools:Object.keys(TOOL_SPECS).length,mutations:Object.values(TOOL_SPECS).filter(x=>x.mutation).length,risky:Object.values(TOOL_SPECS).filter(x=>x.risky).length,monthly:monthly.map(x=>x.date),cairo:new Date(zonedLocalToEpochV125('2026-08-17','19:00','Africa/Cairo')).toISOString(),snapshotTables:SNAPSHOT_TABLES.length,groundedMorning:groundedMorning[0],groundedNight:groundedNight[0],prayer,brief,augmented}));
           NODE
           node /tmp/sanad125.mjs | tail -1 | tee /tmp/pure.json
           node - <<'NODE'
@@ -73,6 +78,9 @@ jobs:
           if(x.cairo!=='2026-08-17T16:00:00.000Z'||x.snapshotTables<10)throw Error(JSON.stringify(x));
           if(x.groundedMorning?.args?.rule?.times?.[0]!=='08:15'||x.groundedMorning?.args?.start_date!=='2026-08-25')throw Error('morning grounding '+JSON.stringify(x.groundedMorning));
           if(x.groundedNight?.args?.local_time!=='19:23'||x.groundedNight?.args?.local_date!=='2026-11-03')throw Error('night grounding '+JSON.stringify(x.groundedNight));
+          if(x.prayer?.prayer!=='Fajr'||Number(x.prayer?.offset_minutes)!==-10)throw Error('prayer grounding '+JSON.stringify(x.prayer));
+          if(Number(x.brief?.morning_brief_enabled)!==1||x.brief?.morning_brief_time!=='08:00')throw Error('brief grounding '+JSON.stringify(x.brief));
+          if(!Array.isArray(x.augmented)||!x.augmented.some(s=>s.tool==='project_tasks.create'&&s.args?.project_id==='$step:1.id'))throw Error('dependency grounding '+JSON.stringify(x.augmented));
           NODE
           [ "$(grep -c '^async function runAgent' Sanad_V12_5_FULL.js)" = "1" ]
 
@@ -131,7 +139,7 @@ jobs:
           const live=require('./SANAD_V12_5_LIVE_REPORT.json');
           const src=fs.readFileSync('Sanad_V12_5_FULL.js','utf8');
           const pure=require('/tmp/pure.json');
-          const cert={ok:true,version:'12.5.0',name:'Sanad — سند V12.5 Full-Life',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-full-life-agent',tools:pure.tools,models:pure.models,explicit_temporal_grounding:true,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),known_critical_code_failures:[],limitations:['External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs.']};
+          const cert={ok:true,version:'12.5.0',name:'Sanad — سند V12.5 Full-Life',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-full-life-agent',tools:pure.tools,models:pure.models,explicit_temporal_grounding:true,explicit_life_grounding:true,goal_completion_gate:true,structural_dependency_guard:true,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),known_critical_code_failures:[],limitations:['External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs.']};
           fs.writeFileSync('SANAD_V12_5_CERTIFICATION.json',JSON.stringify(cert,null,2));
           NODE
 
