@@ -38,6 +38,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export STAGING_TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          export STAGING_SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$STAGING_TELEGRAM_WEBHOOK_SECRET"
+          echo "::add-mask::$STAGING_SETUP_KEY"
           cat tools/v113_live_ci_payload.part0 tools/v113_live_ci_payload.part1 > /tmp/v113-live-ci.b64
           test "$(sha256sum /tmp/v113-live-ci.b64 | awk '{print $1}')" = "696c56825fa7526a9356c66784a364058dbd18b943e0c665ec7dc070f2d35ac2"
           base64 -d /tmp/v113-live-ci.b64 | gunzip > /tmp/v113-live-ci.sh
