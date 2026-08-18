@@ -5,6 +5,11 @@ on:
     paths:
       - 'sand_v2/**'
       - '.github/workflows/sand-v2-core-live.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sand_v2/**'
+      - '.github/workflows/sand-v2-core-live.yml'
 permissions:
   contents: read
 concurrency:
