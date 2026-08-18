@@ -1,0 +1,180 @@
+function mainMenuKeyboardV126(){
+  return {inline_keyboard:[
+    [{text:'📅 المواعيد',callback_data:'s126:panel:schedule'},{text:'🔁 التكرارات',callback_data:'s126:open:recurring'}],
+    [{text:'🛒 المشتريات',callback_data:'s126:open:shopping'},{text:'🎯 المشاريع',callback_data:'s126:open:projects'}],
+    [{text:'⏳ المتابعات',callback_data:'s126:open:waiting'},{text:'📥 صندوق الوارد',callback_data:'s126:open:inbox'}],
+    [{text:'🧠 الذاكرة',callback_data:'s126:open:memory'},{text:'🕌 الصلاة',callback_data:'s126:open:prayer'}],
+    [{text:'🛰️ الواقع الحالي',callback_data:'s126:open:live'},{text:'📍 موقعي',callback_data:'s126:open:where'}],
+    [{text:'⚙️ الإعدادات',callback_data:'s126:panel:settings'},{text:'🛡️ إدارة البيانات',callback_data:'s126:panel:data'}],
+    [{text:'🧾 سجل التغييرات',callback_data:'s126:open:audit'},{text:'↩️ تراجع',callback_data:'s126:open:undo'}]
+  ]};
+}
+function scheduleMenuKeyboardV126(){
+  return {inline_keyboard:[
+    [{text:'📆 النهاردة',callback_data:'s126:open:today'},{text:'🌅 بكرة',callback_data:'s126:open:tomorrow'}],
+    [{text:'🗓️ الأسبوع',callback_data:'s126:open:week'},{text:'📅 الشهر',callback_data:'s126:open:month'}],
+    [{text:'📋 كل القادم',callback_data:'s126:open:list'},{text:'🔁 التكرارات',callback_data:'s126:open:recurring'}],
+    [{text:'↩️ القائمة الرئيسية',callback_data:'s126:panel:home'}]
+  ]};
+}
+function dataPanelKeyboardV126(){
+  return {inline_keyboard:[
+    [{text:'🛒 مسح المشتريات',callback_data:'s126:data:shopping'}],
+    [{text:'🧹 مسح سياق المحادثة',callback_data:'s126:data:context'}],
+    [{text:'🧠 مسح الذاكرة الطويلة',callback_data:'s126:data:memory'}],
+    [{text:'🌐 مسح نموذج العالم',callback_data:'s126:data:world'}],
+    [{text:'🗑️ مسح المواعيد والتكرارات',callback_data:'s126:data:schedule'}],
+    [{text:'🔥 مسح كل بياناتي',callback_data:'s126:data:all'}],
+    [{text:'↩️ القائمة الرئيسية',callback_data:'s126:panel:home'}]
+  ]};
+}
+function panelBackKeyboardV126(target='home'){
+  return {inline_keyboard:[[{text:'↩️ رجوع',callback_data:target==='data'?'s126:panel:data':'s126:panel:home'}]]};
+}
+async function panelEditOrSendV126(env,chatId,messageId,text,reply_markup){
+  if(Number(messageId)>0){
+    try{
+      const r=await telegramApi(env,'editMessageText',{chat_id:String(chatId),message_id:Number(messageId),text:String(text),reply_markup});
+      if(r?.ok)return r;
+    }catch{}
+  }
+  return sendText(env,chatId,text,reply_markup);
+}
+async function countRowsV126(env,table,chatId,where='1=1'){
+  try{
+    if(!(await tableExistsV125(env,table)))return 0;
+    const cols=await columnsV125(env,table);if(!cols.some(x=>String(x.name)==='chat_id'))return 0;
+    return Number((await env.DB.prepare(`SELECT COUNT(*) c FROM ${table} WHERE chat_id=? AND (${where})`).bind(String(chatId)).first())?.c||0);
+  }catch{return 0;}
+}
+async function showMenuV125(env,chatId,messageId=null){
+  const user=await ensureUser(env,chatId),ln=localNow(user?.timezone||TZ);
+  const [reminders,recurring,shopping,projects,waiting,inbox]=await Promise.all([
+    countRowsV126(env,'sanad_reminders',chatId,"status='active'"),
+    countRowsV126(env,'sanad_recurrences',chatId,'active=1'),
+    countRowsV126(env,'sanad_shopping',chatId,"status IN ('pending','unavailable')"),
+    countRowsV126(env,'sanad_projects',chatId,"status!='done'"),
+    countRowsV126(env,'sanad_waiting',chatId,"status='waiting'"),
+    countRowsV126(env,'sanad_life_inbox',chatId,"status='open'")
+  ]);
+  const text=`🤝 سند V12.6 Ultimate Parity\n\n📌 حالتك دلوقتي\n📅 ${reminders} موعد · 🔁 ${recurring} تكرار · 🛒 ${shopping} مشتريات\n🎯 ${projects} مشروع · ⏳ ${waiting} متابعة · 📥 ${inbox} في الوارد\n🕒 ${ln.date} — ${ln.time}\n\nاختار القسم اللي عاوزه، أو كلمني بطبيعتك من غير أوامر.`;
+  return panelEditOrSendV126(env,chatId,messageId,text,mainMenuKeyboardV126());
+}
+async function showSchedulePanelV126(env,chatId,messageId=null){
+  return panelEditOrSendV126(env,chatId,messageId,'📅 المواعيد والجدول\n\nاختار الفترة اللي عاوز تشوفها أو افتح إدارة التكرارات.',scheduleMenuKeyboardV126());
+}
+async function showSettingsV126(env,chatId,messageId=null){
+  const r=await toolSettingsReadV125(env,chatId),s=r.settings;
+  const text=`⚙️ إعدادات سند\n\n🔔 المبادرة: ${Number(s.proactive_enabled)?'شغالة ✅':'مقفولة ⬜'}\n☀️ ملخص الصبح: ${Number(s.morning_brief_enabled)?s.morning_brief_time:'مقفول'}\n🌙 ملخص المساء: ${Number(s.evening_brief_enabled)?s.evening_brief_time:'مقفول'}\n🛡️ التأكيد قبل الحذف: ${Number(s.ask_before_delete)?'نعم':'لا'}\n🧠 التفكير العميق: ${s.deep_reasoning_mode}`;
+  return panelEditOrSendV126(env,chatId,messageId,text,{inline_keyboard:[
+    [{text:'🔔 المبادرة',callback_data:'s126:setting:proactive_enabled'},{text:'☀️ ملخص الصبح',callback_data:'s126:setting:morning_brief_enabled'}],
+    [{text:'🌙 ملخص المساء',callback_data:'s126:setting:evening_brief_enabled'},{text:'🛡️ تأكيد الحذف',callback_data:'s126:setting:ask_before_delete'}],
+    [{text:'🗑️ إدارة البيانات والمسح',callback_data:'s126:panel:data'}],
+    [{text:'↩️ القائمة الرئيسية',callback_data:'s126:panel:home'}]
+  ]});
+}
+async function showDataPanelV126(env,chatId,messageId=null){
+  const [shop,context,memory,entities,edges,reminders,recurrences,prayers]=await Promise.all([
+    countRowsV126(env,'sanad_shopping',chatId),countRowsV126(env,'sanad_conversation',chatId),countRowsV126(env,'sanad_memories',chatId),
+    countRowsV126(env,'sanad_entities',chatId),countRowsV126(env,'sanad_edges',chatId),countRowsV126(env,'sanad_reminders',chatId),
+    countRowsV126(env,'sanad_recurrences',chatId),countRowsV126(env,'sanad_prayer_rules',chatId)
+  ]);
+  const text=`🛡️ إدارة البيانات الحساسة\n\nالمسح الكبير موجود هنا بس عشان القوائم تفضل نضيفة ومايحصلش حذف بالغلط.\n\n🛒 المشتريات: ${shop}\n🧹 رسائل السياق: ${context}\n🧠 الذاكرة الطويلة: ${memory}\n🌐 نموذج العالم: ${entities} كيان · ${edges} علاقة\n📅 الجدول: ${reminders} موعد · ${recurrences} تكرار · ${prayers} قاعدة صلاة\n\nكل اختيار هيطلب تأكيد قبل التنفيذ.`;
+  return panelEditOrSendV126(env,chatId,messageId,text,dataPanelKeyboardV126());
+}
+function dataConfirmCopyV126(action){
+  const map={
+    shopping:['🛒 مسح المشتريات','هتمسح كل عناصر قائمة المشتريات وأي جلسة تسوق مفتوحة. باقي بياناتك هتفضل زي ما هي.'],
+    context:['🧹 مسح سياق المحادثة','هتمسح رسائل المحادثة والسياق المؤقت فقط. الذاكرة الطويلة والمواعيد والمشتريات مش هيتأثروا.'],
+    memory:['🧠 مسح الذاكرة الطويلة','هتمسح كل الذكريات المحفوظة في ذاكرة سند الطويلة. سياق المحادثة والمواعيد مش هيتأثروا.'],
+    world:['🌐 مسح نموذج العالم','هتمسح الكيانات والعلاقات اللي سند حافظها عن الأشخاص والأماكن والأشياء والعلاقات في عالمك.'],
+    schedule:['🗑️ مسح المواعيد والتكرارات','هتمسح المواعيد والتكرارات وقواعد الصلاة والروابط الزمنية بينها. المشتريات والذاكرة هيفضلوا.'],
+    all:['🔥 مسح كل بياناتي','تحذير نهائي: هتمسح بياناتك الشخصية داخل سند: المواعيد والتكرارات والمشتريات والسياق والذاكرة والمشاريع والمتابعات والموقع والإعدادات ونموذج العالم وسجل التراجع. هنحتفظ فقط بسجلات تشغيل تقنية لازمة لمنع تكرار نفس تحديث تيليجرام.']
+  };
+  return map[action]||['⚠️ تأكيد المسح','هل أنت متأكد؟'];
+}
+async function showDataConfirmationV126(env,chatId,messageId,action){
+  const [title,desc]=dataConfirmCopyV126(action);
+  return panelEditOrSendV126(env,chatId,messageId,`${title}\n\n⚠️ ${desc}\n\nمتأكد؟`,{inline_keyboard:[
+    [{text:action==='all'?'🔥 نعم، امسح كل بياناتي':'✅ نعم، امسح',callback_data:`s126:data:confirm:${action}`}],
+    [{text:'↩️ إلغاء',callback_data:'s126:panel:data'}]
+  ]});
+}
+async function deleteChatTablesVerifiedV126(env,chatId,tables){
+  const details={};let changed=0;
+  for(const table of tables){
+    if(!(await tableExistsV125(env,table)))continue;
+    const cols=await columnsV125(env,table);if(!cols.some(x=>String(x.name)==='chat_id'))continue;
+    const before=Number((await env.DB.prepare(`SELECT COUNT(*) c FROM ${table} WHERE chat_id=?`).bind(String(chatId)).first())?.c||0);
+    const r=await env.DB.prepare(`DELETE FROM ${table} WHERE chat_id=?`).bind(String(chatId)).run();
+    const left=Number((await env.DB.prepare(`SELECT COUNT(*) c FROM ${table} WHERE chat_id=?`).bind(String(chatId)).first())?.c||0);
+    if(left!==0)throw new Error(`clear_verify_failed:${table}:${left}`);
+    details[table]=before;changed+=Number(r?.meta?.changes||before||0);
+  }
+  return {ok:true,verified:true,changed,details};
+}
+async function clearDataSectionV126(env,chatId,action){
+  if(action==='shopping')return deleteChatTablesVerifiedV126(env,chatId,['sanad_shopping_sessions','sanad_shopping']);
+  if(action==='context')return deleteChatTablesVerifiedV126(env,chatId,['sanad_conversation','sanad_pending_actions','sanad_pending_conflicts']);
+  if(action==='memory')return deleteChatTablesVerifiedV126(env,chatId,['sanad_memories']);
+  if(action==='world')return deleteChatTablesVerifiedV126(env,chatId,['sanad_edges','sanad_entities']);
+  if(action==='schedule')return deleteChatTablesVerifiedV126(env,chatId,['sanad_dependencies','sanad_reminder_fires','sanad_recurrence_fires','sanad_prayer_fires','sanad_reminders','sanad_recurrences','sanad_prayer_rules']);
+  if(action==='all'){
+    const base=await toolSystemClearAllV125(env,chatId);
+    if(!base?.ok||base?.verified!==true)throw new Error(`clear_all_failed:${base?.remaining??'unknown'}`);
+    const undo=await deleteChatTablesVerifiedV126(env,chatId,['sanad_operation_snapshots','sanad_receipts']);
+    return {ok:true,verified:true,changed:Number(base.changed||0)+Number(undo.changed||0),base,undo};
+  }
+  return {ok:false,verified:false,changed:0,error:'unknown_clear_action'};
+}
+function clearSuccessCopyV126(action,r){
+  const n=Number(r?.changed||0);
+  const map={shopping:`✅ تم مسح المشتريات بالكامل واتأكدت إن القائمة فاضية. (${n} سجل)`,context:`✅ تم مسح سياق المحادثة. الذاكرة الطويلة وباقي بياناتك زي ما هي. (${n} سجل)`,memory:`✅ تم مسح الذاكرة الطويلة بالكامل. (${n} سجل)`,world:`✅ تم مسح نموذج العالم والكيانات والعلاقات. (${n} سجل)`,schedule:`✅ تم مسح المواعيد والتكرارات وقواعد الصلاة والروابط الزمنية. (${n} سجل)`,all:`✅ تم مسح بياناتك الشخصية بالكامل من سند واتأكدت من النتيجة. (${n} سجل)`};
+  return map[action]||'✅ تم المسح واتأكدت من النتيجة.';
+}
+async function handleCallback(env,q){
+  const chatId=String(q?.message?.chat?.id??q?.from?.id??''),messageId=Number(q?.message?.message_id||0),data=String(q?.data||'');
+  if(!chatId)return;
+  const ours=data.startsWith('s126:panel:')||data.startsWith('s126:open:')||data.startsWith('s126:data:');
+  if(!ours)return handleCallbackV126BeforeRestoredPanels(env,q);
+  try{await telegramApi(env,'answerCallbackQuery',{callback_query_id:q.id});}catch{}
+  if(data==='s126:panel:home')return showMenuV125(env,chatId,messageId);
+  if(data==='s126:panel:schedule')return showSchedulePanelV126(env,chatId,messageId);
+  if(data==='s126:panel:settings')return showSettingsV126(env,chatId,messageId);
+  if(data==='s126:panel:data')return showDataPanelV126(env,chatId,messageId);
+  const open=data.match(/^s126:open:(today|tomorrow|week|month|list|recurring|shopping|projects|waiting|inbox|memory|prayer|live|where|audit|undo)$/);
+  if(open){
+    const user=await ensureUser(env,chatId),name=open[1];
+    if(name==='today')return showToday(env,chatId,user);
+    if(name==='tomorrow')return showTomorrowV126(env,chatId,user);
+    if(name==='week')return showRangeV125(env,chatId,user,7);
+    if(name==='month')return showRangeV125(env,chatId,user,31);
+    if(name==='list')return showAllScheduleV126(env,chatId,user);
+    if(name==='recurring')return showRecurrencesV125(env,chatId);
+    if(name==='shopping')return showShopping(env,chatId);
+    if(name==='projects')return showProjectsV125(env,chatId);
+    if(name==='waiting')return showWaitingV125(env,chatId);
+    if(name==='inbox')return showLifeInboxV126(env,chatId);
+    if(name==='memory')return showMemory(env,chatId);
+    if(name==='prayer')return showPrayerPanelV126(env,chatId,user);
+    if(name==='live')return showLiveRealityV126(env,chatId,user);
+    if(name==='where')return showWhereV125(env,chatId,user);
+    if(name==='audit')return showAudit(env,chatId);
+    if(name==='undo'){const r=await toolAuditUndoV125(env,chatId);return sendText(env,chatId,r.ok?'↩️ رجعت آخر عملية قابلة للتراجع بنجاح.':'مفيش عملية قابلة للتراجع حاليًا.',panelBackKeyboardV126());}
+  }
+  const ask=data.match(/^s126:data:(shopping|context|memory|world|schedule|all)$/);if(ask)return showDataConfirmationV126(env,chatId,messageId,ask[1]);
+  const confirm=data.match(/^s126:data:confirm:(shopping|context|memory|world|schedule|all)$/);
+  if(confirm){
+    const action=confirm[1];
+    try{
+      const r=await clearDataSectionV126(env,chatId,action);
+      if(!r?.ok||r?.verified!==true)throw new Error(r?.error||'clear_not_verified');
+      const kb=action==='all'?{inline_keyboard:[[{text:'🤝 بدء من جديد',callback_data:'s126:panel:home'}]]}:panelBackKeyboardV126('data');
+      return panelEditOrSendV126(env,chatId,messageId,clearSuccessCopyV126(action,r),kb);
+    }catch(e){
+      await reportFailure(env,chatId,'data_clear',e,{action});
+      return panelEditOrSendV126(env,chatId,messageId,'⚠️ المسح ما اكتملش بشكل يمكن إثباته، فمش هقولك إنه تم. جرّب تاني أو راجع /diagnostics.',panelBackKeyboardV126('data'));
+    }
+  }
+  return handleCallbackV126BeforeRestoredPanels(env,q);
+}
