@@ -1,0 +1,250 @@
+    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
+    .bind(nowIso(), chatId, objectId)
+    .run();
+}
+
+function tzOffsetMinutesAt(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .filter((x) => x.type !== "literal")
+      .map((x) => [x.type, x.value]),
+  );
+  const localAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return Math.round((localAsUtc - date.getTime()) / 60000);
+}
+
+function cairoLocalToUtc(localMinute) {
+  const s = normalizeLocalMinute(localMinute);
+  if (!s) return null;
+  const [datePart, timePart] = s.split("T");
+  const [y, mo, d] = datePart.split("-").map(Number);
+  const [h, mi] = timePart.split(":").map(Number);
+  const wallUtc = Date.UTC(y, mo - 1, d, h, mi, 0);
+  let guess = new Date(wallUtc);
+  for (let i = 0; i < 3; i += 1) {
+    const offset = tzOffsetMinutesAt(guess, TZ);
+    guess = new Date(wallUtc - offset * 60000);
+  }
+  const verify = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(guess).replace(", ", "T");
+  if (!verify.startsWith(`${datePart}T${timePart}`)) return null;
+  return guess.toISOString();
+}
+
+async function deliverDueReminders(env, limit) {
+  const rows = await env.DB.prepare(`SELECT id,chat_id,object_id,title,remind_at_utc,mode,status
+    FROM ${TABLES.reminders}
+    WHERE status='pending' AND remind_at_utc<=?
+    ORDER BY remind_at_utc ASC LIMIT ?`)
+    .bind(nowIso(), clampInt(limit, 1, 100, 30))
+    .all();
+
+  for (const row of rows?.results ?? []) {
+    const id = String(row.id);
+    const claim = await env.DB.prepare(`UPDATE ${TABLES.reminders}
+      SET status='sending',updated_at=? WHERE id=? AND status='pending' RETURNING id`)
+      .bind(nowIso(), id)
+      .first();
+    if (!claim) continue;
+    try {
+      const data = await telegramApi(env, "sendMessage", {
+        chat_id: String(row.chat_id),
+        text: `⏰ ${String(row.title)}`.slice(0, 3900),
+      });
+      await env.DB.prepare(`UPDATE ${TABLES.reminders}
+        SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
+        .bind(Number(data?.result?.message_id ?? 0) || null, nowIso(), nowIso(), id)
+        .run();
+    } catch (error) {
+      await env.DB.prepare(`UPDATE ${TABLES.reminders} SET status='uncertain',updated_at=? WHERE id=?`)
+        .bind(nowIso(), id)
+        .run();
+      logError("reminder_delivery_uncertain", error, { reminderId: id });
+    }
+  }
+}
+
+async function textHash(text) {
+  const data = new TextEncoder().encode(String(text));
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function deliverTextOnce(env, chatId, sourceKind, sourceId, text) {
+  const content = String(text).slice(0, 3900);
+  const hash = await textHash(content);
+  const existing = await env.DB.prepare(`SELECT id,status,text_hash,telegram_message_id,updated_at FROM ${TABLES.deliveries}
+    WHERE chat_id=? AND source_kind=? AND source_id=? LIMIT 1`)
+    .bind(chatId, sourceKind, sourceId)
+    .first();
+
+  if (existing) {
+    if (String(existing.text_hash) !== hash) throw new Error("Delivery idempotency payload mismatch");
+    const status = String(existing.status);
+    if (status === "sent" || status === "uncertain" || status === "sending") return { skipped: true, status };
+  }
+
+  const id = existing?.id ? String(existing.id) : randomId("delivery");
+  const at = nowIso();
+  if (!existing) {
+    await env.DB.prepare(`INSERT INTO ${TABLES.deliveries}
+      (id,chat_id,source_kind,source_id,text_hash,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'pending',?,?)`)
+      .bind(id, chatId, sourceKind, sourceId, hash, at, at)
+      .run();
+  }
+
+  const claim = await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+    SET status='sending',updated_at=?,last_error=NULL
+    WHERE id=? AND status IN ('pending','failed') RETURNING id`)
+    .bind(nowIso(), id)
+    .first();
+  if (!claim) return { skipped: true, status: "busy_or_terminal" };
+
+  try {
+    const data = await telegramApi(env, "sendMessage", { chat_id: chatId, text: content });
+    const messageId = Number(data?.result?.message_id ?? 0) || null;
+    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+      SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
+      .bind(messageId, nowIso(), nowIso(), id)
+      .run();
+    return { skipped: false, status: "sent", message_id: messageId };
+  } catch (error) {
+    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+      SET status='uncertain',last_error=?,updated_at=? WHERE id=?`)
+      .bind(safeError(error), nowIso(), id)
+      .run();
+    throw error;
+  }
+}
+
+async function markStaleDeliveriesUncertain(env) {
+  const cutoff = new Date(nowMs() - DELIVERY_UNCERTAIN_AFTER_MS).toISOString();
+  await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+    SET status='uncertain',updated_at=?
+    WHERE status='sending' AND updated_at<?`)
+    .bind(nowIso(), cutoff)
+    .run();
+}
+
+function omniChatUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/chat/completions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+  if (/\/v1\/chat\/completions$/i.test(configured)) return configured;
+  if (/\/v1$/i.test(configured)) return `${configured}/chat/completions`;
+  return `${configured}/v1/chat/completions`;
+}
+
+function aiContent(data) {
+  const direct = data?.choices?.[0]?.message?.content;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const output = data?.output_text ?? data?.text;
+  if (typeof output === "string" && output.trim()) return output.trim();
+  return "";
+}
+
+function aiErrorCode(error) {
+  if (error?.name === "AbortError") return "timeout";
+  const message = safeError(error).toLowerCase();
+  if (message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("empty")) return "empty_response";
+  return "network_or_runtime";
+}
+
+async function recordAiCallSafe(env, record) {
+  try {
+    await env.DB.prepare(`INSERT INTO ${TABLES.aiCalls}
+      (chat_id,update_id,phase,model_id,model_role,latency_ms,ok,http_status,error_code,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .bind(
+        record.chatId,
+        record.updateId,
+        record.phase,
+        record.modelId,
+        record.modelRole,
+        Math.max(0, Number(record.latencyMs) || 0),
+        record.ok ? 1 : 0,
+        record.httpStatus ?? null,
+        record.errorCode ?? null,
+        nowIso(),
+      )
+      .run();
+  } catch (error) {
+    logError("ai_call_log_noncritical", error, { modelId: record.modelId });
+  }
+}
+
+async function callOneAiModel(env, model, messages, timeoutMs, temperature, maxTokens) {
+  requireBinding(env, "OMNIAI_API_KEY");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = nowMs();
+  try {
+    const request = new Request(omniChatUrl(env), {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.OMNIAI_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: model.id,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+    const response = env?.OMNIAI_SERVICE?.fetch ? await env.OMNIAI_SERVICE.fetch(request) : await fetch(request);
+    const httpStatus = response.status;
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
+      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
+    }
+    const content = aiContent(data);
+    if (!content) throw new SandHttpError(`OmniAI ${model.id} returned empty content`, httpStatus);
+    return { text: content, latencyMs: nowMs() - started, httpStatus };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callAiChain(env, { chatId, updateId, phase, messages, temperature = 0.2, maxTokens = 1200 }) {
+  requireBinding(env, "OMNIAI_API_KEY");
+  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) throw new Error("Missing OmniAI route");
+  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
+  const failures = [];
+
+  for (const model of AI_MODELS) {
+    const remaining = deadline - nowMs();
+    if (remaining < 500) break;
+    const timeoutMs = Math.min(AI_MODEL_TIMEOUT_MS, remaining);
+    const started = nowMs();
+    try {
+      const result = await callOneAiModel(env, model, messages, timeoutMs, temperature, maxTokens);
