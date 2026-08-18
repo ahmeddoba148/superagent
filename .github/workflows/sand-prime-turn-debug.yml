@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
-      - name: Reconstruct normalized PRIME and inspect turn path
+      - name: Reconstruct normalized PRIME and inspect runtime fetch path
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
@@ -22,7 +22,9 @@ jobs:
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
           node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
-          for pattern in 'persistTelegramUpdate' 'handleTelegram' 'drainChat' 'processTelegramUpdate' 'saveAiMessage' 'loadConversation' 'loadMemoryContext' 'chatIngress'; do
-            echo "===== $pattern ====="
-            grep -n -B 35 -A 90 "$pattern" SAND.js | head -n 260 || true
-          done
+          echo '===== redirect error occurrences ====='
+          grep -n -B 45 -A 90 'redirect: "error"' SAND.js || true
+          echo '===== weather implementation ====='
+          grep -n -B 40 -A 160 'weather.lookup' SAND.js | head -n 360 || true
+          echo '===== public fetch / SSRF helpers ====='
+          grep -n -B 40 -A 180 -E 'safePublic|publicFetch|isPrivateHost|validatePublic|fetchPublic|web.fetch' SAND.js | head -n 500 || true
