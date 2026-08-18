@@ -21,6 +21,10 @@ regression=regression.replace(
   `pass('direct clear command present',built.includes('text === "/clear"')&&built.includes('showDataPanelV126'));`,
   `pass('direct clear command present',/text\\s*===\\s*["']\\/clear["']/.test(built)&&built.includes('showDataPanelV126'));`
 );
+regression=regression.replace(
+  `pass('after-end dependency propagation',b?.local_time==='21:00',JSON.stringify(b));`,
+  `if(b?.local_time!=='21:00'){const srcDbg=q(\`SELECT id,local_date,local_time,duration_minutes,updated_at FROM sanad_reminders WHERE chat_id='\${esc(CHAT)}' AND id=\${Number(a.id)}\`)[0],depDbg=q(\`SELECT * FROM sanad_dependencies WHERE chat_id='\${esc(CHAT)}' AND id=\${Number(dep.id)}\`)[0],audDbg=q(\`SELECT operation_id,tool,args_json,result_json,verified,created_at FROM sanad_audit WHERE chat_id='\${esc(CHAT)}' ORDER BY id DESC LIMIT 12\`),recDbg=q(\`SELECT operation_id,step_key,tool,result_json,created_at FROM sanad_receipts WHERE chat_id='\${esc(CHAT)}' ORDER BY created_at DESC LIMIT 12\`),failDbg=q(\`SELECT scope,error_text,context_json,created_at FROM sanad_failures WHERE chat_id='\${esc(CHAT)}' ORDER BY id DESC LIMIT 12\`),txDbg=q(\`SELECT * FROM sanad_mutation_tx WHERE chat_id='\${esc(CHAT)}' ORDER BY started_at DESC LIMIT 5\`),jrDbg=q(\`SELECT operation_id,seq,tool,state,error_text,created_at FROM sanad_mutation_journal WHERE chat_id='\${esc(CHAT)}' ORDER BY created_at DESC LIMIT 12\`);console.log('V128 DEP DEBUG',JSON.stringify({source:srcDbg,target:b,dependency:depDbg,audit:audDbg,receipts:recDbg,failures:failDbg,tx:txDbg,journal:jrDbg}));}pass('after-end dependency propagation',b?.local_time==='21:00',JSON.stringify(b));`
+);
 
 fs.writeFileSync('/tmp/live_sanad_v128_regression.mjs',regression);
 execFileSync(process.execPath,['/tmp/live_sanad_v128_regression.mjs'],{stdio:'inherit',env:process.env});
