@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
-      - name: Reconstruct exact canonical PRIME
+      - name: Reconstruct exact normalized PRIME
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
@@ -31,8 +31,10 @@ jobs:
           patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
+          node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
           node --check SAND.js
-      - name: Inspect actual staging D1 core contract
+      - name: Certify live D1 normalized contract
         run: |
           set -euo pipefail
           npm install --no-save wrangler@latest >/dev/null
@@ -45,12 +47,9 @@ jobs:
           const fs=require('fs');
           const x=JSON.parse(fs.readFileSync('/tmp/schema.json','utf8'));
           const rows=x.flatMap(r=>r.results||[]);
-          console.log(JSON.stringify(rows,null,2));
           const meta=rows.find(r=>r.section==='META');
-          if(String(meta?.detail)!=='4') throw Error('Expected staging core schema 4, got '+JSON.stringify(meta));
+          if(String(meta?.detail)!=='5') throw Error('Expected normalized core schema 5, got '+JSON.stringify(meta));
           const tables=new Map(rows.filter(r=>r.section==='TABLE').map(r=>[r.name,String(r.detail||'')]));
-          const need=['sand_core_inbox','sand_core_chat_leases','sand_core_chat_ingress','sand_ai_messages','sand_ai_calls'];
-          for(const n of need) if(!tables.has(n)) throw Error('Missing required core table '+n);
           const req={
             sand_core_inbox:['update_id','chat_id','payload_json','status','attempts','process_lease_until','last_error','created_at','updated_at','finished_at'],
             sand_core_chat_leases:['chat_id','owner','lease_until','updated_at'],
@@ -58,6 +57,8 @@ jobs:
             sand_ai_messages:['id','chat_id','update_id','role','content','model_id','created_at'],
             sand_ai_calls:['id','chat_id','update_id','model_id','model_role','latency_ms','ok','http_status','error_code','created_at']
           };
-          for(const [t,cols] of Object.entries(req)){const sql=tables.get(t);for(const c of cols)if(!new RegExp('\\b'+c+'\\b','i').test(sql))throw Error(`Core contract mismatch: ${t}.${c}`)}
-          console.log('LIVE_D1_CORE_V4_COMPATIBLE_WITH_PRIME_V3_CONTRACT');
+          for(const [t,cols] of Object.entries(req)){const sql=tables.get(t);if(!sql)throw Error('Missing required core table '+t);for(const c of cols)if(!new RegExp('\\b'+c+'\\b','i').test(sql))throw Error(`Core contract mismatch: ${t}.${c}`)}
+          if(!/["']system["']/.test(tables.get('sand_ai_messages'))) throw Error('system role not normalized');
+          if(!tables.has('sand_reminders')||!tables.has('sand_operations')) throw Error('legacy v4 application tables were not preserved');
+          console.log('LIVE_D1_CORE_V5_CERTIFIED');
           NODE
