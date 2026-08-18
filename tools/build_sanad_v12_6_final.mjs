@@ -32,6 +32,10 @@ src+='\n\n/* ================= SANAD V12.6 PARITY LAYER 4 ================= */\n
 if(!src.includes('async function sendText(env,chatId,text,reply_markup){'))throw new Error('V12.6 sendText entry missing');
 src=src.replace('async function sendText(env,chatId,text,reply_markup){','async function sendTextV126BeforeCiMute(env,chatId,text,reply_markup){');
 src+='\n\n/* ================= SANAD V12.6 PARITY LAYER 5 ================= */\n'+fs.readFileSync(pack5,'utf8').trim()+'\n';
+// Goal-completion is an optional additive refinement. Model-level failures are already tracked in model telemetry; only escalate here when an executed mutation is actually failed or unverified.
+const completionCatch="}catch(e){await reportFailure(env,chatId,'goal_completion',e,{operationId,text:normalizeText(text).slice(0,300)});}";
+if(!src.includes(completionCatch))throw new Error('V12.6 goal completion catch marker missing');
+src=src.replace(completionCatch,"}catch(e){const unsafe=observations.some(x=>TOOL_SPECS[x.tool]?.mutation&&(!x.ok||x.verified!==true));if(unsafe)await reportFailure(env,chatId,'goal_completion',e,{operationId,text:normalizeText(text).slice(0,300)});}");
 // Layer 6 restores the organized V11-style control panels while retaining the V12.6 agent/runtime underneath.
 if(!src.includes('async function showMenuV125(env,chatId){'))throw new Error('V12.6 menu entry missing');
 src=src.replace('async function showMenuV125(env,chatId){','async function showMenuV126BeforeRestoredPanels(env,chatId){');
