@@ -39,19 +39,20 @@ jobs:
           node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
           node sand_prime/runtime_fetch_transform.mjs SAND.js
-          echo "prime_runtime_source_sha=$(sha256sum SAND.js | awk '{print $1}')"
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "f69e3904d1d581b36cd030f28633bc6576f0630ab172fa1078bd769318d33297"
           node --check SAND.js
           ! grep -q 'redirect: "error"' SAND.js
           grep -q 'redirect: "manual"' SAND.js
           grep -q 'PUBLIC_REDIRECT_BLOCKED' SAND.js
           grep -q 'FORGE_REDIRECT_BLOCKED' SAND.js
+          grep -q 'prime_update_retryable' SAND.js
       - name: Deploy exact source to dedicated semantic staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$WORKER_NAME"
           npm install --no-save wrangler@latest >/dev/null
           cat > "$CFG" <<EOF
-          {"name":"$WORKER_NAME","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          {"name":"$WORKER_NAME","main":"SAND.js","compatibility_date":"2026-08-18","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           EOF
           npx wrangler deploy --config "$CFG" >/dev/null
           W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
