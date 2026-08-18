@@ -1,0 +1,87 @@
+  try {
+    await ensureSchema(env);
+    const schema = await env.DB.prepare(`SELECT value FROM ${TABLES.meta} WHERE key='schema_version' LIMIT 1`).first();
+    const pending = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.inbox} WHERE status IN ('pending','processing')`).first();
+    const lastAi = await env.DB.prepare(`SELECT model_id, model_role, latency_ms, ok, http_status, error_code, created_at
+      FROM ${TABLES.aiCalls} ORDER BY id DESC LIMIT 1`).first();
+
+    return json({
+      ok:
+        bindings.TELEGRAM_BOT_TOKEN &&
+        bindings.TELEGRAM_WEBHOOK_SECRET &&
+        bindings.SETUP_KEY &&
+        bindings.OMNIAI_API_KEY &&
+        (bindings.OMNIAI_BASE_URL || bindings.OMNIAI_SERVICE),
+      service: APP_NAME,
+      version: APP_VERSION,
+      schema_version: schema?.value ?? null,
+      pending_updates: Number(pending?.n ?? 0),
+      last_ai: lastAi ?? null,
+      ai: true,
+      models: AI_MODELS.map((model) => model.id),
+      bindings,
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        service: APP_NAME,
+        version: APP_VERSION,
+        bindings,
+        error: safeError(error),
+      },
+      503,
+    );
+  }
+}
+
+async function adminStatus(request, env) {
+  requireBinding(env, "DB");
+  requireBinding(env, "SETUP_KEY");
+
+  const presented = request.headers.get("X-Sand-Key") ?? "";
+  if (!(await secretEqual(presented, env.SETUP_KEY))) {
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
+
+  await ensureSchema(env);
+
+  const counts = await env.DB.prepare(`SELECT status, COUNT(*) AS count
+    FROM ${TABLES.inbox}
+    GROUP BY status
+    ORDER BY status`)
+    .all();
+
+  const recent = await env.DB.prepare(`SELECT update_id, chat_id, status, attempts, last_error, updated_at
+    FROM ${TABLES.inbox}
+    ORDER BY update_id DESC
+    LIMIT 10`)
+    .all();
+
+  const aiRecent = await env.DB.prepare(`SELECT update_id, model_id, model_role, latency_ms, ok, http_status, error_code, created_at
+    FROM ${TABLES.aiCalls}
+    ORDER BY id DESC
+    LIMIT 10`)
+    .all();
+
+  return json({
+    ok: true,
+    version: APP_VERSION,
+    counts: counts?.results ?? [],
+    recent: recent?.results ?? [],
+    ai_recent: aiRecent?.results ?? [],
+  });
+}
+
+async function pendingChats(env, limit = 20) {
+  const rows = await env.DB.prepare(`SELECT DISTINCT chat_id
+    FROM ${TABLES.inbox}
+    WHERE (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+       OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+    ORDER BY chat_id
+    LIMIT ?`)
+    .bind(nowMs(), nowMs(), Math.max(1, Math.min(100, Number(limit) || 20)))
+    .all();
+
+  return (rows?.results ?? []).map((row) => String(row.chat_id));
+}
