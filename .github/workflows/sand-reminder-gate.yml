@@ -1,0 +1,58 @@
+name: SAND Reminder Gate
+on:
+  pull_request:
+    branches: [main]
+    paths: ['sand_reminder_live/**','.github/workflows/sand-reminder-gate.yml']
+permissions: {contents: read}
+concurrency: {group: sand-reminder-gate, cancel-in-progress: true}
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sand-v1-reminder-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-reminder.jsonc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Exact source gate
+        run: |
+          set -euo pipefail
+          cat sand_reminder_live/part1.b64 sand_reminder_live/part2.b64 sand_reminder_live/part3.b64 sand_reminder_live/part4a.b64 sand_reminder_live/part4b.b64 sand_reminder_live/part4c.b64 sand_reminder_live/part4d.b64 | base64 -d | gzip -d > SAND.js
+          test "$(sha256sum SAND.js|cut -d' ' -f1)" = d880020f263d527a206165345a1fd345e8e3f0938ad98e3a834b596328a53fd4
+          node --check SAND.js
+          ! grep -q 'text\.includes(' SAND.js
+          npm i --no-save typescript@5.8.3 wrangler@latest >/dev/null
+          echo '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true},"files":["SAND.js"]}' > tsconfig.json
+          npx tsc -p tsconfig.json --pretty false
+      - name: Deploy isolated staging
+        run: |
+          set -euo pipefail
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
+          echo '{"name":"sand-v1-reminder-staging","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}' > "$CFG"
+          npx wrangler deploy --config "$CFG" >/dev/null
+          W=$(openssl rand -hex 32); K=$(openssl rand -hex 32); echo "::add-mask::$W"; echo "W=$W" >> "$GITHUB_ENV"
+          for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
+      - name: Runtime + semantic reminder gate
+        run: |
+          set -euo pipefail
+          for i in {1..20};do c=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health"||true); if [ "$c" = 200 ]&&node -e 'let x=require("/tmp/h");process.exit(x.ok&&x.schema_version==="4"&&x.version==="1.2.0-reminder-create-gate"?0:1)';then break;fi;sleep 2;done
+          cat /tmp/h
+          node -e 'let x=require("/tmp/h");if(!x.ok||x.schema_version!=="4"||!x.bindings.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
+          for i in {1..20};do c=$(curl -sS -o /tmp/p -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram"||true);[ "$c" = 200 ]&&break;sleep 2;done;test "$c" = 200
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "DELETE FROM sand_core_chat_leases WHERE chat_id='$CHAT';DELETE FROM sand_core_chat_ingress WHERE chat_id='$CHAT';DELETE FROM sand_core_inbox WHERE chat_id='$CHAT';DELETE FROM sand_ai_messages WHERE chat_id='$CHAT';DELETE FROM sand_action_decisions WHERE chat_id='$CHAT';DELETE FROM sand_operations WHERE chat_id='$CHAT';DELETE FROM sand_reminders WHERE chat_id='$CHAT';" >/dev/null
+          node - <<'NODE'
+          const {execFileSync}=require('child_process'),sleep=m=>new Promise(r=>setTimeout(r,m));
+          const U=process.env.URL,C=process.env.CHAT,S=process.env.W,D=process.env.DB,F=process.env.CFG,b=3600000000+(Date.now()%10000000);
+          const a=[['بكره الساعة 9 بالليل متنسانيش أكلم ماما','create_reminder'],['عندي تحليل يوم 20 أغسطس الساعة 10 الصبح ومش عايز أنساه','create_reminder'],['عامل ايه يا سند؟','chat'],['متنسانيش أكلم ماما بكرة','clarify_reminder']].map((x,i)=>({id:b+i,text:x[0],want:x[1]}));
+          const post=async x=>{let body={update_id:x.id,message:{message_id:x.id%999999,date:Math.floor(Date.now()/1000),chat:{id:+C,type:'private'},from:{id:+C,is_bot:false},text:x.text}};let r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status)};
+          const q=s=>JSON.parse(execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',F,'--command',s,'--json'],{encoding:'utf8'}))[0].results||[];
+          (async()=>{await Promise.all(a.map(post));await post(a[0]);let inbox;for(let i=0;i<50;i++){await sleep(1000);inbox=q(`SELECT update_id,status FROM sand_core_inbox WHERE update_id BETWEEN ${b} AND ${b+3} ORDER BY update_id`);if(inbox.length===4&&inbox.every(x=>x.status==='done'))break}let ds=q(`SELECT update_id,decision_json FROM sand_action_decisions WHERE update_id BETWEEN ${b} AND ${b+3}`),m=new Map(ds.map(x=>[+x.update_id,JSON.parse(x.decision_json)])),ops=q(`SELECT source_update_id,status FROM sand_operations WHERE source_update_id BETWEEN ${b} AND ${b+3}`),rem=q(`SELECT source_update_id,title,due_at_utc,timezone,status FROM sand_reminders WHERE source_update_id BETWEEN ${b} AND ${b+3} ORDER BY source_update_id`);console.log(JSON.stringify({inbox,decisions:[...m],ops,rem},null,2));if(inbox.length!==4||!inbox.every(x=>x.status==='done'))throw Error('queue');for(const x of a)if(m.get(x.id)?.action!==x.want)throw Error(`intent ${x.text}: ${m.get(x.id)?.action}`);if(ops.length!==2||!ops.every(x=>x.status==='succeeded'))throw Error('ops');if(rem.length!==2)throw Error('reminders');if(rem[0].due_at_utc!=='2026-08-19T18:00:00.000Z'||rem[0].timezone!=='Africa/Cairo'||!/ماما/.test(rem[0].title))throw Error('relative parse');if(rem[1].due_at_utc!=='2026-08-20T07:00:00.000Z'||!/تحليل/.test(rem[1].title))throw Error('implicit parse');let dup=q(`SELECT COUNT(*) n FROM sand_reminders WHERE source_update_id=${b}`);if(+dup[0].n!==1)throw Error('duplicate side effect')})().catch(e=>{console.error(e);process.exit(1)});
+          NODE
