@@ -1,0 +1,36 @@
+/* ================= SANAD V12.8 SELFTEST ================= */
+async function deepSelftestV128(env){
+  const chat='__sanad_v128_selftest__',tests=[];const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  await ensureSchema(env);
+  try{
+    add('version',VERSION==='12.8.0',VERSION);
+    add('hybrid compound retrieval',selectedDomainsV128('فاكر كنت قلتلك اشتري ايه للبيت ومواعيدي بكرة؟').has('shopping')&&selectedDomainsV128('فاكر كنت قلتلك اشتري ايه للبيت ومواعيدي بكرة؟').has('schedule'));
+    const b=v128Budget('ضيف لبن للمشتريات');add('simple performance budget',b.simple&&b.maxAi===2&&b.maxD1<=32,JSON.stringify(b));
+
+    await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();
+    let calls=0;const raceEnv={...env,__v128DeliveryTransport:async()=>{calls++;await sleep(20);return{ok:true,message_id:9001}}};
+    await enqueueDeliveryV128(raceEnv,{key:'v128-race',chatId:chat,kind:'test',text:'race'});
+    await Promise.all(Array.from({length:16},()=>processDeliveryRowV128(raceEnv,'v128-race')));
+    const race=await env.DB.prepare(`SELECT state,attempts,telegram_message_id FROM sanad_delivery_queue WHERE delivery_key='v128-race'`).first();
+    add('two workers one delivery claim',calls===1&&race?.state==='sent'&&Number(race?.attempts)===1,JSON.stringify({calls,race}));
+
+    let uncertainCalls=0;const uncertainEnv={...env,__v128DeliveryTransport:async()=>{uncertainCalls++;return{ok:false,uncertain:true,error:'simulated_timeout_after_accept'}}};
+    await enqueueDeliveryV128(uncertainEnv,{key:'v128-uncertain',chatId:chat,kind:'test',text:'unknown'});await processDeliveryRowV128(uncertainEnv,'v128-uncertain');await processDeliveryRowV128(uncertainEnv,'v128-uncertain');
+    const uncertain=await env.DB.prepare(`SELECT state,attempts,duplicate_risk FROM sanad_delivery_queue WHERE delivery_key='v128-uncertain'`).first();
+    add('timeout after possible accept does not blind retry',uncertainCalls===1&&uncertain?.state==='uncertain'&&Number(uncertain?.duplicate_risk)===1,JSON.stringify({uncertainCalls,uncertain}));
+
+    await env.DB.prepare(`DELETE FROM sanad_scheduler_cycles WHERE state='active'`).run();const fixedEnd=Date.now(),c1=await activeSchedulerCycleV128(env,fixedEnd),c2=await activeSchedulerCycleV128(env,fixedEnd+3600000);add('scheduler cycle window fixed',c1?.cycle_id===c2?.cycle_id&&Number(c1?.cycle_end_ms)===Number(c2?.cycle_end_ms),JSON.stringify({c1:c1?.cycle_end_ms,c2:c2?.cycle_end_ms}));await env.DB.prepare(`UPDATE sanad_scheduler_cycles SET state='complete',completed_at=?,updated_at=? WHERE cycle_id=?`).bind(nowIso(),nowIso(),String(c1.cycle_id)).run();
+
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sanad_v128_atomic_probe(id INTEGER PRIMARY KEY,v TEXT)`).run();await env.DB.prepare(`DELETE FROM sanad_v128_atomic_probe`).run();let batchFailed=false;try{await env.DB.batch([env.DB.prepare(`INSERT INTO sanad_v128_atomic_probe(id,v) VALUES(1,'first')`),env.DB.prepare(`INSERT INTO sanad_v128_missing_table(id) VALUES(1)`)])}catch{batchFailed=true}const probe=await env.DB.prepare(`SELECT COUNT(*) c FROM sanad_v128_atomic_probe`).first();add('D1 mid mutation batch rolls back whole group',batchFailed&&Number(probe?.c||0)===0,JSON.stringify({batchFailed,count:probe?.c}));
+
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sanad_v128_scale_fixture(id INTEGER PRIMARY KEY)`).run();await env.DB.prepare(`DELETE FROM sanad_v128_scale_fixture`).run();await env.DB.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<5000) INSERT INTO sanad_v128_scale_fixture(id) SELECT x FROM n`).run();let cursor=0,count=0,pages=0;while(true){const rows=(await env.DB.prepare(`SELECT id FROM sanad_v128_scale_fixture WHERE id>? ORDER BY id LIMIT 250`).bind(cursor).all())?.results||[];if(!rows.length)break;count+=rows.length;pages++;cursor=Number(rows.at(-1)?.id||cursor);if(pages>25)break;}add('5000 row cursor cycle coverage',count===5000&&pages===20,JSON.stringify({count,pages}));
+
+    await env.DB.prepare(`DELETE FROM sanad_inbox WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_chat_leases WHERE chat_id=?`).bind(chat).run();const now=nowIso(),ins=[];for(let i=1;i<=100;i++)ins.push(env.DB.prepare(`INSERT INTO sanad_inbox(update_id,chat_id,payload_json,status,attempts,created_at,updated_at) VALUES(?,?,?,'pending',0,?,?)`).bind(`v128-inbox-${String(i).padStart(3,'0')}`,chat,JSON.stringify({update_id:i}),now,now));await env.DB.batch(ins);const first=await nextInbox(env,chat),owner1='v128-owner-1',owner2='v128-owner-2',l1=await acquireLease(env,chat,owner1),l2=await acquireLease(env,chat,owner2);add('100 same chat preserves first item and single lease',String(first?.update_id)==='v128-inbox-001'&&l1===true&&l2===false,JSON.stringify({first:first?.update_id,l1,l2}));await releaseLease(env,chat,owner1);
+
+    await env.DB.prepare(`DELETE FROM sanad_dead_letters WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`UPDATE sanad_inbox SET status='failed',attempts=? WHERE update_id='v128-inbox-001'`).bind(INBOX_MAX_ATTEMPTS).run();await env.DB.prepare(`INSERT INTO sanad_dead_letters(update_id,chat_id,payload_json,last_error,attempts,replay_count,state,next_replay_at,created_at,updated_at) VALUES('v128-inbox-001',?,?, 'simulated',?,0,'dead',NULL,?,?)`).bind(chat,'{}',INBOX_MAX_ATTEMPTS,nowIso(),nowIso()).run();const dlq=await env.DB.prepare(`SELECT state,attempts FROM sanad_dead_letters WHERE update_id='v128-inbox-001'`).first();add('dead letter retained with cause and attempts',dlq?.state==='dead'&&Number(dlq?.attempts)===INBOX_MAX_ATTEMPTS,JSON.stringify(dlq));
+
+    const m={operationId:'v128-metric-test',chatId:chat,total_ms:123,context_ms:10,planning_ms:20,tools_ms:30,verification_ms:5,compose_ms:15,d1_queries:12,ai_calls:2,tool_calls:2,context_bytes:8000,budget:v128Budget('test'),budget_exceeded:false};await persistOperationMetricsV128(env,m);const mr=await env.DB.prepare(`SELECT * FROM sanad_operation_metrics WHERE operation_id='v128-metric-test'`).first();add('performance telemetry persisted',Number(mr?.total_ms)===123&&Number(mr?.d1_queries)===12,JSON.stringify(mr));
+  }catch(e){add('selftest exception',false,safeError(e));}
+  try{await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_inbox WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_dead_letters WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_chat_leases WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_operation_metrics WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DROP TABLE IF EXISTS sanad_v128_atomic_probe`).run();await env.DB.prepare(`DROP TABLE IF EXISTS sanad_v128_scale_fixture`).run();}catch(e){add('cleanup',false,safeError(e));}
+  return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
+}
