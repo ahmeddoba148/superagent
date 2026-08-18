@@ -1,0 +1,163 @@
+{
+  "ok": true,
+  "version": "12.8.2",
+  "scenario_count": 39,
+  "passes": [
+    {
+      "name": "organized menu layer present",
+      "detail": ""
+    },
+    {
+      "name": "data clear controls present",
+      "detail": ""
+    },
+    {
+      "name": "direct clear command present",
+      "detail": ""
+    },
+    {
+      "name": "natural shopping persisted",
+      "detail": "[{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":242,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":243,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":244,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":245,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+    },
+    {
+      "name": "shopping target exists",
+      "detail": "{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+    },
+    {
+      "name": "shopping unavailable state",
+      "detail": "{\"status\":\"unavailable\"}"
+    },
+    {
+      "name": "shopping skipped state",
+      "detail": "{\"status\":\"skipped\"}"
+    },
+    {
+      "name": "life inbox natural capture",
+      "detail": "{\"id\":16,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+    },
+    {
+      "name": "source appointment created",
+      "detail": "{\"id\":146,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:54:48.807Z\",\"updated_at\":\"2026-08-18T17:54:48.807Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+    },
+    {
+      "name": "target reminder created",
+      "detail": "{\"id\":147,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:55:02.041Z\",\"updated_at\":\"2026-08-18T17:55:02.041Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+    },
+    {
+      "name": "after-end dependency stored",
+      "detail": "{\"dep\":{\"id\":45,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":146,\"target_type\":\"reminder\",\"target_id\":147,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T17:55:14.171Z\",\"updated_at\":\"2026-08-18T17:55:14.171Z\"},\"expected_source\":146,\"expected_target\":147}"
+    },
+    {
+      "name": "after-end dependency propagation",
+      "detail": "{\"local_time\":\"21:00\"}"
+    },
+    {
+      "name": "recurrence exists",
+      "detail": "{\"id\":49,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+    },
+    {
+      "name": "recurrence id retained",
+      "detail": "49"
+    },
+    {
+      "name": "temporary pause until",
+      "detail": "{\"id\":49,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+    },
+    {
+      "name": "recurrence resume clears pause",
+      "detail": "{\"id\":49,\"active\":1,\"paused_until\":null}"
+    },
+    {
+      "name": "callback reminder exists",
+      "detail": "{\"id\":149}"
+    },
+    {
+      "name": "reminder callback snooze",
+      "detail": "{\"local_time\":\"21:10\"}"
+    },
+    {
+      "name": "reminder callback done",
+      "detail": "{\"status\":\"done\"}"
+    },
+    {
+      "name": "/tomorrow alias",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "/list alias",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "/live composite reality",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "protected diagnostics",
+      "detail": "{\"status\":200,\"version\":\"12.8.2\",\"tools\":75}"
+    },
+    {
+      "name": "organized /menu command",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "data management panel callback",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "shopping clear fixture exists",
+      "detail": "5"
+    },
+    {
+      "name": "shopping clear confirmation screen",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "verified shopping clear",
+      "detail": "0"
+    },
+    {
+      "name": "shopping clear undo restores data",
+      "detail": "5/5"
+    },
+    {
+      "name": "context/memory fixtures exist",
+      "detail": "1/42"
+    },
+    {
+      "name": "context clear does not erase long-term memory",
+      "detail": "0/1"
+    },
+    {
+      "name": "context clear undo restores conversation",
+      "detail": "42/42"
+    },
+    {
+      "name": "memory clear fixture exists",
+      "detail": "1"
+    },
+    {
+      "name": "verified long-term memory clear",
+      "detail": "0"
+    },
+    {
+      "name": "memory clear undo restores data",
+      "detail": "1/1"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    },
+    {
+      "name": "no changed mutation left unverified",
+      "detail": "[]"
+    },
+    {
+      "name": "clear-all final confirmation screen",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "verified clear all personal data",
+      "detail": "{\"sanad_users\":0,\"sanad_conversation\":0,\"sanad_shopping\":0,\"sanad_shopping_sessions\":0,\"sanad_reminders\":0,\"sanad_recurrences\":0,\"sanad_dependencies\":0,\"sanad_memories\":0,\"sanad_entities\":0,\"sanad_edges\":0,\"sanad_projects\":0,\"sanad_project_tasks\":0,\"sanad_waiting\":0,\"sanad_prayer_rules\":0,\"sanad_live_watches\":0,\"sanad_life_inbox\":0,\"sanad_pending_actions\":0,\"sanad_pending_conflicts\":0,\"sanad_operation_snapshots\":0,\"sanad_receipts\":0}"
+    }
+  ]
+}

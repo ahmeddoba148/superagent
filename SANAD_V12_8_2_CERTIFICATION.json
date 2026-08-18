@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "version": "12.8.2",
+  "name": "Sanad — سند V12.8.2 Structured Context Hotfix",
+  "sha256": "4fafd23e581fa2712ea604ff39dd2001560d5414a3c1ddf42070a9a334cbb461",
+  "bytes": 389598,
+  "lines": 4980,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "base": "V12.8.1 certified hotfix",
+  "requested_fixes_certified": 1,
+  "new_features_added": 0,
+  "regression_scenarios": 39,
+  "architecture_tests": 24,
+  "context_budget_tests": 5,
+  "context_budgeting": "structured priority: current state -> recent conversation -> relevant memories/entities -> older history",
+  "arbitrary_serialized_context_slice": false,
+  "json_integrity": "whole structured objects only; final serialized JSON validated under byte budget",
+  "known_critical_code_failures": []
+}
