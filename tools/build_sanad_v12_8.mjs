@@ -56,8 +56,17 @@ fs.writeFileSync(pre,src);
 
 execFileSync('npx',['--yes','esbuild@0.25.9',pre.pathname,'--bundle','--format=esm','--platform=browser','--target=es2022','--tree-shaking=true','--legal-comments=none',`--outfile=${output.pathname}`],{stdio:'inherit'});
 let final=fs.readFileSync(output,'utf8');
+
+// esbuild intentionally removes non-legal comments. Re-apply precise JSDoc only where checkJs otherwise over-narrows local unions.
+final=final.replace('    const simpleMaps = [','    /** @type {Array<[string,string,(r:any)=>Promise<any>]>} */\n    const simpleMaps = [');
+final=final.replace('  function add(name, ok, detail = "") {','  /** @param {string} name @param {any} ok @param {any} [detail] */\n  function add(name, ok, detail = "") {');
+final=final.replace('    let r = await toolShoppingAdd(env, chat, {','    /** @type {any} */\n    let r = await toolShoppingAdd(env, chat, {');
+final=final.replace('  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });','  /** @type {(name:string,ok:any,detail?:any)=>void} */\n  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });');
+final=final.replace('    let r = await toolReminderCancel(env, chat, { ids: [987654321] });','    /** @type {any} */\n    let r = await toolReminderCancel(env, chat, { ids: [987654321] });');
+
 const forbidden=['BeforeHardening','BeforeOperationDedupe','executeToolV127BeforeOperationDedupe','drainInboxV126BeforeHardening','fallbackComposeV126BeforeHardening'];
 const leftovers=forbidden.filter(x=>final.includes(x));if(leftovers.length)throw new Error(`V12.8 canonicalization failed: ${leftovers.join(',')}`);
 if(!final.includes('sanad_delivery_queue')||!final.includes('sanad_mutation_journal')||!final.includes('sanad_scheduler_cycles')||!final.includes('sanad_dead_letters')||!final.includes('sanad_operation_metrics'))throw new Error('V12.8 architecture tables missing');
+fs.writeFileSync(output,final);
 const buf=Buffer.from(final,'utf8'),sha=crypto.createHash('sha256').update(buf).digest('hex');
 console.log(JSON.stringify({ok:true,version:'12.8.0',bytes:buf.length,lines:final.split('\n').length,sha256:sha,canonical_no_beforehardening:true}));
