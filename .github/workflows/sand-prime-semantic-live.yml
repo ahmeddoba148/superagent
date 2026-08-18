@@ -38,7 +38,13 @@ jobs:
           test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
           node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
+          node sand_prime/runtime_fetch_transform.mjs SAND.js
+          echo "prime_runtime_source_sha=$(sha256sum SAND.js | awk '{print $1}')"
           node --check SAND.js
+          ! grep -q 'redirect: "error"' SAND.js
+          grep -q 'redirect: "manual"' SAND.js
+          grep -q 'PUBLIC_REDIRECT_BLOCKED' SAND.js
+          grep -q 'FORGE_REDIRECT_BLOCKED' SAND.js
       - name: Deploy exact source to run-isolated staging
         run: |
           set -euo pipefail
