@@ -1,22 +1,22 @@
 {
   "ok": false,
   "version": "12.6.0",
-  "run_id": "32086214107",
+  "run_id": "32086588914",
   "run_attempt": "1",
-  "head_sha": "aab1ec571bec4dc49772de241782d92a1b791486",
+  "head_sha": "8de21b8334f00eeea10834141d70be105b323c7c",
   "stages": {
     "build": "success",
     "syntax": "success",
-    "pure": "success",
-    "deploy": "success",
-    "secrets": "success",
-    "deep": "success",
-    "live": "failure",
+    "pure": "failure",
+    "deploy": "skipped",
+    "secrets": "skipped",
+    "deep": "skipped",
+    "live": "skipped",
     "cert": "skipped",
     "commit": "skipped"
   },
   "failed": [
-    "live"
+    "pure"
   ],
-  "updated_at": "2026-08-18T00:56:25.468Z"
+  "updated_at": "2026-08-18T00:59:58.263Z"
 }
