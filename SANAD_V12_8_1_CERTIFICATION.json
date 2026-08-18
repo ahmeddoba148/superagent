@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "version": "12.8.1",
+  "name": "Sanad — سند V12.8.1 Four-Point Hotfix",
+  "sha256": "0d1195ed0e01d196baed690a43a87bdb0efe7a968d0f9bdecfe1a525e4f1db3e",
+  "bytes": 383145,
+  "lines": 4889,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "base": "V12.8 certified runtime",
+  "requested_fixes_certified": 4,
+  "new_features_added": 0,
+  "regression_scenarios": 39,
+  "architecture_tests": 19,
+  "hotfix_tests": 4,
+  "mutation_journal_seq": "atomic SQL monotonic per operation",
+  "context_slice_28000": false,
+  "scheduler_cycle_concurrency": "unique active cycle plus execution lease",
+  "v126_before_occurrences": 0,
+  "known_critical_code_failures": []
+}
