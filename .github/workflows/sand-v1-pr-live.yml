@@ -70,6 +70,17 @@ jobs:
           done
           cat /tmp/h
           node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="3"||x.version!=="1.1.2-ai-chat-fifo-gate"||!x.bindings?.OMNIAI_SERVICE||!x.bindings?.TELEGRAM_WEBHOOK_SECRET)throw Error(JSON.stringify(x))'
+      - name: Webhook secret propagation readiness
+        run: |
+          set -euo pipefail
+          code=0
+          for i in {1..15}; do
+            code=$(curl -sS -o /tmp/authprobe -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
+            echo "auth probe attempt=$i http=$code"
+            [ "$code" = 200 ] && break
+            sleep 2
+          done
+          test "$code" = 200
       - name: Strict FIFO out-of-order arrival live test
         run: |
           set -euo pipefail
