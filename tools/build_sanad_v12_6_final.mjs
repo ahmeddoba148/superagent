@@ -41,6 +41,7 @@ if(!src.includes('async function handleCallback(env,q){'))throw new Error('V12.6
 src=src.replace('async function handleCallback(env,q){','async function handleCallbackV126BeforeRestoredPanels(env,q){');
 if(!src.includes('if (text === "/settings") return showSettingsV126(env,chatId);'))throw new Error('V12.6 direct settings command marker missing');
 src=src.replace('if (text === "/settings") return showSettingsV126(env,chatId);','if (text === "/settings") return showSettingsV126(env,chatId);\n    if (text === "/clear" || text === "/data") return showDataPanelV126(env,chatId);');
+if(src.includes('{command:"settings",description:"إعدادات سند"},')&&!src.includes('{command:"clear",description:"إدارة البيانات والمسح"}'))src=src.replace('{command:"settings",description:"إعدادات سند"},','{command:"settings",description:"إعدادات سند"},{command:"clear",description:"إدارة البيانات والمسح"},');
 src+='\n\n/* ================= SANAD V12.6 RESTORED V11 MENU LAYER 6 ================= */\n'+fs.readFileSync(pack6,'utf8').trim()+'\n';
 const buf=Buffer.from(src,'utf8');
 fs.writeFileSync(file,buf);
