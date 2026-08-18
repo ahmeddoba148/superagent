@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
 
-      - name: Reconstruct exact PRIME source and normalize core v5
+      - name: Reconstruct exact PRIME runtime source
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
@@ -36,13 +36,20 @@ jobs:
           patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
-          node sand_prime/schema_v5_transform.mjs SAND.js
-          echo "prime_v5_source_sha=$(sha256sum SAND.js | awk '{print $1}')"
+          node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
+          node sand_prime/runtime_fetch_transform.mjs SAND.js >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "b17822511ff8762adfe5187dad86530faf1df3d4a300bf9d3630bbf946afa027"
+          cp SAND.js SAND_PRIME_1.0.js
           node --check SAND.js
           ! grep -q 'text\.includes(' SAND.js
           ! grep -q 'Math\.random' SAND.js
           ! grep -q '@ts-ignore\|@ts-nocheck' SAND.js
           ! grep -Eq '\beval\(' SAND.js
+          ! grep -q 'redirect: "error"' SAND.js
+          grep -q 'PUBLIC_REDIRECT_BLOCKED' SAND.js
+          grep -q 'FORGE_REDIRECT_BLOCKED' SAND.js
+          echo "CERTIFIED_SOURCE_SHA=$(sha256sum SAND.js | awk '{print $1}')"
 
       - name: checkJs gate
         run: |
@@ -101,3 +108,11 @@ jobs:
           if(!sets[2]?.length) throw Error('legacy reminder table was not preserved');
           console.log('CORE_SCHEMA_V5_LIVE_NORMALIZATION_OK');
           NODE
+
+      - name: Upload certified one-file PRIME source
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAND_PRIME_1.0-certified-source
+          path: SAND_PRIME_1.0.js
+          if-no-files-found: error
+          retention-days: 30
