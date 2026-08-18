@@ -1,9 +1,9 @@
 {
   "ok": false,
   "version": "12.8.0",
-  "run_id": "32148694235",
+  "run_id": "32149139854",
   "run_attempt": "1",
-  "head_sha": "16ae39e65fe15b0693479daea17782851e7a33ce",
+  "head_sha": "6dfc3964d00fcdfe02f158f2de7c33c79bfd551a",
   "stages": {
     "build": "success",
     "syntax": "failure",
@@ -18,5 +18,5 @@
   "failed": [
     "syntax"
   ],
-  "updated_at": "2026-08-18T14:30:15.350Z"
+  "updated_at": "2026-08-18T14:34:36.027Z"
 }
