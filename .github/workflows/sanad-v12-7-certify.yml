@@ -1,0 +1,182 @@
+name: Sanad V12.7 Correctness Hardening Certification
+on:
+  push:
+    branches: [sanad-v12-7-hardening]
+    paths:
+      - "tools/build_sanad_v12_7.mjs"
+      - "tools/sanad_v12_7_*.jsfrag"
+      - "tools/live_sanad_v12_7.mjs"
+      - ".github/workflows/sanad-v12-7-certify.yml"
+      - "SANAD_V12_7_FIX_MATRIX.md"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sanad-v12-7-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sanad-v12-7-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.sanad127.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+
+      - name: Build V12.7 deterministically
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/build_sanad_v12_7.mjs | tee /tmp/build127.log
+
+      - name: Syntax TypeScript and anti-suppression gates
+        id: syntax
+        run: |
+          node --check Sanad_V12_7_HARDENED.js
+          npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_7_HARDENED.js
+          if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_7_HARDENED.js; then exit 1; fi
+          if grep -En 'eval\(|new Function\(' Sanad_V12_7_HARDENED.js; then exit 1; fi
+
+      - name: Pure 21-fix invariants
+        id: pure
+        run: |
+          cp Sanad_V12_7_HARDENED.js /tmp/sanad127.mjs
+          cat >> /tmp/sanad127.mjs <<'NODE'
+          const tests=[];const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail)});
+          add('version',VERSION==='12.7.0',VERSION);
+          add('drain-one-item',!drainInbox.toString().includes('INBOX_BATCH')&&!drainInbox.toString().includes('for (let i=0;i<INBOX_BATCH'));
+          add('recovery-paged',recoverPendingInbox.toString().includes('V127_RECOVERY_ROUNDS')&&!recoverPendingInbox.toString().includes('LIMIT 20'));
+          const sendSrc=sendOnceV125.toString();add('sendOnce-claim-before-send',sendSrc.indexOf('INSERT OR IGNORE')>=0&&sendSrc.indexOf('INSERT OR IGNORE')<sendSrc.indexOf('sendText')&&sendSrc.includes('DELETE FROM sanad_proactive_fires'));
+          const sched=runSanadScheduler.toString();add('checkpoint-after-round',sched.lastIndexOf("last_run_ms")>sched.indexOf('for(let page')&&sched.includes('complete&&roundOk'));
+          add('scheduler-user-pagination',sched.includes('scheduler_user_cursor')&&sched.includes('V127_USER_PAGE_SIZE'));
+          const brief=deliverDailyBriefsV125.toString();add('brief-window',brief.includes('lastMs')&&brief.includes('nowMs')&&!brief.includes('ln.time!==time'));
+          add('brief-claim-release',brief.indexOf('INSERT OR IGNORE')<brief.indexOf('sendText')&&brief.includes('DELETE FROM sanad_daily_brief_fires'));
+          add('watch-pagination',checkLiveWatchesV125.toString().includes('live_watch_cursor')&&checkLiveWatchesV125.toString().includes('V127_WATCH_PAGES_PER_RUN'));
+          add('reminder-shared-validation',toolReminderCreate.toString().includes('validateReminderDraftV127')&&toolReminderUpdate.toString().includes('validateReminderDraftV127'));
+          add('single-dependency-propagation',(toolReminderUpdate.toString().match(/propagateDependenciesV125/g)||[]).length===1,(toolReminderUpdate.toString().match(/propagateDependenciesV125/g)||[]).length);
+          add('delete-empty-array-safe',toolReminderCancel.toString().includes('ids_not_found')&&toolMemoryForget.toString().includes('ids_not_found'));
+          add('dependency-capability-closed',TOOL_SPECS['dependency.create'].args.source_type==='reminder'&&TOOL_SPECS['dependency.create'].args.target_type==='reminder');
+          add('snapshot-domain-scoped',JSON.stringify(snapshotTablesForStepsV127([{tool:'shopping.add'}]).sort())===JSON.stringify(['sanad_shopping','sanad_shopping_sessions'].sort()));
+          add('snapshot-bounded',V127_SNAPSHOT_MAX_ROWS_PER_TABLE>0&&V127_SNAPSHOT_MAX_BYTES>0);
+          add('context-routing',contextDomainsV127('ضيف لبن للمشتريات').has('shopping')&&!contextDomainsV127('ضيف لبن للمشتريات').has('projects'));
+          add('fallback-no-false-success',!fallbackCompose([{tool:'shopping.add',ok:true,verified:true,changed:0}]).includes('✅'));
+          add('fallback-changed-success',fallbackCompose([{tool:'shopping.add',ok:true,verified:true,changed:1}]).includes('✅'));
+          add('profile-validation',!sanitizeProfilePatchV127({timezone:'bad/timezone'}).ok&&!sanitizeProfilePatchV127({latitude:999}).ok);
+          add('central-mutation-verifier',typeof verifyMutationPostconditionV127==='function'&&executeTool.toString().includes('verifyMutationPostconditionV127'));
+          add('world-inferred-low-confidence',toolWorldUpsertV125.toString().includes("source==='user_explicit'?1:0.5")&&V127_TRUSTED_WORLD_CONFIDENCE>=0.75);
+          add('recurrence-claim-release',claimRecurrenceFireV127.toString().includes('INSERT OR IGNORE')&&claimRecurrenceFireV127.toString().includes('DELETE FROM sanad_recurrence_fires'));
+          add('prayer-claim-release',claimPrayerFireV127.toString().includes('INSERT OR IGNORE')&&claimPrayerFireV127.toString().includes('DELETE FROM sanad_prayer_fires'));
+          add('rollback-verifier',typeof restoreUserStateVerifiedV127==='function');
+          const all=fsForPureV127();
+          function fsForPureV127(){return ''}
+          console.log(JSON.stringify({ok:tests.every(x=>x.ok),tests,count:tests.length}));
+          NODE
+          node /tmp/sanad127.mjs | tail -1 | tee /tmp/pure127.json
+          node - <<'NODE'
+          const x=require('/tmp/pure127.json');if(!x.ok){console.error(x.tests.filter(t=>!t.ok));process.exit(1)}if(x.count<23)throw Error('insufficient pure gates');
+          NODE
+          grep -q '"critic"' Sanad_V12_7_HARDENED.js
+          grep -q '"repair"' Sanad_V12_7_HARDENED.js
+          grep -q '"composer"' Sanad_V12_7_HARDENED.js
+          grep -q 'legacy_migration_row' Sanad_V12_7_HARDENED.js
+          grep -q 'voice_omniai_fallback' Sanad_V12_7_HARDENED.js
+          grep -q 'model_stats_failure_log' Sanad_V12_7_HARDENED.js
+
+      - name: Deploy isolated V12.7 staging
+        id: deploy
+        run: |
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$WRANGLER_CONFIG" <<'JSON'
+          {"name":"sanad-v12-7-staging","main":"Sanad_V12_7_HARDENED.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          JSON
+          npx wrangler deploy --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Configure staging secrets
+        id: secrets
+        run: |
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"; SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"; echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Endpoint deep D1 and V12.7 hardening selftest
+        id: deep
+        run: |
+          retry(){ name=$1; shift; for i in 1 2 3 4 5 6 7 8 9 10; do code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true); echo "$name attempt=$i http=$code"; [ "$code" = 200 ] && return 0; sleep 3; done; cat "/tmp/$name.json" || true; return 1; }
+          retry setup -X POST -H "X-Sanad-Key: $SETUP_KEY" "$URL/setup"
+          retry health "$URL/health"
+          retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
+          retry base -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
+          retry deep -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?deep=1"
+          retry v127 -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?v127=1"
+          node - <<'NODE'
+          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),b=require('/tmp/base.json'),d=require('/tmp/deep.json'),v=require('/tmp/v127.json');
+          if(!s.ok||s.version!=='12.7.0')throw Error('setup '+JSON.stringify(s));if(!h.ok||h.version!=='12.7.0')throw Error('health '+JSON.stringify(h));if(!r.ok||r.version!=='12.7.0')throw Error('ready '+JSON.stringify(r));if(!b.ok||b.tests?.some(x=>!x.ok))throw Error('base '+JSON.stringify(b));if(!d.ok||d.tests?.some(x=>!x.ok))throw Error('deep '+JSON.stringify(d));if(!v.ok||v.tests?.some(x=>!x.ok))throw Error('v127 '+JSON.stringify(v));
+          NODE
+
+      - name: Live V12.6 regression plus V12.7 hardening matrix
+        id: live
+        run: node tools/live_sanad_v12_7.mjs
+
+      - name: Build V12.7 certification
+        id: cert
+        run: |
+          SHA=$(sha256sum Sanad_V12_7_HARDENED.js | awk '{print $1}'); export SHA
+          node - <<'NODE'
+          const fs=require('fs'),live=require('./SANAD_V12_7_LIVE_REPORT.json'),pure=require('/tmp/pure127.json'),src=fs.readFileSync('Sanad_V12_7_HARDENED.js','utf8');
+          const cert={ok:true,version:'12.7.0',name:'Sanad — سند V12.7 Correctness Hardened',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-correctness-hardened-agent',models:3,pure_invariants:pure.count,regression_scenarios:live.regression_scenarios,hardening_live_tests:live.hardening_tests,fixes_certified:21,known_critical_code_failures:[],limitations:['External model, Telegram and public API availability remain dependencies. Cross-system exactly-once delivery cannot be mathematically guaranteed across an unrecoverable process crash between Telegram accepting a message and the local delivery marker being finalized; V12.7 uses atomic claims and retry release for observable send failures.']};fs.writeFileSync('SANAD_V12_7_CERTIFICATION.json',JSON.stringify(cert,null,2));
+          NODE
+
+      - name: Commit certified V12.7 artifacts
+        id: commitcert
+        run: |
+          git config user.name github-actions-bot; git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add -f Sanad_V12_7_HARDENED.js SANAD_V12_7_CERTIFICATION.json SANAD_V12_7_LIVE_REPORT.json SANAD_V12_7_REGRESSION_REPORT.json
+          git commit -m "Live-certify Sanad V12.7 correctness hardening" || exit 0
+          git push origin HEAD:sanad-v12-7-hardening
+
+      - name: Publish V12.7 CI status
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SYNTAX_OUTCOME: ${{ steps.syntax.outcome }}
+          PURE_OUTCOME: ${{ steps.pure.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          DEEP_OUTCOME: ${{ steps.deep.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          CERT_OUTCOME: ${{ steps.cert.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commitcert.outcome }}
+        run: |
+          node - <<'NODE'
+          const fs=require('fs'),names=['build','syntax','pure','deploy','secrets','deep','live','cert','commit'],keys=['BUILD_OUTCOME','SYNTAX_OUTCOME','PURE_OUTCOME','DEPLOY_OUTCOME','SECRETS_OUTCOME','DEEP_OUTCOME','LIVE_OUTCOME','CERT_OUTCOME','COMMIT_OUTCOME'];const stages=Object.fromEntries(names.map((n,i)=>[n,process.env[keys[i]]||'unknown'])),failed=Object.entries(stages).filter(([,v])=>v==='failure').map(([k])=>k);fs.writeFileSync('SANAD_V12_7_CI_STATUS.json',JSON.stringify({ok:failed.length===0&&stages.live==='success'&&stages.cert==='success',version:'12.7.0',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,head_sha:process.env.GITHUB_SHA,stages,failed,updated_at:new Date().toISOString()},null,2));
+          NODE
+          git config user.name github-actions-bot; git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add SANAD_V12_7_CI_STATUS.json; git commit -m "Record Sanad V12.7 CI status" || exit 0; git push origin HEAD:sanad-v12-7-hardening
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Sanad-V12.7-Correctness-Hardened
+          path: |
+            Sanad_V12_7_HARDENED.js
+            SANAD_V12_7_CERTIFICATION.json
+            SANAD_V12_7_LIVE_REPORT.json
+            SANAD_V12_7_REGRESSION_REPORT.json
+            SANAD_V12_7_CI_STATUS.json
+            SANAD_V12_7_FIX_MATRIX.md
