@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           node sand_v2/assemble.mjs
-          test "$(sha256sum SAND_CORE_V2.js | awk '{print $1}')" = "4fa4fd390f2ee0de827481aec0e61d72e5b3c190254e8ffe8df6fc45999f298b"
+          test "$(sha256sum SAND_CORE_V2.js | awk '{print $1}')" = "032f98dd029bf359d2c55215c154eaebe6121b48d33a58d2b3c26aef7cfa3cb2"
           node --check SAND_CORE_V2.js
           ! grep -q 'text\.includes(' SAND_CORE_V2.js
           ! grep -Eq '\beval\(' SAND_CORE_V2.js
