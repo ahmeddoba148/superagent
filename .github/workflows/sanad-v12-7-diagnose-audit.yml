@@ -1,0 +1,24 @@
+name: Sanad V12.7 Audit Diagnosis
+on:
+  push:
+    branches: [sanad-v12-7-hardening]
+    paths: [".github/workflows/sanad-v12-7-diagnose-audit.yml"]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: |
+          npm install --no-save wrangler@latest >/dev/null
+          cat > /tmp/wrangler127diag.jsonc <<'JSON'
+          {"name":"sanad-v12-7-diag","compatibility_date":"2026-08-18","d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}]}
+          JSON
+          npx wrangler d1 execute superagent-v106-staging --remote --config /tmp/wrangler127diag.jsonc --command "SELECT id,operation_id,tool,args_json,result_json,verified,created_at FROM sanad_audit WHERE chat_id='$STAGING_ADMIN_CHAT_ID' ORDER BY id DESC LIMIT 30" --json
