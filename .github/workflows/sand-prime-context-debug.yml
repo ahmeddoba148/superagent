@@ -1,0 +1,29 @@
+name: SAND PRIME Context Debug
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sand-prime-context-debug.yml'
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-prime-context-debug.jsonc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect failed contextual reminder turn
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$CFG" <<'EOF'
+          {"name":"sand-prime-context-debug","compatibility_date":"2026-08-18","d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"main":"debug-placeholder.js"}
+          EOF
+          printf 'export default {fetch(){return new Response("ok")}}' > debug-placeholder.js
+          Q="SELECT update_id,role,content,model_id,created_at FROM sand_ai_messages WHERE update_id IN (1500001303,1500001304) ORDER BY id; SELECT source_update_id,kind,status,summary,plan_json,result_json,error,created_at,updated_at FROM sand_prime_operations WHERE source_update_id IN (1500001303,1500001304) ORDER BY created_at; SELECT update_id,decision_json,model_id,created_at FROM sand_prime_decisions WHERE update_id IN (1500001303,1500001304) ORDER BY created_at; SELECT o.source_update_id,s.step_index,s.tool_name,s.args_json,s.result_json,s.status,s.error FROM sand_prime_operation_steps s JOIN sand_prime_operations o ON o.id=s.operation_id WHERE o.source_update_id IN (1500001303,1500001304) ORDER BY o.source_update_id,s.step_index; SELECT id,title,due_at_utc,status,source_update_id,updated_at FROM sand_prime_reminders ORDER BY updated_at DESC LIMIT 5; SELECT chat_id,last_operation_id,last_tool_name,last_entity_type,last_entity_id,state_json,updated_at FROM sand_prime_chat_state ORDER BY updated_at DESC LIMIT 5;"
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "$Q" --json
