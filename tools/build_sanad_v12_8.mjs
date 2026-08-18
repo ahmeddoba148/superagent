@@ -61,7 +61,7 @@ let final=fs.readFileSync(output,'utf8');
 final=final.replace('    const simpleMaps = [','    /** @type {Array<[string,string,(r:any)=>Promise<any>]>} */\n    const simpleMaps = [');
 final=final.replace('  function add(name, ok, detail = "") {','  /** @param {string} name @param {any} ok @param {any} [detail] */\n  function add(name, ok, detail = "") {');
 final=final.replace('    let r = await toolShoppingAdd(env, chat, {','    /** @type {any} */\n    let r = await toolShoppingAdd(env, chat, {');
-final=final.replace('  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });','  /** @type {(name:string,ok:any,detail?:any)=>void} */\n  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });');
+final=final.replace('  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });','  /** @type {(name:string,ok:any,detail?:any)=>number} */\n  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });');
 final=final.replace('    let r = await toolReminderCancel(env, chat, { ids: [987654321] });','    /** @type {any} */\n    let r = await toolReminderCancel(env, chat, { ids: [987654321] });');
 
 const forbidden=['BeforeHardening','BeforeOperationDedupe','executeToolV127BeforeOperationDedupe','drainInboxV126BeforeHardening','fallbackComposeV126BeforeHardening'];
