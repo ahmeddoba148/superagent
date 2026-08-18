@@ -83,22 +83,36 @@ jobs:
           echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
           for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
 
-      - name: Health selftest and schema normalization proof
+      - name: Health auth selftest and schema proof
         run: |
           set -euo pipefail
+          healthy=0
           for i in {1..25}; do
             code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
-            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0"&&x.schema_version==="5"&&x.prime_schema_version==="1"&&x.semantic_routing===true&&x.keyword_routing===false?0:1)'; then break; fi
+            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0"&&x.schema_version==="5"&&x.prime_schema_version==="1"&&x.semantic_routing===true&&x.keyword_routing===false?0:1)'; then healthy=1; break; fi
             sleep 2
           done
+          [ "$healthy" = 1 ] || { cat /tmp/h >&2; exit 1; }
           cat /tmp/h
           node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.version!=="1.0.0"||x.schema_version!=="5"||x.prime_schema_version!=="1"||x.keyword_routing!==false||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
-          code=0
-          for i in {1..25}; do code=$(curl -sS -o /tmp/a -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true);[ "$code" = 200 ]&&break;sleep 2;done
-          test "$code" = 200
-          curl -fsS -H "x-sand-admin: $K" "$URL/admin/selftest" >/tmp/selftest.json
+
+          webhook_ok=0
+          for i in {1..45}; do
+            code=$(curl -sS -o /tmp/a -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
+            if [ "$code" = 200 ]; then webhook_ok=$((webhook_ok+1)); [ "$webhook_ok" -ge 3 ] && break; else webhook_ok=0; fi
+            sleep 2
+          done
+          [ "$webhook_ok" -ge 3 ] || { echo 'WEBHOOK_SECRET_NOT_STABLE' >&2; cat /tmp/a >&2 || true; exit 1; }
+
+          admin_ok=0
+          for i in {1..45}; do
+            code=$(curl -sS -o /tmp/selftest.json -w '%{http_code}' -H "x-sand-admin: $K" "$URL/admin/selftest" || true)
+            if [ "$code" = 200 ] && node -e 'try{const x=JSON.parse(require("fs").readFileSync("/tmp/selftest.json"));process.exit(x.ok&&x.tests?.every(t=>t.ok)?0:1)}catch{process.exit(1)}'; then admin_ok=$((admin_ok+1)); [ "$admin_ok" -ge 3 ] && break; else admin_ok=0; fi
+            sleep 2
+          done
+          [ "$admin_ok" -ge 3 ] || { echo 'SETUP_KEY_NOT_STABLE_OR_SELFTEST_FAILED' >&2; cat /tmp/selftest.json >&2 || true; exit 1; }
           cat /tmp/selftest.json
-          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/selftest.json"));if(!x.ok||!x.tests?.every(t=>t.ok))throw Error(JSON.stringify(x))'
+
           npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT value FROM sand_core_meta WHERE key='schema_version'; SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('sand_core_chat_leases','sand_ai_messages') ORDER BY name; SELECT COUNT(*) legacy_reminder_rows FROM sand_reminders;" --json >/tmp/dbproof.json
           cat /tmp/dbproof.json
           node - <<'NODE'
@@ -110,6 +124,35 @@ jobs:
           if(!sets[2]?.length) throw Error('legacy reminder table was not preserved');
           console.log('CORE_SCHEMA_V5_LIVE_NORMALIZATION_OK');
           NODE
+
+      - name: FIFO self-continuation burst proof
+        run: |
+          set -euo pipefail
+          BASE=$((1800000000 + GITHUB_RUN_NUMBER * 10))
+          export BASE
+          node - <<'NODE' >/tmp/burst.sql
+          const chat=String(process.env.CHAT), base=Number(process.env.BASE), now=new Date().toISOString();
+          const q=(v)=>`'${String(v).replaceAll("'","''")}'`;
+          const ids=[1,2,3,4].map(n=>base+n);
+          let sql=`DELETE FROM sand_core_inbox WHERE update_id BETWEEN ${ids[0]} AND ${ids[3]};DELETE FROM sand_core_chat_leases WHERE chat_id=${q(chat)};DELETE FROM sand_core_chat_ingress WHERE chat_id=${q(chat)};`;
+          for(const id of ids){const payload=JSON.stringify({update_id:id});sql+=`INSERT INTO sand_core_inbox(update_id,chat_id,payload_json,status,attempts,process_lease_until,last_error,created_at,updated_at,finished_at) VALUES(${id},${q(chat)},${q(payload)},'pending',0,NULL,NULL,${q(now)},${q(now)},NULL);`;}
+          sql+=`INSERT INTO sand_core_chat_ingress(chat_id,settle_until_ms,last_seen_update_id,updated_at) VALUES(${q(chat)},0,${ids[3]},${q(now)});`;
+          process.stdout.write(sql);
+          NODE
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --file /tmp/burst.sql >/dev/null
+          CHAT_BODY="$CHAT" node -e 'process.stdout.write(JSON.stringify({chat_id:process.env.CHAT_BODY}))' >/tmp/drain.json
+          curl -fsS -X POST -H 'content-type: application/json' -H "X-Sand-Internal: $W" --data-binary @/tmp/drain.json "$URL/internal/drain" >/tmp/drain-response.json
+          cat /tmp/drain-response.json
+          done_n=0
+          for i in {1..30}; do
+            npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT COUNT(*) n FROM sand_core_inbox WHERE update_id BETWEEN $((BASE+1)) AND $((BASE+4)) AND status='done';" --json >/tmp/burst-state.json
+            done_n=$(FILE=/tmp/burst-state.json node -e 'const x=require(process.env.FILE);process.stdout.write(String(x?.[0]?.results?.[0]?.n||0))')
+            [ "$done_n" = 4 ] && break
+            sleep 2
+          done
+          cat /tmp/burst-state.json
+          [ "$done_n" = 4 ] || { echo "SELF_CONTINUATION_FAILED done=$done_n/4" >&2; exit 1; }
+          echo 'FIFO_SELF_CONTINUATION_4_OF_4_OK'
 
       - name: Upload certified one-file PRIME source
         uses: actions/upload-artifact@v4
