@@ -1,0 +1,157 @@
+/* @replace callBrainJson */
+async function callBrainJson(env,system,userText,deadline){
+  const m=metricV128(env),s=Date.now();
+  // A simple, already-grounded single-goal request does not need a second AI completion pass.
+  // Multi-intent text is classified as complex by v128Budget and still gets the completion gate.
+  if(m?.budget?.simple&&/Goal Completion Gate/u.test(String(system||'')))return{complete:true,steps:[]};
+  if(m){if(m.ai_calls>=m.budget.maxAi){m.budget_exceeded=true;throw new Error('performance_budget_ai_calls')}m.ai_calls++;}
+  try{return await callBrainJsonCore(env,system,userText,deadline)}finally{if(m)m.planning_ms+=Date.now()-s;}
+}
+/* @end */
+
+/* @replace recoverChatTransactionsV128 */
+async function recoverChatTransactionsV128(env,chatId){
+  const cutoff=new Date(Date.now()-V128_TX_STALE_MS).toISOString(),rows=(await env.DB.prepare(`SELECT t.operation_id,s.snapshot_json FROM sanad_mutation_tx t JOIN sanad_operation_snapshots s ON s.operation_id=t.operation_id AND s.chat_id=t.chat_id WHERE t.chat_id=? AND t.state='applying' AND t.started_at<? ORDER BY t.started_at LIMIT 3`).bind(String(chatId),cutoff).all())?.results||[];
+  for(const r of rows){
+    try{
+      const snap=parseJsonV125(r.snapshot_json,{}),rr=await restoreUserStateVerifiedV127(env,chatId,snap,true);
+      if(!rr.verified)throw new Error('stale_tx_restore_unverified');
+      const now=nowIso();
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE sanad_mutation_tx SET state='rolled_back',rolled_back_at=?,error_text='stale_recovery' WHERE operation_id=?`).bind(now,String(r.operation_id)),
+        env.DB.prepare(`UPDATE sanad_mutation_journal SET state='rolled_back',updated_at=? WHERE operation_id=? AND state IN ('prepared','applied','failed')`).bind(now,String(r.operation_id))
+      ]);
+    }catch(e){await reportFailure(env,chatId,'stale_mutation_recovery',e,{operation_id:r.operation_id})}
+  }
+}
+/* @end */
+
+/* @replace executeTool */
+async function executeTool(env,{chatId,operationId,stepKey,tool,args,user}){
+  const m=metricV128(env);
+  if(m){m.tool_calls++;if(m.tool_calls>m.budget.maxTools){m.budget_exceeded=true;return{ok:false,changed:0,verified:false,error:'performance_budget_tool_calls'}}}
+  const spec=TOOL_SPECS[tool],fp=spec?.mutation?mutationFingerprintV127(tool,args):null,fpKey=fp?`mutation-fp:${fnv64V127(fp)}`:null;
+  const prior=await env.DB.prepare(`SELECT result_json FROM sanad_receipts WHERE operation_id=? AND step_key=?`).bind(operationId,stepKey).first();
+  if(prior){try{const saved=JSON.parse(prior.result_json);if(!spec?.mutation||await verifyMutationPostconditionV127(env,chatId,tool,args,saved))return saved}catch(e){await reportFailure(env,chatId,'receipt_reverify',e,{operationId,stepKey,tool})}}
+  if(fpKey){const p=await env.DB.prepare(`SELECT result_json FROM sanad_receipts WHERE operation_id=? AND step_key=?`).bind(operationId,fpKey).first();if(p){try{const saved=JSON.parse(p.result_json);if(saved?.ok&&saved?.verified)return{ok:true,changed:0,verified:true,deduplicated:true,original_changed:Number(saved.changed||0),fingerprint:fp}}catch(e){await reportFailure(env,chatId,'mutation_dedupe_receipt',e,{operationId,tool})}}}
+  if(spec?.mutation){const pre=await preflightMutationIdsV127(env,chatId,tool,args);if(pre){await env.DB.prepare(`INSERT OR REPLACE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,stepKey,chatId,tool,JSON.stringify(pre),nowIso()).run();return pre}}
+  const seq=Number(String(stepKey).match(/(\d+)/)?.[1]||Date.now()%1000000),created=nowIso();
+  let before={};
+  if(spec?.mutation){
+    try{before=await snapshotUserStateV125(env,chatId,[{tool,args}])}catch(e){await reportFailure(env,chatId,'journal_before',e,{operationId,tool});return{ok:false,changed:0,verified:false,error:'mutation_snapshot_failed'}}
+    // Write-ahead journal: crash after the mutation but before finalization leaves a durable prepared entry.
+    await env.DB.batch([
+      env.DB.prepare(`INSERT OR IGNORE INTO sanad_mutation_tx(operation_id,chat_id,state,started_at) VALUES(?,?, 'applying',?)`).bind(String(operationId),String(chatId),created),
+      env.DB.prepare(`INSERT OR REPLACE INTO sanad_mutation_journal(operation_id,seq,chat_id,tool,state,before_json,after_json,error_text,created_at,updated_at) VALUES(?,?,?,?, 'prepared',?, '{}',NULL,?,?)`).bind(operationId,seq,chatId,tool,JSON.stringify(before).slice(0,50000),created,created)
+    ]);
+  }
+  const toolStart=Date.now();let result;
+  try{result=await dispatchTool(env,chatId,tool,args,user)}catch(e){result={ok:false,changed:0,verified:false,error:safeError(e),retryable:true}}
+  if(m)m.tools_ms+=Date.now()-toolStart;
+  if(spec?.mutation&&result?.ok===true){const vs=Date.now();let verified=false;try{verified=await verifyMutationPostconditionV127(env,chatId,tool,args,result)}catch(e){await reportFailure(env,chatId,'mutation_verify',e,{tool,args})}if(m)m.verification_ms+=Date.now()-vs;result=verified?{...result,verified:true}:{...result,ok:false,verified:false,error:'mutation_postcondition_failed'}}
+  const now=nowIso(),rr=env.DB.prepare(`INSERT OR REPLACE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,stepKey,chatId,tool,JSON.stringify(result).slice(0,15000),now),batch=[rr];
+  if(spec?.mutation)batch.unshift(env.DB.prepare(`UPDATE sanad_mutation_journal SET state=?,after_json=?,error_text=?,updated_at=? WHERE operation_id=? AND seq=?`).bind(result?.ok&&result?.verified?'applied':'failed',JSON.stringify(result?.after??result??{}).slice(0,50000),result?.ok?null:String(result?.error||'failed'),now,operationId,seq));
+  if(fpKey&&result?.ok&&result?.verified&&Number(result?.changed||0)>0)batch.push(env.DB.prepare(`INSERT OR IGNORE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,fpKey,chatId,tool,JSON.stringify(result).slice(0,15000),now));
+  await env.DB.batch(batch);
+  return result;
+}
+/* @end */
+
+/* @replace runSanadScheduler */
+async function runSanadScheduler(env,scheduledTime){
+  await ensureV128Schema(env);await recoverStaleMutationTxV128(env);
+  const c=await activeSchedulerCycleV128(env,scheduledTime);let cursor=String(c.user_cursor||''),usersComplete=false,roundOk=true,blockedByTx=false;
+  outer:for(let page=0;page<V128_USER_PAGES_PER_RUN;page++){
+    const rows=await schedulerUserPageV128(env,cursor,V128_USER_PAGE_SIZE);
+    if(!rows.length){usersComplete=true;cursor='';break}
+    for(const u of rows){
+      if(Number(u.__tx_active||0)){blockedByTx=true;break outer}
+      const previous=cursor;
+      try{
+        await deliverUserScheduleV125(env,u,Number(c.cycle_start_ms),Number(c.cycle_end_ms));
+        await deliverPrayerRulesV125(env,u,Number(c.cycle_start_ms),Number(c.cycle_end_ms));
+        await deliverDailyBriefsV125(env,u,Number(c.cycle_start_ms),Number(c.cycle_end_ms));
+        if(Number(u.proactive_enabled??1))await proactiveUserV125(env,u);
+        cursor=String(u.chat_id);
+      }catch(e){roundOk=false;cursor=previous;await reportFailure(env,String(u.chat_id),'scheduler_user',e,{cycle_id:c.cycle_id,window_start:c.cycle_start_ms,window_end:c.cycle_end_ms});break outer}
+    }
+    if(rows.length<V128_USER_PAGE_SIZE){usersComplete=true;cursor='';break}
+  }
+  let watch={ok:true,complete:false,cursor:Number(c.watch_cursor||0)};
+  if(usersComplete&&!blockedByTx&&roundOk)watch=await checkLiveWatchesV125(env,c);
+  if(!watch.ok)roundOk=false;
+  await processDeliveryQueueV128(env,V128_DELIVERY_BATCH);
+  const done=usersComplete&&!blockedByTx&&watch.complete&&roundOk,now=nowIso();
+  if(done){
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE sanad_scheduler_cycles SET state='complete',user_cursor='',watch_cursor=0,completed_at=?,updated_at=? WHERE cycle_id=?`).bind(now,now,String(c.cycle_id)),
+      env.DB.prepare(`INSERT INTO sanad_scheduler_state(key,value,updated_at) VALUES('last_run_ms',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(String(c.cycle_end_ms),now)
+    ]);
+  }else{
+    await env.DB.prepare(`UPDATE sanad_scheduler_cycles SET user_cursor=?,watch_cursor=?,round_failures=round_failures+?,updated_at=? WHERE cycle_id=?`).bind(cursor,usersComplete?Number(watch.cursor||0):Number(c.watch_cursor||0),roundOk?0:1,now,String(c.cycle_id)).run();
+  }
+  return{ok:done,complete:done,blocked_by_active_tx:blockedByTx,cycle_id:c.cycle_id,cycle_start_ms:Number(c.cycle_start_ms),cycle_end_ms:Number(c.cycle_end_ms),user_cursor:cursor,watch_cursor:Number(watch.cursor||0)};
+}
+/* @end */
+
+/* @replace drainInbox */
+async function drainInbox(env,chatId,origin=''){
+  const owner=`lease-${crypto.randomUUID()}`,leaseAttempts=Math.max(1,Number(env.__v128LeaseAttempts||16)),leaseWait=Math.max(1,Number(env.__v128LeaseWaitMs||550));let acquired=false;
+  for(let i=0;i<leaseAttempts;i++){if(await acquireLease(env,chatId,owner)){acquired=true;break}await sleep(leaseWait+Math.floor(Math.random()*Math.min(100,leaseWait)))}
+  if(!acquired){if(origin)await triggerDrain(env,chatId,origin);return}
+  let needsNext=false;
+  try{
+    const row=await nextInbox(env,chatId);if(!row)return;
+    const now=nowIso(),until=new Date(Date.now()+Math.max(INBOX_LEASE_MS,AI_TOTAL_BUDGET_MS+20000)).toISOString(),claimed=await env.DB.prepare(`UPDATE sanad_inbox SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? WHERE update_id=? AND chat_id=? AND (status='pending' OR lease_until IS NULL OR lease_until<=?) RETURNING attempts`).bind(until,now,String(row.update_id),String(chatId),now).first();if(!claimed)return;
+    const attempts=Number(claimed.attempts||1);if(attempts>1)await env.DB.prepare(`DELETE FROM sanad_updates WHERE update_id=? AND status!='done'`).bind(String(row.update_id)).run();
+    try{
+      const parsed=JSON.parse(String(row.payload_json||'{}'));
+      if(typeof env.__v128InboxProcessor==='function')await env.__v128InboxProcessor(parsed,row);else await processTelegramUpdate(env,parsed);
+      await env.DB.batch([env.DB.prepare(`UPDATE sanad_inbox SET status='done',lease_until=NULL,last_error=NULL,updated_at=? WHERE update_id=?`).bind(nowIso(),String(row.update_id)),env.DB.prepare(`DELETE FROM sanad_dead_letters WHERE update_id=?`).bind(String(row.update_id))]);
+    }catch(e){
+      const terminal=attempts>=INBOX_MAX_ATTEMPTS,err=safeError(e),next=new Date(Date.now()+Math.min(3600000,60000*Math.pow(2,Math.min(5,attempts)))).toISOString();
+      if(terminal)await env.DB.batch([env.DB.prepare(`UPDATE sanad_inbox SET status='failed',lease_until=NULL,last_error=?,updated_at=? WHERE update_id=?`).bind(err,nowIso(),String(row.update_id)),env.DB.prepare(`INSERT INTO sanad_dead_letters(update_id,chat_id,payload_json,last_error,attempts,replay_count,state,next_replay_at,created_at,updated_at) VALUES(?,?,?,?,?,0,'dead',?,?,?) ON CONFLICT(update_id) DO UPDATE SET last_error=excluded.last_error,attempts=excluded.attempts,state='dead',next_replay_at=excluded.next_replay_at,updated_at=excluded.updated_at`).bind(String(row.update_id),String(chatId),String(row.payload_json||'{}'),err,attempts,next,nowIso(),nowIso())]);
+      else await env.DB.prepare(`UPDATE sanad_inbox SET status='pending',lease_until=NULL,last_error=?,updated_at=? WHERE update_id=?`).bind(err,nowIso(),String(row.update_id)).run();
+      await reportFailure(env,chatId,'inbox',e,{update_id:row.update_id,attempts,terminal});
+    }finally{needsNext=!!(await nextInbox(env,chatId))}
+  }finally{await releaseLease(env,chatId,owner).catch(e=>console.error('releaseLease',e))}
+  if(needsNext&&origin)await triggerDrain(env,chatId,origin);
+}
+/* @end */
+
+/* @append */
+async function schedulerUserPageV128(env,cursor='',limit=V128_USER_PAGE_SIZE,prefix=''){
+  const lim=Math.max(1,Math.min(1000,Number(limit||V128_USER_PAGE_SIZE)));
+  if(prefix){return (await env.DB.prepare(`SELECT u.*,EXISTS(SELECT 1 FROM sanad_mutation_tx t WHERE t.chat_id=u.chat_id AND t.state='applying') __tx_active FROM sanad_users u WHERE u.chat_id>? AND u.chat_id LIKE ? ORDER BY u.chat_id LIMIT ?`).bind(String(cursor||''),String(prefix)+'%',lim).all())?.results||[]}
+  return (await env.DB.prepare(`SELECT u.*,EXISTS(SELECT 1 FROM sanad_mutation_tx t WHERE t.chat_id=u.chat_id AND t.state='applying') __tx_active FROM sanad_users u WHERE u.chat_id>? ORDER BY u.chat_id LIMIT ?`).bind(String(cursor||''),lim).all())?.results||[];
+}
+
+async function deepSelftestV128Full(env){
+  const base=await deepSelftestV128(env),tests=[...(base.tests||[])],chat='__sanad_v128_extra__';
+  /** @param {string} name @param {any} ok @param {any} [detail] */
+  const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  try{
+    await ensureSchema(env);
+    // Crash after DB claim and before a knowable Telegram result: never blind-retry.
+    await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();
+    await enqueueDeliveryV128(env,{key:'v128-crash-claim',chatId:chat,kind:'reminder',text:'crash'});
+    await env.DB.prepare(`UPDATE sanad_delivery_queue SET state='sending',attempts=1,lease_until=?,updated_at=? WHERE delivery_key='v128-crash-claim'`).bind(new Date(Date.now()-1000).toISOString(),nowIso()).run();
+    let transportCalls=0;const crashEnv={...env,__v128DeliveryTransport:async()=>{transportCalls++;return{ok:true,message_id:1}}};await processDeliveryQueueV128(crashEnv,10);const crashed=await env.DB.prepare(`SELECT state,attempts,duplicate_risk FROM sanad_delivery_queue WHERE delivery_key='v128-crash-claim'`).first();add('crash after delivery claim becomes uncertain without resend',crashed?.state==='uncertain'&&Number(crashed?.duplicate_risk)===1&&transportCalls===0,JSON.stringify({crashed,transportCalls}));
+
+    // Rollback itself is one D1 transaction: a bad INSERT must roll back the preceding DELETE.
+    await env.DB.prepare(`DELETE FROM sanad_shopping WHERE chat_id=?`).bind(chat).run();const stamp=nowIso();await env.DB.prepare(`INSERT INTO sanad_shopping(chat_id,title,normalized,status,meta_json,created_at,updated_at) VALUES(?,?,?,'pending','{}',?,?)`).bind(chat,'atomic-original','atomic-original',stamp,stamp).run();
+    const badSnap={sanad_shopping:[{chat_id:chat,title:'replacement',normalized:'replacement',status:'pending',meta_json:'{}',created_at:stamp,updated_at:stamp,__invalid_column_v128:1}]};let restoreFailed=false;try{await restoreUserStateV125(env,chat,badSnap)}catch{restoreFailed=true}const original=await env.DB.prepare(`SELECT title FROM sanad_shopping WHERE chat_id=?`).bind(chat).first();add('crash/error during rollback batch preserves pre-rollback live state',restoreFailed&&original?.title==='atomic-original',JSON.stringify({restoreFailed,original}));
+
+    // Actual sanad_users table, not a generic fixture: 5,000 users must be cursor-coverable without gaps.
+    const prefix='__v128scale__';await env.DB.prepare(`DELETE FROM sanad_users WHERE chat_id LIKE ?`).bind(prefix+'%').run();await env.DB.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<5000) INSERT INTO sanad_users(chat_id,created_at,updated_at) SELECT printf('__v128scale__%05d',x),?,? FROM n`).bind(nowIso(),nowIso()).run();let cursor=prefix,count=0,pages=0;while(pages<25){const rows=await schedulerUserPageV128(env,cursor,250,prefix);if(!rows.length)break;count+=rows.length;pages++;cursor=String(rows.at(-1)?.chat_id||cursor)}add('5000 actual scheduler users covered by stable cursor pages',count===5000&&pages===20,JSON.stringify({count,pages,cursor}));
+
+    // Active user mutation must block the cycle at that user rather than exposing partial state or skipping it.
+    const blockedId='__v128scale__00001';await env.DB.prepare(`INSERT OR REPLACE INTO sanad_mutation_tx(operation_id,chat_id,state,started_at) VALUES('v128-blocked-tx',?,'applying',?)`).bind(blockedId,nowIso()).run();const blockedPage=await schedulerUserPageV128(env,prefix,2,prefix);add('scheduler page marks active mutation transaction',String(blockedPage[0]?.chat_id)===blockedId&&Number(blockedPage[0]?.__tx_active)===1,JSON.stringify(blockedPage[0]));await env.DB.prepare(`DELETE FROM sanad_mutation_tx WHERE operation_id='v128-blocked-tx'`).run();
+
+    // 100 messages for one chat under concurrent drain calls: no overlap and exact inbox order.
+    await env.DB.prepare(`DELETE FROM sanad_inbox WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_chat_leases WHERE chat_id=?`).bind(chat).run();const now=nowIso(),stmts=[];for(let i=1;i<=100;i++)stmts.push(env.DB.prepare(`INSERT INTO sanad_inbox(update_id,chat_id,payload_json,status,attempts,created_at,updated_at) VALUES(?,?,?,'pending',0,?,?)`).bind(`v128-conc-${String(i).padStart(3,'0')}`,chat,JSON.stringify({n:i}),now,now));await env.DB.batch(stmts);
+    let active=0,maxActive=0;const order=[];const inboxEnv={...env,__v128LeaseAttempts:140,__v128LeaseWaitMs:5,__v128InboxProcessor:async(_update,row)=>{active++;maxActive=Math.max(maxActive,active);order.push(String(row.update_id));await sleep(1);active--}};await Promise.all(Array.from({length:100},()=>drainInbox(inboxEnv,chat,'')));const done=Number((await env.DB.prepare(`SELECT COUNT(*) c FROM sanad_inbox WHERE chat_id=? AND status='done'`).bind(chat).first())?.c||0),expected=Array.from({length:100},(_,i)=>`v128-conc-${String(i+1).padStart(3,'0')}`);add('100 same-chat concurrent drains serialize without loss',done===100&&maxActive===1&&JSON.stringify(order)===JSON.stringify(expected),JSON.stringify({done,maxActive,first:order[0],last:order.at(-1)}));
+  }catch(e){add('extra crash/concurrency selftest exception',false,safeError(e))}
+  try{await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_shopping WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_inbox WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_chat_leases WHERE chat_id=?`).bind(chat).run();await env.DB.prepare(`DELETE FROM sanad_users WHERE chat_id LIKE '__v128scale__%'`).run();await env.DB.prepare(`DELETE FROM sanad_mutation_tx WHERE chat_id LIKE '__v128scale__%' OR chat_id=?`).bind(chat).run()}catch(e){add('extra cleanup',false,safeError(e))}
+  return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
+}
