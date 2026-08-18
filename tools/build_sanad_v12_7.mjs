@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 execFileSync(process.execPath,['tools/build_sanad_v12_6_final.mjs'],{stdio:'inherit'});
 const input=new URL('../Sanad_V12_6_ULTIMATE_PARITY.js',import.meta.url);
 const layer=new URL('./sanad_v12_7_hardening.jsfrag',import.meta.url);
+const selftestLayer=new URL('./sanad_v12_7_selftest.jsfrag',import.meta.url);
 const output=new URL('../Sanad_V12_7_HARDENED.js',import.meta.url);
 let src=fs.readFileSync(input,'utf8');
 
@@ -18,6 +19,7 @@ function replaceRequired(label,needle,replacement){if(!src.includes(needle))thro
 
 src=src.replaceAll('12.6.0','12.7.0').replaceAll('V12.6','V12.7');
 src=src.replace('const NAME = "سند — Sanad V12.7 Ultimate Parity";','const NAME = "سند — Sanad V12.7 Correctness Hardened";');
+replaceRequired('v127 selftest route','    if (request.method === "GET" && url.pathname === "/selftest") return selftest(request, env);','    if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }');
 
 for(const [name,renamed] of [
   ['fallbackCompose','fallbackComposeV126BeforeHardening'],
@@ -68,6 +70,6 @@ replaceRequired('base migration terminal catch','  }catch(e){console.warn("Sanad
 replaceRequired('voice fallback catch',"if(rr.ok&&text)return text;}catch{}finally{clearTimeout(timer)}}if(env.GROQ_API_KEY", "if(rr.ok&&text)return text;}catch(e){await reportFailure(env,null,'voice_omniai_fallback',e,{file_id:fileId});}finally{clearTimeout(timer)}}if(env.GROQ_API_KEY");
 replaceRequired('selftest verified change', 'fallbackCompose([{tool:"shopping.add",ok:true,verified:true}]).includes("✅")','fallbackCompose([{tool:"shopping.add",ok:true,verified:true,changed:1}]).includes("✅")');
 
-src+='\n\n'+fs.readFileSync(layer,'utf8').trim()+'\n';
+src+='\n\n'+fs.readFileSync(layer,'utf8').trim()+'\n\n'+fs.readFileSync(selftestLayer,'utf8').trim()+'\n';
 const buf=Buffer.from(src,'utf8');fs.writeFileSync(output,buf);
 console.log(JSON.stringify({ok:true,version:'12.7.0',bytes:buf.length,lines:src.split('\n').length,sha256:crypto.createHash('sha256').update(buf).digest('hex')}));
