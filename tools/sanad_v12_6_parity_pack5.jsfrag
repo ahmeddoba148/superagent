@@ -1,0 +1,11 @@
+async function ciTelegramMutedV126(env){
+  try{
+    const r=await env.DB.prepare(`SELECT value FROM sanad_meta WHERE key='ci_silent_telegram'`).first();
+    return String(r?.value||'')==='1';
+  }catch{return false;}
+}
+
+async function sendText(env,chatId,text,reply_markup){
+  if(await ciTelegramMutedV126(env))return{ok:true,silent:true,ci:true};
+  return sendTextV126BeforeCiMute(env,chatId,text,reply_markup);
+}
