@@ -1,0 +1,51 @@
+async function propagateDependenciesV125(env,chatId,sourceType,sourceId,deltaMinutes,visited=new Set()){
+  const key=dependencyKeyV126(sourceType,sourceId);
+  if(visited.has(key))return{ok:true,changed:0,cycle_cut:true};
+  if(visited.size>50)throw new Error('dependency_depth_exceeded');
+  visited.add(key);
+  const deps=(await env.DB.prepare(`SELECT * FROM sanad_dependencies WHERE chat_id=? AND source_type=? AND source_id=? AND active=1 ORDER BY id`).bind(chatId,String(sourceType),Number(sourceId)).all())?.results||[];
+  let changed=0;
+  for(const d of deps){
+    const ok=await realignDependencyV126(env,chatId,d);
+    if(!ok)throw new Error(`dependency_realign_failed:${d.id}`);
+    changed++;
+    const child=await propagateDependenciesV125(env,chatId,String(d.target_type),Number(d.target_id),0,visited);
+    changed+=Number(child?.changed||0);
+  }
+  return{ok:true,changed};
+}
+
+async function toolScheduleShiftV125(env,chatId,args){
+  const type=String(args?.source_type||'reminder'),id=Number(args?.id),mins=Math.trunc(Number(args?.minutes||0));
+  if(type==='recurrence')return toolScheduleShiftV126BeforePropagationGuard(env,chatId,args);
+  if(type!=='reminder'||!id||!mins)return{ok:false,changed:0,verified:false,error:'invalid_shift'};
+  const before=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
+  if(!before)return{ok:false,changed:0,verified:false,error:'not_found'};
+  const nx=addMinutesLocal(String(before.local_date),String(before.local_time),mins);
+  await env.DB.prepare(`UPDATE sanad_reminders SET local_date=?,local_time=?,sent=0,updated_at=? WHERE chat_id=? AND id=?`).bind(nx.date,nx.time,nowIso(),chatId,id).run();
+  const after=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
+  const verified=!!after&&after.local_date===nx.date&&after.local_time===nx.time;
+  if(!verified)return{ok:false,changed:0,verified:false,error:'shift_verification_failed',before,after};
+  const propagated=await propagateDependenciesV125(env,chatId,'reminder',id,mins);
+  return{ok:true,changed:1+Number(propagated?.changed||0),verified:true,before,after,dependencies_verified:true,dependency_changes:Number(propagated?.changed||0)};
+}
+
+async function toolReminderUpdate(env,chatId,args){
+  const id=Number(args?.id);
+  if(!id)return{ok:false,changed:0,verified:false,error:'missing_id'};
+  const before=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
+  if(!before)return{ok:false,changed:0,verified:false,error:'not_found'};
+  const result=await toolReminderUpdateV125Base(env,chatId,args);
+  if(!result?.ok||result?.verified!==true)return result;
+  const after=result.after||await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
+  const temporalChanged=!!after&&(String(before.local_date)!==String(after.local_date)||String(before.local_time)!==String(after.local_time)||Number(before.duration_minutes||0)!==Number(after.duration_minutes||0));
+  let dependencyChanges=0;
+  if(temporalChanged){
+    const oldMs=zonedLocalToEpochV125(String(before.local_date),String(before.local_time),String(before.timezone||TZ));
+    const newMs=zonedLocalToEpochV125(String(after.local_date),String(after.local_time),String(after.timezone||before.timezone||TZ));
+    const delta=Math.round((newMs-oldMs)/60000);
+    const propagated=await propagateDependenciesV125(env,chatId,'reminder',id,delta);
+    dependencyChanges=Number(propagated?.changed||0);
+  }
+  return{...result,dependencies_verified:true,dependency_changes:dependencyChanges};
+}
