@@ -42,6 +42,14 @@ fs.writeFileSync(pre,src);
 execFileSync('npx',['--yes','esbuild@0.25.9',pre.pathname,'--bundle','--format=esm','--platform=browser','--target=es2022','--tree-shaking=true','--legal-comments=none',`--outfile=${output.pathname}`],{stdio:'inherit'});
 let final=fs.readFileSync(output,'utf8');
 
+// The second canonical bundling strips non-legal JSDoc. Restore the same narrow type annotations
+// used by the certified V12.8 builder so checkJs does not over-narrow heterogeneous helper returns.
+final=final.replace('    const simpleMaps = [','    /** @type {Array<[string,string,(r:any)=>Promise<any>]>} */\n    const simpleMaps = [');
+final=final.replace('  function add(name, ok, detail = "") {','  /** @param {string} name @param {any} ok @param {any} [detail] */\n  function add(name, ok, detail = "") {');
+final=final.replace('    let r = await toolShoppingAdd(env, chat, {','    /** @type {any} */\n    let r = await toolShoppingAdd(env, chat, {');
+final=final.replace('  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });','  /** @type {(name:string,ok:any,detail?:any)=>number} */\n  const add = (name, ok, detail = "") => tests.push({ name, ok: !!ok, detail: String(detail ?? "") });');
+final=final.replace('    let r = await toolReminderCancel(env, chat, { ids: [987654321] });','    /** @type {any} */\n    let r = await toolReminderCancel(env, chat, { ids: [987654321] });');
+
 const gates={
   version:final.includes('12.8.1'),
   journal_seq_sql:final.includes('COALESCE(MAX(seq), 0) + 1')||final.includes('COALESCE(MAX(seq),0)+1'),
