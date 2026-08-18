@@ -1,0 +1,161 @@
+async function saveAssistantMessage(env, chatId, updateId, content, modelId) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, 'assistant', ?, ?, ?)`)
+    .bind(chatId, updateId, String(content).slice(0, AI_MAX_REPLY_CHARS), modelId, nowIso())
+    .run();
+}
+
+async function savedAssistantForUpdate(env, chatId, updateId) {
+  return env.DB.prepare(`SELECT content, model_id
+    FROM ${TABLES.messages}
+    WHERE chat_id=? AND update_id=? AND role='assistant'
+    LIMIT 1`)
+    .bind(chatId, updateId)
+    .first();
+}
+
+async function recentAiHistory(env, chatId, limit) {
+  const rows = await env.DB.prepare(`SELECT role, content
+    FROM ${TABLES.messages}
+    WHERE chat_id=?
+    ORDER BY id DESC
+    LIMIT ?`)
+    .bind(chatId, Math.max(2, Math.min(30, Number(limit) || AI_HISTORY_MESSAGES)))
+    .all();
+
+  return (rows?.results ?? []).reverse();
+}
+
+function cairoNow() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Africa/Cairo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date())
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+    weekday: String(parts.weekday ?? ""),
+  };
+}
+
+function omniChatUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/chat/completions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+
+  if (/\/v1\/chat\/completions$/i.test(configured)) return configured;
+  if (/\/v1$/i.test(configured)) return `${configured}/chat/completions`;
+  return `${configured}/v1/chat/completions`;
+}
+
+function normalizeAiReply(value) {
+  const text = String(value ?? "").trim();
+  if (!text) throw new Error("AI returned an empty reply");
+  return text.slice(0, AI_MAX_REPLY_CHARS);
+}
+
+function aiContent(data) {
+  const direct = data?.choices?.[0]?.message?.content;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  const output = data?.output_text ?? data?.text;
+  if (typeof output === "string" && output.trim()) return output.trim();
+
+  return "";
+}
+
+function aiErrorCode(error) {
+  if (error?.name === "AbortError") return "timeout";
+  const message = safeError(error).toLowerCase();
+  if (message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("empty")) return "empty_response";
+  return "network_or_runtime";
+}
+
+async function recordAiCall(env, record) {
+  await env.DB.prepare(`INSERT INTO ${TABLES.aiCalls}
+    (chat_id, update_id, model_id, model_role, latency_ms, ok, http_status, error_code, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      record.chatId,
+      record.updateId,
+      record.modelId,
+      record.modelRole,
+      Math.max(0, Number(record.latencyMs) || 0),
+      record.ok ? 1 : 0,
+      record.httpStatus ?? null,
+      record.errorCode ?? null,
+      nowIso(),
+    )
+    .run();
+}
+
+async function recordAiCallSafe(env, record) {
+  try {
+    await recordAiCall(env, record);
+  } catch (error) {
+    logError("ai_call_log_noncritical", error, {
+      chatId: record.chatId,
+      updateId: record.updateId,
+      modelId: record.modelId,
+    });
+  }
+}
+
+async function callOneAiModel(env, model, messages, timeoutMs) {
+  requireBinding(env, "OMNIAI_API_KEY");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = nowMs();
+
+  try {
+    const request = new Request(omniChatUrl(env), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OMNIAI_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages,
+        temperature: 0.35,
+        max_tokens: 900,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    const response = env?.OMNIAI_SERVICE?.fetch
+      ? await env.OMNIAI_SERVICE.fetch(request)
+      : await fetch(request);
+
+    const httpStatus = response.status;
+    const data = await response.json().catch((error) => {
+      logError("omniai_json", error, { model: model.id, status: httpStatus });
+      return null;
+    });
+
+    if (!response.ok) {
+      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
+      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
+    }
+
+    const content = aiContent(data);
+    if (!content) {
