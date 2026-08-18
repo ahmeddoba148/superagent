@@ -1,0 +1,28 @@
+/* V12.7 per-operation semantic mutation dedupe */
+function stableJsonV127(value){return JSON.stringify(canonicalValueV127(value));}
+function fnv64V127(text){let h=1469598103934665603n;for(const ch of String(text)){h^=BigInt(ch.codePointAt(0)||0);h=BigInt.asUintN(64,h*1099511628211n);}return h.toString(16).padStart(16,'0');}
+function mutationFingerprintV127(tool,args){
+  if(!TOOL_SPECS[String(tool||'')]?.mutation)return null;
+  const t=String(tool),a=args&&typeof args==='object'?args:{};
+  // Same reminder shift must never run twice inside one user operation, even if the planner/completion gate repeats it.
+  if(t==='schedule.shift')return `reminder-shift:${Number(a.id)||0}:${Math.trunc(Number(a.minutes)||0)}`;
+  if(t==='schedule.bulk_shift')return `reminder-bulk-shift:${[...(a.ids||[])].map(Number).filter(Boolean).sort((x,y)=>x-y).join(',')}:${Math.trunc(Number(a.minutes)||0)}`;
+  return `${t}:${fnv64V127(stableJsonV127(a))}`;
+}
+async function executeTool(env,{chatId,operationId,stepKey,tool,args,user}){
+  const fp=mutationFingerprintV127(tool,args),fpKey=fp?`mutation-fp:${fnv64V127(fp)}`:null;
+  if(fpKey){
+    const prior=await env.DB.prepare(`SELECT result_json FROM sanad_receipts WHERE operation_id=? AND step_key=?`).bind(operationId,fpKey).first();
+    if(prior){
+      try{
+        const p=JSON.parse(prior.result_json);
+        if(p?.ok===true&&p?.verified===true){return{ok:true,changed:0,verified:true,deduplicated:true,original_changed:Number(p.changed||0),fingerprint:fp};}
+      }catch(e){await reportFailure(env,chatId,'mutation_dedupe_receipt',e,{operationId,tool,fingerprint:fp});}
+    }
+  }
+  const result=await executeToolV127BeforeOperationDedupe(env,{chatId,operationId,stepKey,tool,args,user});
+  if(fpKey&&result?.ok===true&&result?.verified===true&&Number(result?.changed||0)>0){
+    await env.DB.prepare(`INSERT OR IGNORE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,fpKey,chatId,tool,JSON.stringify(result).slice(0,15000),nowIso()).run();
+  }
+  return result;
+}
