@@ -27,11 +27,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
-      - name: Assemble exact source
+      - name: Assemble exact FIFO source
         run: |
           set -euo pipefail
           cat sand_test_parts/part*.js.txt > SAND.js
-          test "$(sha256sum SAND.js|awk '{print $1}')" = "a8c9fa912784f5060507f0e81602e00d470bbb379592e201fa8c4d3e92002037"
+          ACTUAL="$(sha256sum SAND.js|awk '{print $1}')"
+          echo "source_sha=$ACTUAL"
+          test "$ACTUAL" = "a43b4d0d7ba2c15708b2cfc98a32452967f370e50bf65d613a74ca424aeefc40"
           node --check SAND.js
       - name: Probe selected models
         run: |
@@ -43,7 +45,7 @@ jobs:
           async function p(model){const c=new AbortController(),tm=setTimeout(()=>c.abort(),9000),t=Date.now();try{const r=await fetch(ep,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:24,stream:false}),signal:c.signal});const raw=await r.text();return{model,ok:r.ok&&raw.length>0,status:r.status,ms:Date.now()-t,body:raw.slice(0,160)}}catch(e){return{model,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
           (async()=>{let a=[];for(const m of ms)a.push(await p(m));console.log(JSON.stringify(a,null,2));if(!a.every(x=>x.ok))throw Error('model probe failed')})();
           NODE
-      - name: Deploy isolated staging
+      - name: Deploy isolated FIFO staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
@@ -61,19 +63,51 @@ jobs:
           set -euo pipefail
           for i in {1..10};do code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health"||true);[ "$code" = 200 ]&&break;sleep 2;done
           cat /tmp/h
-          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="2"||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="3"||x.version!=="1.1.2-ai-chat-fifo-gate"||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
           curl -fsS -X POST -H "X-Sand-Key: $K" "$URL/setup" >/tmp/s
           cat /tmp/s
-      - name: Rapid queue live test
+      - name: Strict FIFO out-of-order arrival live test
         run: |
           set -euo pipefail
-          SQL="DELETE FROM sand_core_chat_leases WHERE chat_id='$CHAT';DELETE FROM sand_core_inbox WHERE chat_id='$CHAT';DELETE FROM sand_ai_messages WHERE chat_id='$CHAT';DELETE FROM sand_ai_calls WHERE chat_id='$CHAT';"
+          SQL="DELETE FROM sand_core_chat_leases WHERE chat_id='$CHAT';DELETE FROM sand_core_chat_ingress WHERE chat_id='$CHAT';DELETE FROM sand_core_inbox WHERE chat_id='$CHAT';DELETE FROM sand_ai_messages WHERE chat_id='$CHAT';DELETE FROM sand_ai_calls WHERE chat_id='$CHAT';"
           npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "$SQL" >/dev/null
           node - <<'NODE'
-          const {execFileSync}=require('child_process');const U=process.env.URL,C=process.env.CHAT,S=process.env.W,D=process.env.DB,cfg=process.env.CFG,sleep=m=>new Promise(r=>setTimeout(r,m));const b=3200000000+(Date.now()%10000000),ts=['اختبار سند واحد: رد تمام فقط','اختبار سند اتنين: الرسالة اللي قبلي رقم كام؟','اختبار سند تلاتة: النهاردة كام في القاهرة؟'];
-          async function post(id,text){const body={update_id:id,message:{message_id:id%999999,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'SAND-CI'},text}};const r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status)}
+          const {execFileSync}=require('child_process');
+          const U=process.env.URL,C=process.env.CHAT,S=process.env.W,D=process.env.DB,cfg=process.env.CFG,sleep=m=>new Promise(r=>setTimeout(r,m));
+          const b=3300000000+(Date.now()%10000000);
+          const texts={
+            [b]:'ترتيب سند 1: اسمي أحمد. رد تمام فقط',
+            [b+1]:'ترتيب سند 2: قول اسم المستخدم اللي قاله في الرسالة اللي قبلي فقط',
+            [b+2]:'ترتيب سند 3: رد بكلمة تلاتة فقط'
+          };
+          async function post(id){const body={update_id:id,message:{message_id:id%999999,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'SAND-CI'},text:texts[id]}};const r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status)}
           function q(sql){return JSON.parse(execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',cfg,'--command',sql,'--json'],{encoding:'utf8'}))?.[0]?.results||[]}
-          (async()=>{await Promise.all(ts.map((t,i)=>post(b+i,t)));await post(b,ts[0]);let inbox=[],msg=[];for(let i=0;i<30;i++){await sleep(1000);inbox=q(`SELECT update_id,status,attempts,last_error FROM sand_core_inbox WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY update_id`);msg=q(`SELECT update_id,role,model_id,content FROM sand_ai_messages WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY update_id,id`);if(inbox.length===3&&inbox.every(x=>x.status==='done')&&msg.filter(x=>x.role==='assistant').length===3)break}const u=msg.filter(x=>x.role==='user'),a=msg.filter(x=>x.role==='assistant'),calls=q(`SELECT update_id,model_id,model_role,ok,http_status,error_code,latency_ms FROM sand_ai_calls WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY id`);const out={inbox,users:u,assistants:a,calls};console.log(JSON.stringify(out,null,2));if(inbox.length!==3||!inbox.every(x=>x.status==='done')||u.length!==3||a.length!==3)throw Error('live queue failed');if(new Set(u.map(x=>x.update_id)).size!==3||new Set(a.map(x=>x.update_id)).size!==3)throw Error('duplicate processing')})();
+          (async()=>{
+            // Deliberately arrive out of order inside one rapid burst.
+            await post(b+1); await sleep(120); await post(b+2); await sleep(120); await post(b); await post(b+1);
+            let inbox=[],msg=[];
+            for(let i=0;i<35;i++){
+              await sleep(1000);
+              inbox=q(`SELECT update_id,status,attempts,last_error FROM sand_core_inbox WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY update_id`);
+              msg=q(`SELECT id,update_id,role,model_id,content FROM sand_ai_messages WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY id`);
+              if(inbox.length===3&&inbox.every(x=>x.status==='done')&&msg.filter(x=>x.role==='assistant').length===3)break;
+            }
+            const users=msg.filter(x=>x.role==='user'),assistants=msg.filter(x=>x.role==='assistant');
+            const calls=q(`SELECT id,update_id,model_id,model_role,ok,http_status,error_code,latency_ms FROM sand_ai_calls WHERE update_id BETWEEN ${b} AND ${b+2} ORDER BY id`);
+            const userOrder=users.map(x=>Number(x.update_id));
+            const assistantOrder=assistants.map(x=>Number(x.update_id));
+            const successfulCallOrder=calls.filter(x=>Number(x.ok)===1).map(x=>Number(x.update_id));
+            const expected=[b,b+1,b+2];
+            const out={expected,userOrder,assistantOrder,successfulCallOrder,inbox,users,assistants,calls};
+            console.log(JSON.stringify(out,null,2));
+            if(inbox.length!==3||!inbox.every(x=>x.status==='done'))throw Error('inbox not fully done');
+            if(JSON.stringify(userOrder)!==JSON.stringify(expected))throw Error('USER FIFO FAILED '+JSON.stringify(userOrder));
+            if(JSON.stringify(assistantOrder)!==JSON.stringify(expected))throw Error('ASSISTANT FIFO FAILED '+JSON.stringify(assistantOrder));
+            if(JSON.stringify(successfulCallOrder)!==JSON.stringify(expected))throw Error('AI CALL FIFO FAILED '+JSON.stringify(successfulCallOrder));
+            if(new Set(userOrder).size!==3||new Set(assistantOrder).size!==3)throw Error('duplicate processing');
+            const second=assistants.find(x=>Number(x.update_id)===b+1)?.content||'';
+            if(!/أحمد|احمد/.test(second))throw Error('context order failed, second reply='+second);
+          })();
           NODE
       - name: No deadlock
         run: |
