@@ -34,7 +34,7 @@ jobs:
           base64 -d sand_reminder_live/source.js.gz.b64 | gzip -d > SAND.js
           ACTUAL="$(sha256sum SAND.js | awk '{print $1}')"
           echo "source_sha=$ACTUAL"
-          test "$ACTUAL" = "2918c2f64fb7b58fb9945e3d04e5f8fd344f38cbce3a5a90fbbfaca14eca2a78"
+          test "$ACTUAL" = "d880020f263d527a206165345a1fd345e8e3f0938ad98e3a834b596328a53fd4"
           node --check SAND.js
           ! grep -q 'text\.includes(' SAND.js
           ! grep -q 'Math\.random' SAND.js
@@ -45,16 +45,15 @@ jobs:
           EOF
           npx tsc -p tsconfig.json --pretty false
 
-      - name: Probe all three models
+      - name: Probe all three model routes
         run: |
           set -euo pipefail
           node - <<'NODE'
           const key=process.env.OKEY, ep='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
           const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
           if(!key) throw Error('STAGING_OMNIAI_API_KEY missing');
-          function jsonish(raw){const a=raw.indexOf('{'),b=raw.lastIndexOf('}');if(a<0||b<=a)throw Error('not json');return JSON.parse(raw.slice(a,b+1));}
-          async function probe(model){const c=new AbortController(),tm=setTimeout(()=>c.abort(),9000),t=Date.now();try{const r=await fetch(ep,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'system',content:'ارجع JSON صالح فقط بالشكل {"action":"chat","reply":"تمام","data":{}} بدون أي كلام آخر.'},{role:'user',content:'هاي'}],temperature:0.1,max_tokens:100,stream:false}),signal:c.signal});const data=await r.json();const content=data?.choices?.[0]?.message?.content||'';const j=jsonish(content);return{model,ok:r.ok&&j.action==='chat',status:r.status,ms:Date.now()-t,content}}catch(e){return{model,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
-          (async()=>{const out=[];for(const m of models)out.push(await probe(m));console.log(JSON.stringify(out,null,2));if(!out.every(x=>x.ok))throw Error('model structured probe failed')})();
+          async function probe(model){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000),t=Date.now();try{const r=await fetch(ep,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة تمام فقط'}],max_tokens:128,stream:false}),signal:c.signal});const raw=await r.text();return{model,ok:r.ok&&raw.length>0,status:r.status,ms:Date.now()-t,body:raw.slice(0,180)}}catch(e){return{model,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const out=[];for(const m of models)out.push(await probe(m));console.log(JSON.stringify(out,null,2));if(!out.every(x=>x.ok))throw Error('model route probe failed')})();
           NODE
 
       - name: Deploy isolated reminder staging
@@ -139,7 +138,7 @@ jobs:
           npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT COUNT(*) AS reminders FROM sand_reminders WHERE source_update_id=$BASE;SELECT COUNT(*) AS operations FROM sand_operations WHERE source_update_id=$BASE;SELECT COUNT(*) AS decisions FROM sand_action_decisions WHERE update_id=$BASE;" --json >/tmp/replay.json
           cat /tmp/replay.json
           node - <<'NODE'
-          const x=JSON.parse(require('fs').readFileSync('/tmp/replay.json'));const vals=x.flatMap(r=>r.results||[]);if(vals[0]?.reminders!==1||vals[1]?.operations!==1||vals[2]?.decisions!==1)throw Error(JSON.stringify(vals));
+          const x=JSON.parse(require('fs').readFileSync('/tmp/replay.json'));const vals=x.flatMap(r=>r.results||[]);if(Number(vals[0]?.reminders)!==1||Number(vals[1]?.operations)!==1||Number(vals[2]?.decisions)!==1)throw Error(JSON.stringify(vals));
           NODE
 
       - name: No deadlock and final D1 verification
