@@ -1,0 +1,64 @@
+--- SAND.js
++++ SAND.js
+@@ -339,17 +339,26 @@
+     return { text: content, latencyMs: nowMs() - started, httpStatus };
+   } finally { clearTimeout(timer); }
+ }
+-async function callAiChain(env, { chatId, updateId, messages, temperature = 0.2, maxTokens = 1400, totalBudgetMs = AI_TOTAL_BUDGET_MS, modelTimeoutMs = AI_MODEL_TIMEOUT_MS }) {
++async function callAiChain(env, { chatId, updateId, messages, temperature = 0.2, maxTokens = 1400, totalBudgetMs = AI_TOTAL_BUDGET_MS, modelTimeoutMs = AI_MODEL_TIMEOUT_MS, validate = null }) {
+   requireBinding(env, "OMNIAI_API_KEY"); const deadline = nowMs() + clampInt(totalBudgetMs, 1000, 20000, AI_TOTAL_BUDGET_MS); const failures = [];
+   for (const model of AI_MODELS) {
+     const remaining = deadline - nowMs(); if (remaining < 500) break; const timeoutMs = Math.min(clampInt(modelTimeoutMs, 800, 10000, AI_MODEL_TIMEOUT_MS), remaining), started = nowMs();
+-    try { const result = await callOneAiModel(env, model, messages, timeoutMs, { temperature, maxTokens }); await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null }); return { text: result.text, modelId: model.id }; }
++    try {
++      const result = await callOneAiModel(env, model, messages, timeoutMs, { temperature, maxTokens });
++      let parsed = null;
++      if (typeof validate === "function") {
++        try { parsed = validate(result.text); }
++        catch (error) { const code = cleanText(error?.code, 80) || "AI_BAD_OUTPUT"; await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: false, httpStatus: result.httpStatus, errorCode: code }); failures.push(`${model.id}:${code}`); logError("ai_model_output_rejected", error, { model: model.id, role: model.role, code }); continue; }
++      }
++      await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null }); return { text: result.text, modelId: model.id, parsed };
++    }
+     catch (error) { const httpStatus = error instanceof SandHttpError ? error.httpStatus : null; const code = httpStatus ? `http_${httpStatus}` : aiErrorCode(error); await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: nowMs() - started, ok: false, httpStatus, errorCode: code }); failures.push(`${model.id}:${code}`); logError("ai_model_failed", error, { model: model.id, role: model.role, code }); if (httpStatus === 401 || httpStatus === 403) break; }
+   }
+-  const joined = failures.join(" | "); let code = "AI_UNAVAILABLE"; if (/http_401|http_403/.test(joined)) code = "AI_AUTH"; else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL"; else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT"; else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM"; else if (/timeout/.test(joined)) code = "AI_TIMEOUT"; throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
++  const joined = failures.join(" | "); let code = "AI_UNAVAILABLE"; if (/http_401|http_403/.test(joined)) code = "AI_AUTH"; else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL"; else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT"; else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM"; else if (/timeout/.test(joined)) code = "AI_TIMEOUT"; else if (/AI_BAD_|BAD_PLAN|BAD_RECIPE/.test(joined)) code = "AI_BAD_OUTPUT"; throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
+ }
+ function extractJsonObject(raw) {
+-  const s = String(raw ?? "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""), direct = parseJsonSafe(s, undefined); if (direct !== undefined) return direct;
++  const s = String(raw ?? "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""), miss = Symbol("json_parse_miss"), direct = parseJsonSafe(s, miss);
++  if (direct !== miss) return direct;
+   const start = s.indexOf("{"); if (start < 0) throw new SandValidationError("AI did not return JSON", "AI_BAD_JSON"); let depth = 0, inString = false, escaped = false;
+   for (let i = start; i < s.length; i += 1) { const ch = s[i]; if (inString) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') inString = false; continue; } if (ch === '"') { inString = true; continue; } if (ch === "{") depth += 1; if (ch === "}") { depth -= 1; if (depth === 0) { try { return JSON.parse(s.slice(start, i + 1)); } catch { throw new SandValidationError("AI returned malformed JSON", "AI_BAD_JSON"); } } } }
+   throw new SandValidationError("AI returned incomplete JSON", "AI_BAD_JSON");
+@@ -490,8 +499,8 @@
+     "الأدوات المتاحة الآن:", capabilityPromptList(capabilities), "سياق الذاكرة:", JSON.stringify(memory),
+   ].join("\n");
+   const messages = [{ role: "system", content: system }, ...history.map((r) => ({ role: String(r.role), content: String(r.content) }))];
+-  const result = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages, temperature: 0.15, maxTokens: 1800 });
+-  return { plan: validatePlannerDecision(extractJsonObject(result.text), capabilities, Boolean(pending)), modelId: result.modelId, pending };
++  const result = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages, temperature: 0.15, maxTokens: 1800, validate: (text) => validatePlannerDecision(extractJsonObject(text), capabilities, Boolean(pending)) });
++  return { plan: result.parsed, modelId: result.modelId, pending };
+ }
+ function validatePlannerDecision(raw, capabilities, hasPendingConfirmation) {
+   if (!raw || typeof raw !== "object") throw new SandValidationError("Planner output must be object", "AI_BAD_PLAN");
+@@ -572,8 +581,8 @@
+     "الذاكرة:", JSON.stringify(memory),
+   ].filter(Boolean).join("\n");
+   const user = JSON.stringify({ goal, verified_observations: observations.map((o) => ({ step: o.step_index, tool: o.tool, args: o.args, result: truncateObject(o.result) })) });
+-  const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.12, maxTokens: 1200, totalBudgetMs: 7000, modelTimeoutMs: 2500 });
+-  return { plan: validatePlannerDecision(extractJsonObject(r.text), capabilities, false), modelId: r.modelId };
++  const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.12, maxTokens: 1200, totalBudgetMs: 7000, modelTimeoutMs: 2500, validate: (text) => validatePlannerDecision(extractJsonObject(text), capabilities, false) });
++  return { plan: r.parsed, modelId: r.modelId };
+ }
+ async function saveOperationRuntimeState(env, opId, goal, currentPlan, observations) {
+   await env.DB.prepare(`UPDATE ${TABLES.operations} SET plan_json=?,updated_at=? WHERE id=?`).bind(JSON.stringify({ goal, current_plan: currentPlan, observations: observations.map((o) => ({ step_index: o.step_index, tool: o.tool })) }), nowIso(), opId).run();
+@@ -995,7 +1004,7 @@
+ }
+ async function forgeCapabilityProposal(env, ctx, missing) {
+   const system = `أنت Toolsmith داخل SAND PRIME. صمم فقط أداة HTTP declarative آمنة إذا كان الهدف يمكن تنفيذه عبر API HTTPS عام معروف. لا تكتب JavaScript. لا تخمن API keys.\nأرجع JSON فقط: {"status":"http_recipe|needs_input|needs_review","message":"...","recipe":{"name":"ext.x","description":"...","method":"GET|POST","url_template":"https://fixed-host/path?x={arg}","input_schema":{},"headers":{},"body_template":null,"extract_path":null,"test_args":{}}}.\nلو تحتاج OAuth أو endpoint غير معروف أو scraping/browser أو تنفيذ كود، استخدم needs_review/needs_input. ممنوع localhost/private IPs وممنوع secrets حرفية.`;
+-  const user = JSON.stringify({ requested_capability: missing?.name ?? "unknown", goal: missing?.description ?? "", current_time: cairoNow() }); const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.1, maxTokens: 1000 }); return { proposal: extractJsonObject(r.text), modelId: r.modelId };
++  const user = JSON.stringify({ requested_capability: missing?.name ?? "unknown", goal: missing?.description ?? "", current_time: cairoNow() }); const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.1, maxTokens: 1000, validate: (text) => { const proposal = extractJsonObject(text), status = cleanText(proposal?.status, 30); if (!new Set(["http_recipe", "needs_input", "needs_review"]).has(status)) throw new SandValidationError("Invalid Toolsmith status", "AI_BAD_RECIPE"); if (status === "http_recipe") validateRecipeProposal(env, proposal?.recipe); return proposal; } }); return { proposal: r.parsed, modelId: r.modelId };
+ }
+ async function handleMissingCapability(env, ctx, missing, plannerModelId) {
+   const capability = cleanText(missing?.name, 120) || "unknown", goal = cleanText(missing?.description, 1000) || "قدرة غير موجودة", requestId = uuid(), at = nowIso();
