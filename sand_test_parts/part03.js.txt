@@ -1,0 +1,157 @@
+    if (response.status !== 202) throw new Error(`Continuation failed (${response.status})`);
+    return true;
+  } catch (error) {
+    logError("drain_continuation", error, { chatId });
+    return false;
+  }
+}
+
+async function acquireChatLeaseWithWait(env, chatId, owner) {
+  const deadline = nowMs() + CHAT_ACQUIRE_WAIT_MS;
+  do {
+    if (await acquireChatLease(env, chatId, owner)) return true;
+    await sleep(300);
+  } while (nowMs() < deadline);
+  return false;
+}
+
+function aiFailurePublicCode(error) {
+  if (!(error instanceof SandAiChainError)) return "RUNTIME";
+  return String(error.code || "AI_UNAVAILABLE").slice(0, 40);
+}
+
+async function markUpdateFailed(env, updateId, error) {
+  const at = nowIso();
+  await env.DB.prepare(`UPDATE ${TABLES.inbox}
+    SET status='failed', process_lease_until=NULL, last_error=?, updated_at=?, finished_at=?
+    WHERE update_id=?`)
+    .bind(safeError(error), at, at, updateId)
+    .run();
+}
+
+async function drainChat(env, chatId, origin = "") {
+  await ensureSchema(env);
+
+  const owner = crypto.randomUUID();
+  const acquired = await acquireChatLeaseWithWait(env, chatId, owner);
+  if (!acquired) {
+    if (origin) await triggerDrainContinuation(env, chatId, origin);
+    return;
+  }
+
+  const deadline = nowMs() + DRAIN_BUDGET_MS;
+  let processed = 0;
+
+  try {
+    while (processed < MAX_DRAIN_BATCH && nowMs() < deadline - 1200) {
+      const row = await nextRecoverableUpdate(env, chatId);
+      if (!row) break;
+
+      const claim = await claimUpdate(env, Number(row.update_id));
+      if (!claim) continue;
+
+      try {
+        const update = JSON.parse(String(row.payload_json));
+        await processAiChatUpdate(env, update);
+        await markUpdateDone(env, Number(row.update_id));
+      } catch (error) {
+        await markUpdateFailed(env, Number(row.update_id), error);
+        logError("ai_chat_update", error, {
+          updateId: Number(row.update_id),
+          chatId,
+          attempts: Number(claim.attempts ?? 1),
+          terminal: true,
+        });
+
+        try {
+          await sendTelegramText(
+            env,
+            chatId,
+            `⚠️ حصلت مشكلة في محرك الذكاء ومش هسيب رسالتك معلقة. كود: ${aiFailurePublicCode(error)}`,
+          );
+        } catch (notifyError) {
+          logError("ai_failure_notice", notifyError, { chatId, updateId: Number(row.update_id) });
+        }
+      }
+
+      processed += 1;
+    }
+  } finally {
+    await releaseChatLease(env, chatId, owner).catch((error) => {
+      logError("release_chat_lease", error, { chatId });
+    });
+  }
+
+  if (origin && (processed >= MAX_DRAIN_BATCH || (await hasRecoverableUpdate(env, chatId)))) {
+    await triggerDrainContinuation(env, chatId, origin);
+  }
+}
+
+async function processAiChatUpdate(env, update) {
+  const message = update?.message;
+  if (!message) return;
+
+  const updateId = Number(update?.update_id);
+  const chatId = String(message.chat?.id ?? "");
+  if (!Number.isSafeInteger(updateId) || !chatId) return;
+
+  const text = String(message.text ?? "").trim();
+  if (!text) {
+    await sendTelegramText(env, chatId, "ابعتلي رسالة نصية وأنا معاك.");
+    return;
+  }
+
+  if (text === "/start") {
+    await sendTelegramText(
+      env,
+      chatId,
+      "أنا سند 🤝\nالمحادثة الذكية شغالة دلوقتي. اتكلم معايا بطبيعتك.",
+    );
+    return;
+  }
+
+  await saveUserMessage(env, chatId, updateId, text);
+
+  const savedAssistant = await savedAssistantForUpdate(env, chatId, updateId);
+  if (savedAssistant?.content) {
+    await sendTelegramText(env, chatId, String(savedAssistant.content));
+    return;
+  }
+
+  try {
+    await telegramApi(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch (error) {
+    logError("telegram_typing_noncritical", error, { chatId, updateId });
+  }
+
+  const history = await recentAiHistory(env, chatId, AI_HISTORY_MESSAGES);
+  const local = cairoNow();
+  const systemPrompt = [
+    "أنت سند، مساعد شخصي مصري ذكي.",
+    "اتكلم بالمصري الطبيعي جدًا من غير تصنع ولا فصحى زيادة.",
+    "خليك مختصر ومفيد ودقيق.",
+    "لو المستخدم بيتكلم عادي رد عادي، وما تحولش كل كلامه لمهام.",
+    "ما تدعيش إنك نفذت تذكير أو موعد أو أي إجراء؛ المرحلة الحالية محادثة فقط.",
+    `الوقت الحالي في القاهرة: ${local.date} ${local.time} (${local.weekday}).`,
+  ].join("\n");
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map((row) => ({ role: String(row.role), content: String(row.content) })),
+  ];
+
+  const result = await callAiChain(env, { chatId, updateId, messages });
+  const reply = normalizeAiReply(result.text);
+
+  await saveAssistantMessage(env, chatId, updateId, reply, result.modelId);
+  await sendTelegramText(env, chatId, reply);
+}
+
+async function saveUserMessage(env, chatId, updateId, content) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, 'user', ?, NULL, ?)`)
+    .bind(chatId, updateId, String(content).slice(0, 8000), nowIso())
+    .run();
+}
+
