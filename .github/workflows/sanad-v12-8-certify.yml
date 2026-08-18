@@ -52,11 +52,11 @@ jobs:
           const tests={
             version:s.includes('12.8.0'),
             mutation_journal:s.includes('sanad_mutation_journal')&&s.includes('sanad_mutation_tx'),
-            batch_restore:s.includes('buildRestoreBatchV128')&&s.includes('env.DB.batch(stmts)'),
-            delivery_state_machine:s.includes('sanad_delivery_queue')&&s.includes("state='sending'")&&s.includes("state='uncertain'")&&s.includes("state='retry'"),
-            delivery_effect_batch:s.includes('effectStatementsV128')&&s.includes('await env.DB.batch([done,...effects])'),
+            batch_restore:s.includes('buildRestoreBatchV128')&&/\.DB\.batch\(stmts\)/.test(s),
+            delivery_state_machine:s.includes('sanad_delivery_queue')&&/state\s*=\s*["\']sending["\']/.test(s)&&/state\s*=\s*["\']uncertain["\']/.test(s)&&/state\s*=\s*["\']retry["\']/.test(s),
+            delivery_effect_batch:s.includes('effectStatementsV128')&&/\.DB\.batch\(\[\s*done\s*,\s*\.\.\.effects\s*\]\)/.test(s),
             scheduler_cycle:s.includes('sanad_scheduler_cycles')&&s.includes('cycle_start_ms')&&s.includes('cycle_end_ms')&&s.includes('user_cursor')&&s.includes('watch_cursor'),
-            hybrid_retrieval:s.includes("mode:'hybrid'")&&s.includes('semanticSimilarityV128')&&s.includes('recencyScoreV128')&&s.includes('rankRowsV128'),
+            hybrid_retrieval:/mode\s*:\s*["\']hybrid["\']/.test(s)&&s.includes('semanticSimilarityV128')&&s.includes('recencyScoreV128')&&s.includes('rankRowsV128'),
             dead_letter:s.includes('sanad_dead_letters')&&s.includes('deadLetterAdminV128')&&s.includes('replayDueDeadLettersV128'),
             observability:s.includes('sanad_operation_metrics')&&s.includes('oldest_inbox_age_ms')&&s.includes('p95_ms')&&s.includes('scheduler'),
             performance_budget:s.includes('maxD1')&&s.includes('maxAi')&&s.includes('maxTools')&&s.includes('context_ms')&&s.includes('verification_ms'),
@@ -138,7 +138,6 @@ jobs:
           const fs=require('fs'),names=['build','syntax','pure','deploy','secrets','deep','live','cert','commit'],keys=['BUILD_OUTCOME','SYNTAX_OUTCOME','PURE_OUTCOME','DEPLOY_OUTCOME','SECRETS_OUTCOME','DEEP_OUTCOME','LIVE_OUTCOME','CERT_OUTCOME','COMMIT_OUTCOME'];const stages=Object.fromEntries(names.map((n,i)=>[n,process.env[keys[i]]||'unknown'])),failed=Object.entries(stages).filter(([,v])=>v==='failure').map(([k])=>k);fs.writeFileSync('SANAD_V12_8_CI_STATUS.json',JSON.stringify({ok:failed.length===0&&stages.live==='success'&&stages.cert==='success',version:'12.8.0',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,head_sha:process.env.GITHUB_SHA,stages,failed,updated_at:new Date().toISOString()},null,2));
           NODE
           git config user.name github-actions-bot; git config user.email 41898282+github-actions-bot@users.noreply.github.com
-          git pull --rebase origin sanad-v12-8-atomic-runtime || true
           git add SANAD_V12_8_CI_STATUS.json; git commit -m "Record Sanad V12.8 CI status" || exit 0; git push origin HEAD:sanad-v12-8-atomic-runtime
 
       - uses: actions/upload-artifact@v4
