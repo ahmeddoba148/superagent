@@ -1,0 +1,62 @@
+/* ================= SANAD V12.8 SPLIT STRESS TESTS ================= */
+
+async function deepSelftestV128Crash(env){
+  const chat='__sanad_v128_crash__',tests=[];
+  const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  try{
+    await ensureSchema(env);
+    await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();
+    await enqueueDeliveryV128(env,{key:'v128-crash-claim',chatId:chat,kind:'reminder',text:'crash'});
+    await env.DB.prepare(`UPDATE sanad_delivery_queue SET state='sending',attempts=1,lease_until=?,updated_at=? WHERE delivery_key='v128-crash-claim'`).bind(new Date(Date.now()-1000).toISOString(),nowIso()).run();
+    let transportCalls=0;
+    const crashEnv={...env,__v128DeliveryTransport:async()=>{transportCalls++;return{ok:true,message_id:1}}};
+    await processDeliveryQueueV128(crashEnv,10);
+    const crashed=await env.DB.prepare(`SELECT state,attempts,duplicate_risk FROM sanad_delivery_queue WHERE delivery_key='v128-crash-claim'`).first();
+    add('crash after delivery claim becomes uncertain without resend',crashed?.state==='uncertain'&&Number(crashed?.duplicate_risk)===1&&transportCalls===0,JSON.stringify({crashed,transportCalls}));
+
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sanad_v128_rollback_probe(id INTEGER PRIMARY KEY,v TEXT)`).run();
+    await env.DB.prepare(`DELETE FROM sanad_v128_rollback_probe`).run();
+    await env.DB.prepare(`INSERT INTO sanad_v128_rollback_probe(id,v) VALUES(1,'original')`).run();
+    let rollbackFailed=false;
+    try{
+      await env.DB.batch([
+        env.DB.prepare(`DELETE FROM sanad_v128_rollback_probe WHERE id=1`),
+        env.DB.prepare(`INSERT INTO sanad_v128_missing_rollback_table(id) VALUES(1)`)
+      ]);
+    }catch{rollbackFailed=true}
+    const probe=await env.DB.prepare(`SELECT v FROM sanad_v128_rollback_probe WHERE id=1`).first();
+    add('crash/error during rollback batch preserves pre-rollback live state',rollbackFailed&&probe?.v==='original',JSON.stringify({rollbackFailed,probe}));
+  }catch(e){add('crash split selftest exception',false,safeError(e));}
+  try{
+    await env.DB.prepare(`DELETE FROM sanad_delivery_queue WHERE chat_id=?`).bind(chat).run();
+    await env.DB.prepare(`DROP TABLE IF EXISTS sanad_v128_rollback_probe`).run();
+  }catch(e){add('crash split cleanup',false,safeError(e));}
+  return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
+}
+
+async function deepSelftestV128Scale(env){
+  const prefix='__v128scale__',tests=[];
+  const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  try{
+    await ensureSchema(env);
+    await env.DB.prepare(`DELETE FROM sanad_users WHERE chat_id LIKE ?`).bind(prefix+'%').run();
+    const now=nowIso();
+    await env.DB.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<5000) INSERT INTO sanad_users(chat_id,timezone,city,country,locale,autonomy_mode,created_at,updated_at) SELECT printf('__v128scale__%05d',x),'Africa/Cairo','Cairo','Egypt','ar-EG','full_safe',?,? FROM n`).bind(now,now).run();
+    let cursor='',count=0,pages=0;
+    while(true){
+      const rows=await schedulerUserPageV128(env,cursor,250,prefix);
+      if(!rows.length)break;
+      count+=rows.length;pages++;cursor=String(rows.at(-1)?.chat_id||cursor);
+      if(pages>25)break;
+    }
+    add('5000 actual scheduler users covered by stable cursor pages',count===5000&&pages===20,JSON.stringify({count,pages,cursor}));
+
+    const blocker=`${prefix}00001`,op='v128-scale-active-tx';
+    await env.DB.prepare(`INSERT OR REPLACE INTO sanad_mutation_tx(operation_id,chat_id,state,started_at) VALUES(?,?, 'applying',?)`).bind(op,blocker,nowIso()).run();
+    const first=(await schedulerUserPageV128(env,'',1,prefix))[0];
+    add('scheduler page marks active mutation transaction',first?.chat_id===blocker&&Number(first?.__tx_active||0)===1,JSON.stringify(first));
+    await env.DB.prepare(`DELETE FROM sanad_mutation_tx WHERE operation_id=?`).bind(op).run();
+  }catch(e){add('scale split selftest exception',false,safeError(e));}
+  try{await env.DB.prepare(`DELETE FROM sanad_users WHERE chat_id LIKE ?`).bind(prefix+'%').run();}catch(e){add('scale split cleanup',false,safeError(e));}
+  return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
+}
