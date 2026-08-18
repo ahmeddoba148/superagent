@@ -1,0 +1,67 @@
+Object.assign(TOOL_SPECS, {
+  'dependency.link_by_title':{mutation:true,args:{source_query:'string',target_query:'string',relation:'after_start|after_end|before_start',offset_minutes:'number?',realign:'boolean?'}}
+});
+
+function arabicOffsetMinutesV126(value){
+  const s=digitsAsciiV125(normalizeText(value||'')).toLowerCase();
+  if(!s)return 0;
+  if(/نص\s*(?:ساعة|ساعه)/u.test(s))return 30;
+  if(/ربع\s*(?:ساعة|ساعه)/u.test(s))return 15;
+  if(/(?:تلت|ثلث)\s*(?:ساعة|ساعه)/u.test(s))return 20;
+  if(/(?:ساعتين|ساعتان)/u.test(s))return 120;
+  let m=s.match(/(\d+)\s*(?:دقيقة|دقيقه|دقايق|دقائق)/u);if(m)return Math.max(0,Math.min(10080,Number(m[1])));
+  m=s.match(/(\d+)\s*(?:ساعة|ساعه|ساعات)/u);if(m)return Math.max(0,Math.min(168,Number(m[1])))*60;
+  return 0;
+}
+function splitDependencySourceOffsetV126(value){
+  const s=normalizeText(value||'').trim();
+  const m=s.match(/^(.*?)(?:\s+ب(?:ـ)?\s*(نص\s*(?:ساعة|ساعه)|ربع\s*(?:ساعة|ساعه)|(?:تلت|ثلث)\s*(?:ساعة|ساعه)|ساعتين|ساعتان|\d+\s*(?:دقيقة|دقيقه|دقايق|دقائق|ساعة|ساعه|ساعات)))\s*$/u);
+  if(!m)return{source:s,offset_minutes:0};
+  return{source:normalizeText(m[1]),offset_minutes:arabicOffsetMinutesV126(m[2])};
+}
+function explicitDependencyByTitleV126(text){
+  const t=normalizeText(text||'').replace(/^\s+|\s+$/g,'');
+  const defs=[
+    {relation:'after_end',re:/^(?:خلي|خلّي)\s+(.+?)\s+بعد\s+(?:نهاية|نهايه)\s+(.+)$/u},
+    {relation:'after_start',re:/^(?:خلي|خلّي)\s+(.+?)\s+بعد\s+(?:بداية|بدايه)\s+(.+)$/u},
+    {relation:'before_start',re:/^(?:خلي|خلّي)\s+(.+?)\s+قبل\s+(?:بداية|بدايه)\s+(.+)$/u}
+  ];
+  for(const d of defs){
+    const m=t.match(d.re);if(!m)continue;
+    const target=normalizeText(m[1]),tail=splitDependencySourceOffsetV126(m[2]);
+    if(target&&tail.source)return{source_query:tail.source,target_query:target,relation:d.relation,offset_minutes:tail.offset_minutes,realign:true};
+  }
+  return null;
+}
+function augmentExplicitLifeStepsV125(text,steps){
+  let out=augmentExplicitLifeStepsV126BeforeDeps(text,steps);
+  const d=explicitDependencyByTitleV126(text);
+  if(d&&!out.some(x=>x?.tool==='dependency.create'||x?.tool==='dependency.link_by_title')){
+    const step={tool:'dependency.link_by_title',args:d,why:'explicit schedule dependency'};
+    if(out.length<MAX_AGENT_STEPS)out.push(step);
+    else {const i=out.findIndex(x=>!TOOL_SPECS[String(x?.tool||'')]?.mutation);if(i>=0)out[i]=step;else out[out.length-1]=step;}
+  }
+  return out.slice(0,MAX_AGENT_STEPS);
+}
+function dependencyTitleScoreV126(title,query){
+  const a=normItem(title),b=normItem(query);if(!a||!b)return 0;if(a===b)return 1000;if(a.includes(b)||b.includes(a))return 700+Math.min(a.length,b.length);
+  const bt=b.split(/\s+/).filter(Boolean),at=new Set(a.split(/\s+/).filter(Boolean)),hits=bt.filter(x=>at.has(x)).length;return hits?Math.round(500*hits/Math.max(1,bt.length)):0;
+}
+async function resolveDependencyReminderByTitleV126(env,chatId,query){
+  const rows=(await env.DB.prepare(`SELECT id,title,local_date,local_time,duration_minutes,timezone FROM sanad_reminders WHERE chat_id=? AND status='active' ORDER BY local_date DESC,local_time DESC,id DESC LIMIT 150`).bind(chatId).all())?.results||[];
+  const ranked=rows.map(r=>({r,score:dependencyTitleScoreV126(r.title,query)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score||Number(b.r.id)-Number(a.r.id));
+  if(!ranked.length)return{ok:false,error:'dependency_node_not_found',query};
+  if(ranked.length>1&&ranked[0].score===ranked[1].score&&normItem(ranked[0].r.title)!==normItem(ranked[1].r.title))return{ok:false,error:'dependency_node_ambiguous',query,candidates:ranked.slice(0,5).map(x=>({id:x.r.id,title:x.r.title,score:x.score}))};
+  return{ok:true,row:ranked[0].r};
+}
+async function toolDependencyLinkByTitleV126(env,chatId,args){
+  const source=await resolveDependencyReminderByTitleV126(env,chatId,args?.source_query),target=await resolveDependencyReminderByTitleV126(env,chatId,args?.target_query);
+  if(!source.ok)return{ok:false,changed:0,verified:false,error:source.error,source};
+  if(!target.ok)return{ok:false,changed:0,verified:false,error:target.error,target};
+  const result=await toolDependencyCreateV125(env,chatId,{source_type:'reminder',source_id:Number(source.row.id),target_type:'reminder',target_id:Number(target.row.id),relation:String(args?.relation||'after_start'),offset_minutes:Number(args?.offset_minutes||0),realign:args?.realign!==false});
+  return{...result,source:{id:source.row.id,title:source.row.title},target:{id:target.row.id,title:target.row.title}};
+}
+async function dispatchTool(env,chatId,tool,args,user){
+  if(tool==='dependency.link_by_title')return toolDependencyLinkByTitleV126(env,chatId,args);
+  return dispatchToolV126BeforeDeps(env,chatId,tool,args,user);
+}
