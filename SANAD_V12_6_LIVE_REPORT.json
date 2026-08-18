@@ -1,0 +1,95 @@
+{
+  "ok": true,
+  "version": "12.6.0",
+  "scenario_count": 22,
+  "passes": [
+    {
+      "name": "natural shopping persisted",
+      "detail": "[{\"id\":134,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":135,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":136,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":137,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":138,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+    },
+    {
+      "name": "shopping target exists",
+      "detail": "{\"id\":134,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+    },
+    {
+      "name": "shopping unavailable state",
+      "detail": "{\"status\":\"unavailable\"}"
+    },
+    {
+      "name": "shopping skipped state",
+      "detail": "{\"status\":\"skipped\"}"
+    },
+    {
+      "name": "life inbox natural capture",
+      "detail": "{\"id\":6,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+    },
+    {
+      "name": "source appointment created",
+      "detail": "{\"id\":82,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T01:28:08.609Z\",\"updated_at\":\"2026-08-18T01:28:08.609Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+    },
+    {
+      "name": "target reminder created",
+      "detail": "{\"id\":83,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T01:28:22.754Z\",\"updated_at\":\"2026-08-18T01:28:22.754Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+    },
+    {
+      "name": "after-end dependency stored",
+      "detail": "{\"dep\":{\"id\":18,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":82,\"target_type\":\"reminder\",\"target_id\":83,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T01:28:38.250Z\",\"updated_at\":\"2026-08-18T01:28:38.250Z\"},\"expected_source\":82,\"expected_target\":83}"
+    },
+    {
+      "name": "after-end dependency propagation",
+      "detail": "{\"local_time\":\"21:00\"}"
+    },
+    {
+      "name": "recurrence exists",
+      "detail": "{\"id\":25,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+    },
+    {
+      "name": "recurrence id retained",
+      "detail": "25"
+    },
+    {
+      "name": "temporary pause until",
+      "detail": "{\"id\":25,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+    },
+    {
+      "name": "recurrence resume clears pause",
+      "detail": "{\"id\":25,\"active\":1,\"paused_until\":null}"
+    },
+    {
+      "name": "callback reminder exists",
+      "detail": "{\"id\":84}"
+    },
+    {
+      "name": "reminder callback snooze",
+      "detail": "{\"local_time\":\"21:10\"}"
+    },
+    {
+      "name": "reminder callback done",
+      "detail": "{\"status\":\"done\"}"
+    },
+    {
+      "name": "/tomorrow alias",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "/list alias",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "/live composite reality",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "protected diagnostics",
+      "detail": "{\"status\":200,\"version\":\"12.6.0\",\"tools\":75,\"snapshot_tables\":22}"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    },
+    {
+      "name": "no changed mutation left unverified",
+      "detail": "[]"
+    }
+  ]
+}

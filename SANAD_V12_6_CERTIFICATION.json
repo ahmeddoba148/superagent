@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "version": "12.6.0",
+  "name": "Sanad — سند V12.6 Ultimate Parity",
+  "sha256": "c77ead6e701ce4c3d7a0b73d53522e28f4bd81b36506193864cf55d748049cf7",
+  "bytes": 243177,
+  "lines": 1865,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "architecture": "single-brain-ultimate-parity-agent",
+  "tools": 75,
+  "snapshot_tables": 22,
+  "models": 3,
+  "live_ok": true,
+  "live_scenarios": 22,
+  "parity_closures": [
+    "full atomic user-state snapshot",
+    "shopping four states",
+    "life inbox",
+    "recurrence pause-until and shift",
+    "dependency after_start/after_end/before_start and cycle guard",
+    "lossless legacy id mapping",
+    "Hijri and Islamic occasions",
+    "Arabic holiday labels",
+    "Telegram callback parity",
+    "diagnostics/model telemetry",
+    "voice budgets",
+    "external API timeouts/stale fallback",
+    "tomorrow/list aliases",
+    "fast casual fallback"
+  ],
+  "known_parity_gaps": [],
+  "known_critical_code_failures": [],
+  "limitations": [
+    "External model, Telegram and public API availability/quota remain dependencies; passing certification proves the tested matrix, not every possible future input."
+  ]
+}
