@@ -1,0 +1,64 @@
+name: SAND PRIME Semantic Live Gate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sand_prime/**'
+      - '.github/workflows/sand-prime-semantic-live.yml'
+permissions:
+  contents: read
+concurrency:
+  group: sand-prime-semantic-live
+  cancel-in-progress: true
+jobs:
+  semantic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sand-prime-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-prime-semantic.jsonc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Reconstruct exact normalized PRIME
+        run: |
+          set -euo pipefail
+          cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "6d3df0dcc5880f0620f440effd1afc5d140d72bebd878cb1a0cb571eb0f04c45"
+          patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
+          patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
+          node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
+          node --check SAND.js
+      - name: Deploy same source to isolated staging
+        run: |
+          set -euo pipefail
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$CFG" <<'EOF'
+          {"name":"sand-prime-staging","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config "$CFG" >/dev/null
+          W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
+          echo "::add-mask::$W"; echo "::add-mask::$K"
+          echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
+          for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
+      - name: Wait for exact staging health
+        run: |
+          set -euo pipefail
+          for i in {1..25}; do
+            code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
+            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0"&&x.schema_version==="5"&&x.capabilities===40?0:1)'; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/h >&2; exit 1
+      - name: Semantic secretary torture gate
+        run: bash sand_prime/agent_live_gate.sh
