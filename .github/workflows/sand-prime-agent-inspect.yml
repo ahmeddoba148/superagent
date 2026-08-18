@@ -1,0 +1,30 @@
+name: SAND PRIME Agent Inspect
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sand-prime-agent-inspect.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Reconstruct PRIME and print agent contract
+        run: |
+          set -euo pipefail
+          cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
+          patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
+          patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
+          node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
+          echo '===== CAPABILITY DEFINITIONS ====='
+          grep -n -A 180 -B 10 -E 'BUILTIN_CAPABILITIES|CAPABILITIES|seedCapabilities' SAND.js | sed -n '1,260p'
+          echo '===== TOOL EXECUTION ====='
+          grep -n -A 220 -B 15 -E 'executeTool|runTool|toolHandlers|TOOL_HANDLERS|executeCapability' SAND.js | sed -n '1,320p'
+          echo '===== PLANNER / AGENT LOOP ====='
+          grep -n -A 260 -B 20 -E 'runAgent|executePlan|replan|plannerDecision|planUserRequest' SAND.js | sed -n '1,420p'
