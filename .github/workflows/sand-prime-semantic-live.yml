@@ -58,7 +58,7 @@ jobs:
           echo "::add-mask::$W"; echo "::add-mask::$K"
           echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
           for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
-      - name: Wait for exact staging and secret propagation
+      - name: Wait for exact staging and stable secret propagation
         run: |
           set -euo pipefail
           healthy=0
@@ -68,13 +68,19 @@ jobs:
             sleep 2
           done
           [ "$healthy" = 1 ] || { cat /tmp/h >&2; exit 1; }
-          auth=0
-          for i in {1..30}; do
+          consecutive=0
+          for i in {1..45}; do
             code=$(curl -sS -o /tmp/auth -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
-            if [ "$code" = 200 ]; then auth=1; break; fi
+            if [ "$code" = 200 ]; then
+              consecutive=$((consecutive+1))
+              if [ "$consecutive" -ge 3 ]; then break; fi
+            else
+              consecutive=0
+            fi
             sleep 2
           done
-          [ "$auth" = 1 ] || { echo 'Telegram webhook secret did not propagate' >&2; cat /tmp/auth >&2 || true; exit 1; }
-          echo 'STAGING_AND_SECRET_PROPAGATION_OK'
+          [ "$consecutive" -ge 3 ] || { echo 'Telegram webhook secret did not stabilize' >&2; cat /tmp/auth >&2 || true; exit 1; }
+          sleep 3
+          echo 'STAGING_AND_STABLE_SECRET_PROPAGATION_OK'
       - name: Semantic secretary torture gate
         run: bash sand_prime/agent_live_gate.sh
