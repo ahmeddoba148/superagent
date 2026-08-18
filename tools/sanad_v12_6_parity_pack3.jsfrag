@@ -36,7 +36,10 @@ function explicitDependencyByTitleV126(text){
 function augmentExplicitLifeStepsV125(text,steps){
   let out=augmentExplicitLifeStepsV126BeforeDeps(text,steps);
   const d=explicitDependencyByTitleV126(text);
-  if(d&&!out.some(x=>x?.tool==='dependency.create'||x?.tool==='dependency.link_by_title')){
+  if(d){
+    // Explicit relationship wording is authoritative. Never keep a model-generated
+    // dependency.create/link_by_title that can silently reverse source and target.
+    out=out.filter(x=>x?.tool!=='dependency.create'&&x?.tool!=='dependency.link_by_title');
     const step={tool:'dependency.link_by_title',args:d,why:'explicit schedule dependency'};
     if(out.length<MAX_AGENT_STEPS)out.push(step);
     else {const i=out.findIndex(x=>!TOOL_SPECS[String(x?.tool||'')]?.mutation);if(i>=0)out[i]=step;else out[out.length-1]=step;}
