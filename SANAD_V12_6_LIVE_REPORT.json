@@ -1,15 +1,27 @@
 {
   "ok": true,
   "version": "12.6.0",
-  "scenario_count": 22,
+  "scenario_count": 39,
   "passes": [
     {
+      "name": "organized menu layer present",
+      "detail": ""
+    },
+    {
+      "name": "data clear controls present",
+      "detail": ""
+    },
+    {
+      "name": "direct clear command present",
+      "detail": ""
+    },
+    {
       "name": "natural shopping persisted",
-      "detail": "[{\"id\":134,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":135,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":136,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":137,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":138,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+      "detail": "[{\"id\":156,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":157,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":158,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":159,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":160,\"title\":\"شيدر\",\"status\":\"pending\"}]"
     },
     {
       "name": "shopping target exists",
-      "detail": "{\"id\":134,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+      "detail": "{\"id\":156,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
     },
     {
       "name": "shopping unavailable state",
@@ -21,19 +33,19 @@
     },
     {
       "name": "life inbox natural capture",
-      "detail": "{\"id\":6,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+      "detail": "{\"id\":8,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
     },
     {
       "name": "source appointment created",
-      "detail": "{\"id\":82,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T01:28:08.609Z\",\"updated_at\":\"2026-08-18T01:28:08.609Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+      "detail": "{\"id\":96,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:01:07.044Z\",\"updated_at\":\"2026-08-18T02:01:07.044Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
     },
     {
       "name": "target reminder created",
-      "detail": "{\"id\":83,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T01:28:22.754Z\",\"updated_at\":\"2026-08-18T01:28:22.754Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+      "detail": "{\"id\":97,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:01:17.373Z\",\"updated_at\":\"2026-08-18T02:01:17.373Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
     },
     {
       "name": "after-end dependency stored",
-      "detail": "{\"dep\":{\"id\":18,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":82,\"target_type\":\"reminder\",\"target_id\":83,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T01:28:38.250Z\",\"updated_at\":\"2026-08-18T01:28:38.250Z\"},\"expected_source\":82,\"expected_target\":83}"
+      "detail": "{\"dep\":{\"id\":24,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":96,\"target_type\":\"reminder\",\"target_id\":97,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T02:01:29.202Z\",\"updated_at\":\"2026-08-18T02:01:29.202Z\"},\"expected_source\":96,\"expected_target\":97}"
     },
     {
       "name": "after-end dependency propagation",
@@ -41,23 +53,23 @@
     },
     {
       "name": "recurrence exists",
-      "detail": "{\"id\":25,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+      "detail": "{\"id\":31,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
     },
     {
       "name": "recurrence id retained",
-      "detail": "25"
+      "detail": "31"
     },
     {
       "name": "temporary pause until",
-      "detail": "{\"id\":25,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+      "detail": "{\"id\":31,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
     },
     {
       "name": "recurrence resume clears pause",
-      "detail": "{\"id\":25,\"active\":1,\"paused_until\":null}"
+      "detail": "{\"id\":31,\"active\":1,\"paused_until\":null}"
     },
     {
       "name": "callback reminder exists",
-      "detail": "{\"id\":84}"
+      "detail": "{\"id\":99}"
     },
     {
       "name": "reminder callback snooze",
@@ -84,12 +96,68 @@
       "detail": "{\"status\":200,\"version\":\"12.6.0\",\"tools\":75,\"snapshot_tables\":22}"
     },
     {
+      "name": "organized /menu command",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "data management panel callback",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "shopping clear fixture exists",
+      "detail": "5"
+    },
+    {
+      "name": "shopping clear confirmation screen",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "verified shopping clear",
+      "detail": "0"
+    },
+    {
+      "name": "shopping clear undo restores data",
+      "detail": "5/5"
+    },
+    {
+      "name": "context/memory fixtures exist",
+      "detail": "1/229"
+    },
+    {
+      "name": "context clear does not erase long-term memory",
+      "detail": "0/1"
+    },
+    {
+      "name": "context clear undo restores conversation",
+      "detail": "229/229"
+    },
+    {
+      "name": "memory clear fixture exists",
+      "detail": "1"
+    },
+    {
+      "name": "verified long-term memory clear",
+      "detail": "0"
+    },
+    {
+      "name": "memory clear undo restores data",
+      "detail": "1/1"
+    },
+    {
       "name": "runtime failures zero",
       "detail": "[]"
     },
     {
       "name": "no changed mutation left unverified",
       "detail": "[]"
+    },
+    {
+      "name": "clear-all final confirmation screen",
+      "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+    },
+    {
+      "name": "verified clear all personal data",
+      "detail": "{\"sanad_users\":0,\"sanad_conversation\":0,\"sanad_shopping\":0,\"sanad_shopping_sessions\":0,\"sanad_reminders\":0,\"sanad_recurrences\":0,\"sanad_dependencies\":0,\"sanad_memories\":0,\"sanad_entities\":0,\"sanad_edges\":0,\"sanad_projects\":0,\"sanad_project_tasks\":0,\"sanad_waiting\":0,\"sanad_prayer_rules\":0,\"sanad_live_watches\":0,\"sanad_life_inbox\":0,\"sanad_pending_actions\":0,\"sanad_pending_conflicts\":0,\"sanad_operation_snapshots\":0,\"sanad_receipts\":0}"
     }
   ]
 }

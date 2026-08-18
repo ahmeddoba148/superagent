@@ -2,9 +2,9 @@
   "ok": true,
   "version": "12.6.0",
   "name": "Sanad — سند V12.6 Ultimate Parity",
-  "sha256": "c77ead6e701ce4c3d7a0b73d53522e28f4bd81b36506193864cf55d748049cf7",
-  "bytes": 243177,
-  "lines": 1865,
+  "sha256": "3f1c4f7dd2456e3e00af33d4f0049a787fd6de44484661da569efda583d4ef29",
+  "bytes": 260449,
+  "lines": 2065,
   "syntax_errors": 0,
   "typescript_errors": 0,
   "architecture": "single-brain-ultimate-parity-agent",
@@ -12,7 +12,7 @@
   "snapshot_tables": 22,
   "models": 3,
   "live_ok": true,
-  "live_scenarios": 22,
+  "live_scenarios": 39,
   "parity_closures": [
     "full atomic user-state snapshot",
     "shopping four states",
@@ -27,7 +27,10 @@
     "voice budgets",
     "external API timeouts/stale fallback",
     "tomorrow/list aliases",
-    "fast casual fallback"
+    "fast casual fallback",
+    "organized V11-style control panels",
+    "verified sectional data clearing with undo",
+    "final clear-all control"
   ],
   "known_parity_gaps": [],
   "known_critical_code_failures": [],
