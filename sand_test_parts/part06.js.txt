@@ -1,3 +1,70 @@
+text) {
+  return telegramApi(env, "sendMessage", {
+    chat_id: chatId,
+    text: String(text).slice(0, 3900),
+  });
+}
+
+async function setup(request, env) {
+  requireBinding(env, "DB");
+  requireBinding(env, "SETUP_KEY");
+  requireBinding(env, "TELEGRAM_BOT_TOKEN");
+  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
+
+  const presented = request.headers.get("X-Sand-Key") ?? "";
+  if (!(await secretEqual(presented, env.SETUP_KEY))) {
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
+
+  await ensureSchema(env);
+
+  const url = new URL(request.url);
+  const webhookUrl = `${url.origin}/telegram`;
+
+  await telegramApi(env, "setWebhook", {
+    url: webhookUrl,
+    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ["message"],
+    drop_pending_updates: false,
+  });
+
+  const info = await telegramApi(env, "getWebhookInfo", {});
+
+  await telegramApi(env, "setMyCommands", {
+    commands: [{ command: "start", description: "تشغيل سند" }],
+  });
+
+  return json({
+    ok: true,
+    version: APP_VERSION,
+    schema_version: SCHEMA_VERSION,
+    webhook: webhookUrl,
+    telegram: {
+      url: info?.result?.url ?? "",
+      pending_update_count: info?.result?.pending_update_count ?? null,
+      last_error_message: info?.result?.last_error_message ?? null,
+    },
+    next: "Send a normal message to test AI chat",
+  });
+}
+
+async function health(env) {
+  const bindings = {
+    DB: Boolean(env?.DB),
+    TELEGRAM_BOT_TOKEN: Boolean(env?.TELEGRAM_BOT_TOKEN),
+    TELEGRAM_WEBHOOK_SECRET: Boolean(env?.TELEGRAM_WEBHOOK_SECRET),
+    SETUP_KEY: Boolean(env?.SETUP_KEY),
+    OMNIAI_API_KEY: Boolean(env?.OMNIAI_API_KEY),
+    OMNIAI_BASE_URL: Boolean(env?.OMNIAI_BASE_URL),
+    OMNIAI_SERVICE: Boolean(env?.OMNIAI_SERVICE?.fetch),
+    ALLOWED_CHAT_ID: Boolean(env?.ALLOWED_CHAT_ID),
+    PUBLIC_BOT: env?.PUBLIC_BOT ?? null,
+  };
+
+  if (!bindings.DB) {
+    return json({ ok: false, version: APP_VERSION, bindings, error: "DB binding missing" }, 503);
+  }
+
   try {
     await ensureSchema(env);
     const schema = await env.DB.prepare(`SELECT value FROM ${TABLES.meta} WHERE key='schema_version' LIMIT 1`).first();
