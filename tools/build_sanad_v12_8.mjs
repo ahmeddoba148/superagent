@@ -6,6 +6,7 @@ execFileSync(process.execPath,['tools/build_sanad_v12_7.mjs'],{stdio:'inherit'})
 const input=new URL('../Sanad_V12_7_HARDENED.js',import.meta.url);
 const runtime=new URL('./sanad_v12_8_runtime.jsfrag',import.meta.url);
 const selftest=new URL('./sanad_v12_8_selftest.jsfrag',import.meta.url);
+const replacementsFile=new URL('./sanad_v12_8_replacements.jsfrag',import.meta.url);
 const pre=new URL('../Sanad_V12_8_PRE.js',import.meta.url);
 const output=new URL('../Sanad_V12_8_ATOMIC.js',import.meta.url);
 let src=fs.readFileSync(input,'utf8');
@@ -17,6 +18,13 @@ function renameFunction(name,renamed){
   throw new Error(`V12.8 rename marker missing: ${name}`);
 }
 function replaceRequired(label,needle,replacement){if(!src.includes(needle))throw new Error(`V12.8 marker missing: ${label}`);src=src.replace(needle,replacement);}
+function replaceTopLevelFunction(source,name,newDefinition){
+  const head=new RegExp(`(?:async\\s+)?function\\s+${name.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')}\\s*\\(`),m=head.exec(source);
+  if(!m)throw new Error(`V12.8 replacement function missing: ${name}`);
+  const start=m.index,next=/\n(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/g;next.lastIndex=start+m[0].length;
+  const n=next.exec(source),end=n?n.index:source.length;
+  return source.slice(0,start)+newDefinition.trim()+"\n"+source.slice(end+1);
+}
 
 src=src.replaceAll('12.7.0','12.8.0').replaceAll('V12.7','V12.8');
 src=src.replace('const NAME = "سند — Sanad V12.8 Correctness Hardened";','const NAME = "سند — Sanad V12.8 Atomic Runtime";');
@@ -47,11 +55,18 @@ for(const [name,renamed] of [
 
 replaceRequired('diagnostics route','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV126(request, env);','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV128(request, env);');
 const selftestNeedle='if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }';
-replaceRequired('v128 selftest route',selftestNeedle,'if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v128") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV128(env)); } if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }');
+replaceRequired('v128 selftest route',selftestNeedle,'if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v128") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV128Full(env)); } if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }');
 replaceRequired('not found route','    return new Response("Not found", { status: 404 });','    if (url.pathname === "/admin/dead-letter" && (request.method === "GET" || request.method === "POST")) return deadLetterAdminV128(request,env,ctx,url);\n    if (url.pathname === "/admin/delivery/replay" && request.method === "POST") return deliveryReplayAdminV128(request,env);\n    return new Response("Not found", { status: 404 });');
 
 let layer=fs.readFileSync(runtime,'utf8').trim().replaceAll('Buffer.byteLength(JSON.stringify(out))','new TextEncoder().encode(JSON.stringify(out)).length');
 src+='\n\n'+layer+'\n\n'+fs.readFileSync(selftest,'utf8').trim()+'\n';
+
+// Replace selected V12.8 functions in-place. This keeps one final definition for each critical path instead of stacking another wrapper.
+const patch=fs.readFileSync(replacementsFile,'utf8'),appendMarker='/* @append */',appendIndex=patch.indexOf(appendMarker),replacePart=appendIndex>=0?patch.slice(0,appendIndex):patch,appendPart=appendIndex>=0?patch.slice(appendIndex+appendMarker.length).trim():'';
+const re=/\/\* @replace ([A-Za-z_$][\w$]*) \*\/\n([\s\S]*?)\n\/\* @end \*\//g;let match,count=0;
+while((match=re.exec(replacePart))){src=replaceTopLevelFunction(src,match[1],match[2]);count++;}
+if(count<5)throw new Error(`V12.8 replacement set incomplete: ${count}`);
+if(appendPart)src+='\n\n'+appendPart+'\n';
 fs.writeFileSync(pre,src);
 
 execFileSync('npx',['--yes','esbuild@0.25.9',pre.pathname,'--bundle','--format=esm','--platform=browser','--target=es2022','--tree-shaking=true','--legal-comments=none',`--outfile=${output.pathname}`],{stdio:'inherit'});
@@ -67,6 +82,8 @@ final=final.replace('    let r = await toolReminderCancel(env, chat, { ids: [987
 const forbidden=['BeforeHardening','BeforeOperationDedupe','executeToolV127BeforeOperationDedupe','drainInboxV126BeforeHardening','fallbackComposeV126BeforeHardening'];
 const leftovers=forbidden.filter(x=>final.includes(x));if(leftovers.length)throw new Error(`V12.8 canonicalization failed: ${leftovers.join(',')}`);
 if(!final.includes('sanad_delivery_queue')||!final.includes('sanad_mutation_journal')||!final.includes('sanad_scheduler_cycles')||!final.includes('sanad_dead_letters')||!final.includes('sanad_operation_metrics'))throw new Error('V12.8 architecture tables missing');
+if(final.includes('m.tools_ms += Math.max'))throw new Error('V12.8 tools_ms double-count regression');
+if(!final.includes('state = "prepared"')&&!final.includes("'prepared'"))throw new Error('V12.8 write-ahead journal missing');
 fs.writeFileSync(output,final);
 const buf=Buffer.from(final,'utf8'),sha=crypto.createHash('sha256').update(buf).digest('hex');
-console.log(JSON.stringify({ok:true,version:'12.8.0',bytes:buf.length,lines:final.split('\n').length,sha256:sha,canonical_no_beforehardening:true}));
+console.log(JSON.stringify({ok:true,version:'12.8.0',bytes:buf.length,lines:final.split('\n').length,sha256:sha,canonical_no_beforehardening:true,replacements:count}));
