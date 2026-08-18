@@ -1,0 +1,210 @@
+name: SAND V1 AI Live Gate
+
+on:
+  push:
+    branches: [sand-v1-ai-live-test]
+    paths:
+      - 'sand_test_parts/**'
+      - '.github/workflows/sand-v1-ai-live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sand-v1-ai-live-test
+  cancel-in-progress: true
+
+jobs:
+  live-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sand-v1-ai-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      CONFIG: wrangler.sand-v1-ai.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Assemble exact SAND source and syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat sand_test_parts/part*.js.txt > SAND_AI_CHAT_GATE_RELIABLE.js
+          ACTUAL=$(sha256sum SAND_AI_CHAT_GATE_RELIABLE.js | awk '{print $1}')
+          EXPECTED='a8c9fa912784f5060507f0e81602e00d470bbb379592e201fa8c4d3e92002037'
+          echo "source_sha=$ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+          node --check SAND_AI_CHAT_GATE_RELIABLE.js
+
+      - name: Probe all three selected models directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');
+          const endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const key=process.env.STAGING_OMNIAI_API_KEY;
+          const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
+          if(!key) throw Error('STAGING_OMNIAI_API_KEY missing');
+          async function one(model){
+            const c=new AbortController(),tm=setTimeout(()=>c.abort(),9000),t=Date.now();
+            try{
+              const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد بكلمة OK فقط'}],max_tokens:24,stream:false}),signal:c.signal});
+              const raw=await r.text();
+              return {model,ok:r.ok&&raw.length>0,status:r.status,ms:Date.now()-t,body:raw.slice(0,240)};
+            }catch(e){return {model,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}
+          }
+          (async()=>{
+            const results=[];
+            for(const m of models) results.push(await one(m));
+            console.log(JSON.stringify(results,null,2));
+            fs.writeFileSync('/tmp/model-probes.json',JSON.stringify(results,null,2));
+            if(!results.every(x=>x.ok)) throw Error('one or more selected models failed live probe');
+          })();
+          NODE
+
+      - name: Deploy isolated SAND staging Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$CONFIG" <<'EOF'
+          {
+            "name": "sand-v1-ai-staging",
+            "main": "SAND_AI_CHAT_GATE_RELIABLE.js",
+            "compatibility_date": "2026-08-18",
+            "vars": {"PUBLIC_BOT":"false"},
+            "d1_databases": [{
+              "binding": "DB",
+              "database_name": "superagent-v106-staging",
+              "database_id": "65df37bc-973d-4bfe-a3f4-7c049e570697"
+            }],
+            "services": [{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]
+          }
+          EOF
+          npx wrangler deploy --config "$CONFIG" >/dev/null
+
+          WEBHOOK_SECRET=$(openssl rand -hex 32)
+          SETUP_KEY=$(openssl rand -hex 32)
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+          for pair in \
+            "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" \
+            "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" \
+            "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" \
+            "SETUP_KEY:$SETUP_KEY" \
+            "ALLOWED_CHAT_ID:$STAGING_ADMIN_CHAT_ID"; do
+            k=${pair%%:*}; v=${pair#*:}
+            test -n "$v"
+            printf '%s' "$v" | npx wrangler secret put "$k" --config "$CONFIG" >/dev/null
+          done
+
+      - name: Setup and health readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6 7 8; do
+            code=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$URL/health" || true)
+            echo "health attempt=$i http=$code"
+            if [ "$code" = 200 ]; then break; fi
+            sleep 2
+          done
+          cat /tmp/health.json
+          node -e 'const x=require("/tmp/health.json");if(!x.ok||x.schema_version!=="2"||!x.bindings?.OMNIAI_API_KEY||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
+
+          code=$(curl -sS -o /tmp/setup.json -w '%{http_code}' -X POST -H "X-Sand-Key: $SETUP_KEY" "$URL/setup")
+          cat /tmp/setup.json
+          test "$code" = 200
+          node -e 'const x=require("/tmp/setup.json");if(!x.ok||x.schema_version!=="2")throw Error(JSON.stringify(x))'
+
+      - name: Reset SAND staging rows for isolated test chat
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$STAGING_ADMIN_CHAT_ID"
+          test -n "$C"
+          SQL="DELETE FROM sand_core_chat_leases WHERE chat_id='$C'; DELETE FROM sand_core_inbox WHERE chat_id='$C'; DELETE FROM sand_ai_messages WHERE chat_id='$C'; DELETE FROM sand_ai_calls WHERE chat_id='$C';"
+          npx wrangler d1 execute "$DB" --remote --config "$CONFIG" --command "$SQL" >/dev/null
+
+      - name: Rapid Telegram queue + AI + D1 live test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs'),{execFileSync}=require('child_process');
+          const U=process.env.URL,C=String(process.env.STAGING_ADMIN_CHAT_ID||''),S=process.env.WEBHOOK_SECRET,D=process.env.DB,cfg=process.env.CONFIG;
+          if(!U||!C||!S||!D||!cfg) throw Error('test env missing');
+          const base=3100000000+(Date.now()%10000000);
+          const texts=[
+            'اختبار سند 1: رد بكلمة تمام فقط',
+            'اختبار سند 2: افتكر إن الرسالة اللي قبلي رقم 1 ورد باختصار',
+            'اختبار سند 3: احنا النهاردة كام في القاهرة؟'
+          ];
+          async function post(id,text){
+            const body={update_id:id,message:{message_id:id%1000000,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'SAND-CI'},text}};
+            const r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});
+            const raw=await r.text();
+            if(!r.ok) throw Error('webhook '+r.status+' '+raw);
+          }
+          function q(sql){
+            const raw=execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',cfg,'--command',sql,'--json'],{encoding:'utf8'});
+            return JSON.parse(raw)?.[0]?.results||[];
+          }
+          const sleep=m=>new Promise(r=>setTimeout(r,m));
+          (async()=>{
+            await Promise.all(texts.map((t,i)=>post(base+i,t)));
+            await post(base,texts[0]); // exact duplicate update_id: must not duplicate processing
+            let inbox=[],msgs=[];
+            for(let i=0;i<25;i++){
+              await sleep(1200);
+              inbox=q(`SELECT update_id,status,attempts,last_error FROM sand_core_inbox WHERE update_id BETWEEN ${base} AND ${base+2} ORDER BY update_id`);
+              msgs=q(`SELECT update_id,role,model_id,content FROM sand_ai_messages WHERE update_id BETWEEN ${base} AND ${base+2} ORDER BY update_id,id`);
+              const done=inbox.length===3&&inbox.every(x=>x.status==='done');
+              const assistants=msgs.filter(x=>x.role==='assistant');
+              if(done&&assistants.length===3) break;
+            }
+            const users=msgs.filter(x=>x.role==='user'),assistants=msgs.filter(x=>x.role==='assistant');
+            const calls=q(`SELECT update_id,model_id,model_role,ok,http_status,error_code,latency_ms FROM sand_ai_calls WHERE update_id BETWEEN ${base} AND ${base+2} ORDER BY id`);
+            const report={ok:inbox.length===3&&inbox.every(x=>x.status==='done')&&users.length===3&&assistants.length===3,inbox,users,assistants,calls,base_update_id:base,checked_at:new Date().toISOString()};
+            console.log(JSON.stringify(report,null,2));
+            fs.writeFileSync('SAND_V1_AI_LIVE_REPORT.json',JSON.stringify(report,null,2));
+            if(!report.ok) throw Error('SAND live gate failed');
+            if(new Set(users.map(x=>x.update_id)).size!==3) throw Error('duplicate user processing detected');
+            if(new Set(assistants.map(x=>x.update_id)).size!==3) throw Error('duplicate assistant processing detected');
+          })();
+          NODE
+
+      - name: Final no-deadlock status
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS -H "X-Sand-Key: $SETUP_KEY" "$URL/admin/status" > /tmp/status.json
+          cat /tmp/status.json
+          node -e 'const x=require("/tmp/status.json");if(!x.ok)throw Error(JSON.stringify(x));const bad=(x.counts||[]).filter(r=>["pending","processing"].includes(r.status)&&Number(r.count)>0);if(bad.length)throw Error("queue not drained "+JSON.stringify(bad))'
+
+      - name: Upload SAND live evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAND-V1-AI-Live-Evidence
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            SAND_V1_AI_LIVE_REPORT.json
+            /tmp/model-probes.json
+            /tmp/health.json
+            /tmp/setup.json
+            /tmp/status.json
