@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "version": "12.8.0",
+  "name": "Sanad — سند V12.8 Atomic Runtime",
+  "sha256": "99daf97d7f2b5dfbee558f5657d1c7ff6af69669e72b30a675587fc6d0887ca9",
+  "bytes": 376780,
+  "lines": 4813,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "architecture": "journaled-atomic-runtime-with-unified-delivery-cycles-hybrid-retrieval",
+  "regression_scenarios": 39,
+  "architecture_tests": 15,
+  "requested_upgrades_certified": 10,
+  "canonical_beforehardening_occurrences": 0,
+  "known_critical_code_failures": [],
+  "delivery_semantics": "definite failures retry; ambiguous transport outcomes become uncertain and require explicit replay to avoid blind duplicates"
+}
