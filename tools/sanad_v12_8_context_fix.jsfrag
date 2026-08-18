@@ -1,0 +1,20 @@
+/* ================= SANAD V12.8 HYBRID ROUTING FIX ================= */
+function selectedDomainsV128Hybrid(text){
+  const t=normItem(text),base=selectedDomainsV128(text),forced=[];
+  const add=d=>{if(!forced.includes(d))forced.push(d)};
+
+  // Schedule intent must not depend on the literal words "موعد/تذكير" only.
+  // Natural mutations frequently reference the event title plus an action verb,
+  // e.g. "حرّك اجتماع الفريق نص ساعة لقدام".
+  if(/(?:حرّك|حرك|قدّم|قدم|أخّر|اخر|أجل|اجل|غيّر|غير).{0,24}(?:اجتماع|ميعاد|موعد|تذكير|الساعة|ساعه|ساعة|دقيقة|دقيقه)|(?:اجتماع|ميعاد|موعد|تذكير).{0,28}(?:حرّك|حرك|قدّم|قدم|أخّر|اخر|أجل|اجل|غيّر|غير)|(?:بعد|قبل).{0,12}(?:بداية|بدايه|نهاية|نهايه)/u.test(t))add('schedule');
+  if(/(?:اجتماع|مكالمة|مكالمه|موعد|ميعاد|تذكير|ذكرني|فكرني)/u.test(t))add('schedule');
+  if(/(?:اشتري|شراء|مشتريات|السوبر|هاتلي|جيبلي|علمه|مش موجود|سيب).{0,30}/u.test(t))add('shopping');
+  if(/(?:مشروع|مهمة|مهمه|تاسك|تقدم|إنجاز|انجاز)/u.test(t))add('projects');
+  if(/(?:مستني|متابعة|متابعه|انتظار|يرد|رد عليا)/u.test(t))add('waiting');
+  if(/(?:انبوكس|صندوق الوارد|سجل دي|فكرة|فكره)/u.test(t))add('inbox');
+
+  // Forced intent domains come first, then semantic/lexical domains from the
+  // normal classifier. Keep the retrieval fan-out bounded for performance.
+  const ordered=[...forced,...base];
+  return new Set([...new Set(ordered)].slice(0,4));
+}
