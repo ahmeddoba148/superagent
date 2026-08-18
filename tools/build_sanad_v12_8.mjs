@@ -44,19 +44,15 @@ for(const [name,renamed] of [
   ['diagnosticsV126','diagnosticsLegacyV128']
 ])renameFunction(name,renamed);
 
-replaceRequired('diagnostics route','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsLegacyV128(request, env);','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV128(request, env);');
+replaceRequired('diagnostics route','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV126(request, env);','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV128(request, env);');
 replaceRequired('not found route','    return new Response("Not found", { status: 404 });','    if (url.pathname === "/admin/dead-letter" && (request.method === "GET" || request.method === "POST")) return deadLetterAdminV128(request,env,ctx,url);\n    if (url.pathname === "/admin/delivery/replay" && request.method === "POST") return deliveryReplayAdminV128(request,env);\n    return new Response("Not found", { status: 404 });');
 
-// Keep current scheduler callback names; after renaming the old functions, these resolve to the V12.8 implementations appended below.
-// Use Web-standard TextEncoder in Workers instead of Node Buffer.
 let layer=fs.readFileSync(runtime,'utf8').trim().replaceAll('Buffer.byteLength(JSON.stringify(out))','new TextEncoder().encode(JSON.stringify(out)).length');
 src+='\n\n'+layer+'\n';
 fs.writeFileSync(pre,src);
 
-// Tree-shake superseded V12.5/V12.6/V12.7 wrapper graphs while keeping readable source.
 execFileSync('npx',['--yes','esbuild@0.25.9',pre.pathname,'--bundle','--format=esm','--platform=browser','--target=es2022','--tree-shaking=true','--legal-comments=none',`--outfile=${output.pathname}`],{stdio:'inherit'});
 let final=fs.readFileSync(output,'utf8');
-// Canonical source gates: old wrapper stacks must be physically absent from the shipped V12.8 file.
 const forbidden=['BeforeHardening','BeforeOperationDedupe','executeToolV127BeforeOperationDedupe','drainInboxV126BeforeHardening','fallbackComposeV126BeforeHardening'];
 const leftovers=forbidden.filter(x=>final.includes(x));if(leftovers.length)throw new Error(`V12.8 canonicalization failed: ${leftovers.join(',')}`);
 if(!final.includes('sanad_delivery_queue')||!final.includes('sanad_mutation_journal')||!final.includes('sanad_scheduler_cycles')||!final.includes('sanad_dead_letters')||!final.includes('sanad_operation_metrics'))throw new Error('V12.8 architecture tables missing');
