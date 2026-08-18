@@ -69,9 +69,9 @@ async function deepSelftestV1282(env){
   const raw={now:{date:'2026-08-18',time:'20:00',timezone:'Africa/Cairo'},profile:{timezone:'Africa/Cairo',city:'Cairo',country:'Egypt'},user_text:'اختبار الميزانية',retrieval:{mode:'hybrid',domains:['schedule'],scores:{schedule:2}},conversation,state};
   const cap=9000,b=structuredContextBudgetV1282(raw,cap),serialized=JSON.stringify(b.context),parsed=JSON.parse(serialized),recentIds=new Set((parsed.conversation||[]).map(x=>Number(x.id))),oldKept=(parsed.conversation||[]).filter(x=>Number(x.id)<=8).length;
   add('structured context stays inside byte budget',b.bytes<=cap,`${b.bytes}/${cap}`);
-  add('structured context remains valid complete JSON',!!parsed&&serialized.startsWith('{')&&serialized.endsWith('}'),serialized.length);
-  add('current state survives before lower priority history',parsed.state?.reminders?.length===3,parsed.state?.reminders?.length);
+  add('structured context remains valid complete JSON',!!parsed&&serialized.startsWith('{')&&serialized.endsWith('}'),String(serialized.length));
+  add('current state survives before lower priority history',parsed.state?.reminders?.length===3,String(parsed.state?.reminders?.length||0));
   add('recent conversation survives before older history',[9,10,11,12,13,14].every(id=>recentIds.has(id))&&oldKept<8,JSON.stringify({ids:[...recentIds],oldKept}));
-  add('relevant memories admitted before less relevant history',(parsed.state?.memories?.length||0)>0,parsed.state?.memories?.length||0);
+  add('relevant memories admitted before less relevant history',(parsed.state?.memories?.length||0)>0,String(parsed.state?.memories?.length||0));
   return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
 }
