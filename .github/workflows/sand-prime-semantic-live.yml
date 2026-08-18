@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: sand-prime-semantic-live
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   semantic:
     runs-on: ubuntu-latest
@@ -20,7 +20,8 @@ jobs:
       BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
       OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
       CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
-      URL: https://sand-prime-semantic-staging.ahmeddoba91.workers.dev
+      WORKER_NAME: sand-prime-sem-${{ github.run_id }}
+      URL: https://sand-prime-sem-${{ github.run_id }}.ahmeddoba91.workers.dev
       DB: superagent-v106-staging
       CFG: wrangler.sand-prime-semantic.jsonc
     steps:
@@ -38,13 +39,13 @@ jobs:
           node sand_prime/schema_v5_transform.mjs SAND.js >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "294560b072a92186b39549b59fecdc34f35c0b79c4c3a8b09e905a82ed34becc"
           node --check SAND.js
-      - name: Deploy same source to isolated semantic staging
+      - name: Deploy exact source to run-isolated staging
         run: |
           set -euo pipefail
-          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$WORKER_NAME"
           npm install --no-save wrangler@latest >/dev/null
-          cat > "$CFG" <<'EOF'
-          {"name":"sand-prime-semantic-staging","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          cat > "$CFG" <<EOF
+          {"name":"$WORKER_NAME","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           EOF
           npx wrangler deploy --config "$CFG" >/dev/null
           W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
