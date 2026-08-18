@@ -16,6 +16,7 @@ const passes=[];function pass(name,cond,detail=''){if(!cond)throw new Error(`FAI
 const tables=['sanad_chat_leases','sanad_inbox','sanad_updates','sanad_shopping','sanad_shopping_sessions','sanad_reminders','sanad_reminder_fires','sanad_recurrences','sanad_recurrence_fires','sanad_dependencies','sanad_memories','sanad_entities','sanad_edges','sanad_projects','sanad_project_tasks','sanad_waiting','sanad_prayer_rules','sanad_prayer_fires','sanad_live_watches','sanad_life_inbox','sanad_audit','sanad_receipts','sanad_failures','sanad_proactive_fires','sanad_pending_actions','sanad_pending_conflicts','sanad_operation_snapshots','sanad_rate_limits','sanad_daily_brief_fires','sanad_legacy_id_map'];
 for(const t of tables){try{q(`DELETE FROM ${t} WHERE chat_id='${esc(CHAT)}'`)}catch{}}
 q(`DELETE FROM sanad_users WHERE chat_id='${esc(CHAT)}'`);
+q(`INSERT INTO sanad_meta(key,value,updated_at) VALUES('ci_silent_telegram','1',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=datetime('now')`);
 
 let id=await postText('أنا نازل السوبر ماركت، حطلي لبن كامل الدسم وعيش توست ورز بسمتي وبطاطس وشيدر في المشتريات');let row=await wait(id);let shop=q(`SELECT id,title,status FROM sanad_shopping WHERE chat_id='${esc(CHAT)}' ORDER BY id`);pass('natural shopping persisted',shop.length>=5,JSON.stringify(shop));
 
@@ -48,5 +49,6 @@ const diag=await fetch(URL+'/diagnostics',{headers:{'X-Sanad-Key':SETUP}});const
 const failures=q(`SELECT scope,error_text FROM sanad_failures WHERE chat_id='${esc(CHAT)}'`);pass('runtime failures zero',failures.length===0,JSON.stringify(failures));
 const dangerous=q(`SELECT tool,result_json FROM sanad_audit WHERE chat_id='${esc(CHAT)}' AND verified=0`).filter(x=>/\"changed\"\s*:\s*[1-9]/.test(String(x.result_json)));pass('no changed mutation left unverified',dangerous.length===0,JSON.stringify(dangerous));
 
+q(`UPDATE sanad_meta SET value='0',updated_at=datetime('now') WHERE key='ci_silent_telegram'`);
 fs.writeFileSync('SANAD_V12_6_LIVE_REPORT.json',JSON.stringify({ok:true,version:'12.6.0',scenario_count:passes.length,passes},null,2));
 console.log('LIVE PASS',passes.length);
