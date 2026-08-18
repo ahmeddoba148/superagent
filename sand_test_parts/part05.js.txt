@@ -1,3 +1,73 @@
+ERT INTO ${TABLES.aiCalls}
+    (chat_id, update_id, model_id, model_role, latency_ms, ok, http_status, error_code, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      record.chatId,
+      record.updateId,
+      record.modelId,
+      record.modelRole,
+      Math.max(0, Number(record.latencyMs) || 0),
+      record.ok ? 1 : 0,
+      record.httpStatus ?? null,
+      record.errorCode ?? null,
+      nowIso(),
+    )
+    .run();
+}
+
+async function recordAiCallSafe(env, record) {
+  try {
+    await recordAiCall(env, record);
+  } catch (error) {
+    logError("ai_call_log_noncritical", error, {
+      chatId: record.chatId,
+      updateId: record.updateId,
+      modelId: record.modelId,
+    });
+  }
+}
+
+async function callOneAiModel(env, model, messages, timeoutMs) {
+  requireBinding(env, "OMNIAI_API_KEY");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = nowMs();
+
+  try {
+    const request = new Request(omniChatUrl(env), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OMNIAI_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages,
+        temperature: 0.35,
+        max_tokens: 900,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    const response = env?.OMNIAI_SERVICE?.fetch
+      ? await env.OMNIAI_SERVICE.fetch(request)
+      : await fetch(request);
+
+    const httpStatus = response.status;
+    const data = await response.json().catch((error) => {
+      logError("omniai_json", error, { model: model.id, status: httpStatus });
+      return null;
+    });
+
+    if (!response.ok) {
+      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
+      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
+    }
+
+    const content = aiContent(data);
+    if (!content) {
       throw new SandHttpError(`OmniAI ${model.id} returned empty content`, httpStatus);
     }
 
@@ -95,70 +165,4 @@ async function telegramApi(env, method, payload) {
   return data;
 }
 
-async function sendTelegramText(env, chatId, text) {
-  return telegramApi(env, "sendMessage", {
-    chat_id: chatId,
-    text: String(text).slice(0, 3900),
-  });
-}
-
-async function setup(request, env) {
-  requireBinding(env, "DB");
-  requireBinding(env, "SETUP_KEY");
-  requireBinding(env, "TELEGRAM_BOT_TOKEN");
-  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
-
-  const presented = request.headers.get("X-Sand-Key") ?? "";
-  if (!(await secretEqual(presented, env.SETUP_KEY))) {
-    return json({ ok: false, error: "unauthorized" }, 401);
-  }
-
-  await ensureSchema(env);
-
-  const url = new URL(request.url);
-  const webhookUrl = `${url.origin}/telegram`;
-
-  await telegramApi(env, "setWebhook", {
-    url: webhookUrl,
-    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-    allowed_updates: ["message"],
-    drop_pending_updates: false,
-  });
-
-  const info = await telegramApi(env, "getWebhookInfo", {});
-
-  await telegramApi(env, "setMyCommands", {
-    commands: [{ command: "start", description: "تشغيل سند" }],
-  });
-
-  return json({
-    ok: true,
-    version: APP_VERSION,
-    schema_version: SCHEMA_VERSION,
-    webhook: webhookUrl,
-    telegram: {
-      url: info?.result?.url ?? "",
-      pending_update_count: info?.result?.pending_update_count ?? null,
-      last_error_message: info?.result?.last_error_message ?? null,
-    },
-    next: "Send a normal message to test AI chat",
-  });
-}
-
-async function health(env) {
-  const bindings = {
-    DB: Boolean(env?.DB),
-    TELEGRAM_BOT_TOKEN: Boolean(env?.TELEGRAM_BOT_TOKEN),
-    TELEGRAM_WEBHOOK_SECRET: Boolean(env?.TELEGRAM_WEBHOOK_SECRET),
-    SETUP_KEY: Boolean(env?.SETUP_KEY),
-    OMNIAI_API_KEY: Boolean(env?.OMNIAI_API_KEY),
-    OMNIAI_BASE_URL: Boolean(env?.OMNIAI_BASE_URL),
-    OMNIAI_SERVICE: Boolean(env?.OMNIAI_SERVICE?.fetch),
-    ALLOWED_CHAT_ID: Boolean(env?.ALLOWED_CHAT_ID),
-    PUBLIC_BOT: env?.PUBLIC_BOT ?? null,
-  };
-
-  if (!bindings.DB) {
-    return json({ ok: false, version: APP_VERSION, bindings, error: "DB binding missing" }, 503);
-  }
-
+async function sendTelegramText(env, chatId, 
