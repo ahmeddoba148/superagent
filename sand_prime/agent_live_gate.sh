@@ -29,7 +29,15 @@ send_update() {
 const id=Number(process.env.ID), chat=Number(process.env.CHAT_ID), text=process.env.TEXT;
 process.stdout.write(JSON.stringify({update_id:id,message:{message_id:id,date:Math.floor(Date.now()/1000),chat:{id:chat,type:'private'},from:{id:chat,is_bot:false,first_name:'PrimeGate'},text}}));
 NODE
-  curl -fsS -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" --data-binary @/tmp/sand-update.json "$URL/telegram" >/tmp/accepted.json
+  local code
+  code=$(curl -sS -o /tmp/accepted.json -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" --data-binary @/tmp/sand-update.json "$URL/telegram" || true)
+  if [[ "$code" != "200" ]]; then
+    echo "WEBHOOK_ACCEPT_FAIL id=$id http=$code" >&2
+    cat /tmp/accepted.json >&2 || true
+    sql_json "SELECT key,value FROM sand_core_meta WHERE key='schema_version';SELECT update_id,status,last_error FROM sand_core_inbox WHERE chat_id='$CHAT' ORDER BY update_id;SELECT chat_id,owner,lease_until,updated_at FROM sand_core_chat_leases WHERE chat_id='$CHAT';SELECT chat_id,settle_until_ms,last_seen_update_id,updated_at FROM sand_core_chat_ingress WHERE chat_id='$CHAT';" /tmp/webhook-fail-state.json || true
+    cat /tmp/webhook-fail-state.json >&2 || true
+    return 1
+  fi
   wait_update "$id"
 }
 
