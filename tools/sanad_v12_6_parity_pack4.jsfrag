@@ -35,7 +35,7 @@ async function toolReminderUpdate(env,chatId,args){
   if(!id)return{ok:false,changed:0,verified:false,error:'missing_id'};
   const before=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
   if(!before)return{ok:false,changed:0,verified:false,error:'not_found'};
-  const result=await toolReminderUpdateV125Base(env,chatId,args);
+  const result=await toolReminderUpdateV126BeforePropagationGuard(env,chatId,args);
   if(!result?.ok||result?.verified!==true)return result;
   const after=result.after||await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();
   const temporalChanged=!!after&&(String(before.local_date)!==String(after.local_date)||String(before.local_time)!==String(after.local_time)||Number(before.duration_minutes||0)!==Number(after.duration_minutes||0));
