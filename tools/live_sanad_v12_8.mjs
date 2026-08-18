@@ -7,6 +7,21 @@ regression=regression
   .replaceAll('12.6.0','12.8.0')
   .replaceAll('SANAD_V12_6_LIVE_REPORT.json','SANAD_V12_8_REGRESSION_REPORT.json')
   .replaceAll('SanadV126Test','SanadV128Test');
+
+// V12.8 is canonicalized by esbuild, so legacy source-presence gates must be whitespace/quote independent.
+regression=regression.replace(
+  `pass('organized menu layer present',built.includes("callback_data:'s126:panel:schedule'")&&built.includes("callback_data:'s126:panel:data'")&&built.includes("callback_data:'s126:open:shopping'"));`,
+  `pass('organized menu layer present',/callback_data\\s*:\\s*["']s126:panel:schedule["']/.test(built)&&/callback_data\\s*:\\s*["']s126:panel:data["']/.test(built)&&/callback_data\\s*:\\s*["']s126:open:shopping["']/.test(built));`
+);
+regression=regression.replace(
+  `pass('data clear controls present',['shopping','context','memory','world','schedule','all'].every(x=>built.includes(\`callback_data:'s126:data:\${x}'\`)));`,
+  `pass('data clear controls present',['shopping','context','memory','world','schedule','all'].every(x=>new RegExp('callback_data\\\\s*:\\\\s*["\\\']s126:data:'+x+'["\\\']').test(built)));`
+);
+regression=regression.replace(
+  `pass('direct clear command present',built.includes('text === "/clear"')&&built.includes('showDataPanelV126'));`,
+  `pass('direct clear command present',/text\\s*===\\s*["']\\/clear["']/.test(built)&&built.includes('showDataPanelV126'));`
+);
+
 fs.writeFileSync('/tmp/live_sanad_v128_regression.mjs',regression);
 execFileSync(process.execPath,['/tmp/live_sanad_v128_regression.mjs'],{stdio:'inherit',env:process.env});
 
