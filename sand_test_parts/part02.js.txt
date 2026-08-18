@@ -1,0 +1,154 @@
+  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const update = await request.json().catch((error) => {
+    logError("telegram_json", error);
+    return null;
+  });
+  if (!update || typeof update !== "object") return new Response("Bad request", { status: 400 });
+
+  const updateId = Number(update.update_id);
+  const chatId = telegramChatId(update);
+
+  if (!Number.isSafeInteger(updateId) || !chatId) {
+    return new Response("OK");
+  }
+
+  if (!isAllowedChat(env, chatId, update)) {
+    return new Response("OK");
+  }
+
+  await ensureSchema(env);
+  await persistUpdate(env, updateId, chatId, update);
+
+  const origin = new URL(request.url).origin;
+  ctx.waitUntil(drainChat(env, chatId, origin));
+  return new Response("OK");
+}
+
+async function internalDrain(request, env, ctx) {
+  requireBinding(env, "DB");
+  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
+
+  const presented = request.headers.get("X-Sand-Internal") ?? "";
+  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const body = await request.json().catch((error) => {
+    logError("internal_drain_json", error);
+    return null;
+  });
+  const chatId = String(body?.chat_id ?? "").trim();
+  if (!chatId || chatId.length > 80) return new Response("Bad request", { status: 400 });
+
+  await ensureSchema(env);
+  const origin = new URL(request.url).origin;
+  ctx.waitUntil(drainChat(env, chatId, origin));
+  return new Response("ACCEPTED", { status: 202 });
+}
+
+async function persistUpdate(env, updateId, chatId, update) {
+  const at = nowIso();
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.inbox}
+    (update_id, chat_id, payload_json, status, attempts, created_at, updated_at)
+    VALUES (?, ?, ?, 'pending', 0, ?, ?)`)
+    .bind(updateId, chatId, JSON.stringify(update), at, at)
+    .run();
+}
+
+async function acquireChatLease(env, chatId, owner) {
+  const now = nowMs();
+  const until = now + CHAT_LEASE_MS;
+
+  const row = await env.DB.prepare(`INSERT INTO ${TABLES.chatLeases}
+    (chat_id, owner, lease_until, acquired_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      owner=excluded.owner,
+      lease_until=excluded.lease_until,
+      acquired_at=excluded.acquired_at
+    WHERE ${TABLES.chatLeases}.lease_until <= ?
+    RETURNING owner`)
+    .bind(chatId, owner, until, nowIso(), now)
+    .first();
+
+  return String(row?.owner ?? "") === owner;
+}
+
+async function releaseChatLease(env, chatId, owner) {
+  await env.DB.prepare(`DELETE FROM ${TABLES.chatLeases} WHERE chat_id=? AND owner=?`)
+    .bind(chatId, owner)
+    .run();
+}
+
+async function nextRecoverableUpdate(env, chatId) {
+  return env.DB.prepare(`SELECT update_id, payload_json, attempts
+    FROM ${TABLES.inbox}
+    WHERE chat_id=?
+      AND (
+        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+      )
+    ORDER BY update_id ASC
+    LIMIT 1`)
+    .bind(chatId, nowMs(), nowMs())
+    .first();
+}
+
+async function claimUpdate(env, updateId) {
+  const at = nowIso();
+  const leaseUntil = nowMs() + INBOX_PROCESS_LEASE_MS;
+
+  return env.DB.prepare(`UPDATE ${TABLES.inbox}
+    SET status='processing',
+        attempts=attempts+1,
+        process_lease_until=?,
+        updated_at=?,
+        last_error=NULL
+    WHERE update_id=?
+      AND (
+        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+      )
+    RETURNING attempts`)
+    .bind(leaseUntil, at, updateId, nowMs(), nowMs())
+    .first();
+}
+
+async function markUpdateDone(env, updateId) {
+  const at = nowIso();
+  await env.DB.prepare(`UPDATE ${TABLES.inbox}
+    SET status='done', process_lease_until=NULL, last_error=NULL, updated_at=?, finished_at=?
+    WHERE update_id=?`)
+    .bind(at, at, updateId)
+    .run();
+}
+
+async function hasRecoverableUpdate(env, chatId) {
+  const row = await env.DB.prepare(`SELECT 1 AS ok
+    FROM ${TABLES.inbox}
+    WHERE chat_id=?
+      AND (
+        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+      )
+    LIMIT 1`)
+    .bind(chatId, nowMs(), nowMs())
+    .first();
+  return Number(row?.ok ?? 0) === 1;
+}
+
+async function triggerDrainContinuation(env, chatId, origin) {
+  if (!origin || !env?.TELEGRAM_WEBHOOK_SECRET) return false;
+  try {
+    const response = await fetch(`${String(origin).replace(/\/$/, "")}/internal/drain`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Sand-Internal": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({ chat_id: String(chatId) }),
+    });
+    if (response.body) await response.body.cancel().catch((error) => logError("continuation_body_cancel", error));
