@@ -1,14 +1,14 @@
-name: SAND PRIME Canonical Live Gate
+name: SAND PRIME Verified Live Gate
 on:
   pull_request:
     branches: [main]
     paths:
       - 'sand_prime/**'
-      - '.github/workflows/sand-prime-canonical-live.yml'
+      - '.github/workflows/sand-prime-verified-live.yml'
 permissions:
   contents: read
 concurrency:
-  group: sand-prime-canonical-live
+  group: sand-prime-verified-live
   cancel-in-progress: true
 jobs:
   prime:
@@ -35,8 +35,8 @@ jobs:
           BASE=$(sha256sum SAND.js | awk '{print $1}')
           echo "base_source_sha=$BASE"
           test "$BASE" = "6d3df0dcc5880f0620f440effd1afc5d140d72bebd878cb1a0cb571eb0f04c45"
-          cat sand_prime/canonical_patch/part{00..02}.b64 | tr -d '\r\n' | base64 -d | gzip -d > canonical.patch
-          patch --batch SAND.js < canonical.patch
+          patch --batch SAND.js < sand_prime/canonical_diff/half0.diff
+          patch --batch SAND.js < sand_prime/canonical_diff/half1.diff
           SHA=$(sha256sum SAND.js | awk '{print $1}')
           echo "canonical_source_sha=$SHA"
           test "$SHA" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"

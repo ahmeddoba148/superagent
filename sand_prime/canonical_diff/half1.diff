@@ -1,0 +1,80 @@
+--- SAND.js
++++ SAND.js
+@@ -545,10 +555,10 @@
+   if (plan.confirmation_decision === "reject") { await env.DB.batch([env.DB.prepare(`UPDATE ${TABLES.confirmations} SET status='rejected',updated_at=? WHERE id=?`).bind(nowIso(), pending.id), env.DB.prepare(`UPDATE ${TABLES.operations} SET status='cancelled',updated_at=?,finished_at=? WHERE id=?`).bind(nowIso(), nowIso(), pending.operation_id)]); return plan.reply || "تمام، مش هنفذه."; }
+   await env.DB.prepare(`UPDATE ${TABLES.confirmations} SET status='approved',updated_at=? WHERE id=?`).bind(nowIso(), pending.id).run();
+   const state = parseJsonSafe(pending.plan_json, null), op = await env.DB.prepare(`SELECT * FROM ${TABLES.operations} WHERE id=?`).bind(pending.operation_id).first(); if (!state?.current_plan || !op) throw new SandValidationError("Saved confirmation continuation is corrupt", "BAD_SAVED_PLAN");
+-  const outcome = await runAgentLoop(env, ctx, op, state.current_plan, { resumeCurrent: true }); if (!outcome.paused) { await finalizeOperation(env, pending.operation_id, outcome.reply); await setChatState(env, ctx.chatId, ctx.userId, { last_operation_id: pending.operation_id, last_entity: outcome.lastEntity ?? null, pending_context: null }); } return outcome.reply;
++  const outcome = await runAgentLoop(env, ctx, op, state.current_plan, { resumeCurrent: true }); if (!outcome.paused) { await finalizeOperation(env, pending.operation_id, outcome.reply, outcome.completed !== false); await setChatState(env, ctx.chatId, ctx.userId, { last_operation_id: pending.operation_id, last_entity: outcome.lastEntity ?? null, pending_context: outcome.completed === false ? { goal: ctx.text, operation_id: pending.operation_id, status: 'partial' } : null }); } return outcome.reply;
+ }
+ function resultHumanSummary(r) { if (!r) return ""; if (r.ok === false) return `❌ ${r.tool}: ${r.error || "فشل التنفيذ"}`; const d = r.result ?? {}; if (d.message) return String(d.message); if (d.title && d.when) return `✅ ${d.title} — ${d.when}`; return `✅ ${r.tool}`; }
+-async function finalizeOperation(env, operationId, reply) { const at = nowIso(); await env.DB.prepare(`UPDATE ${TABLES.operations} SET status='succeeded',reply_json=?,error=NULL,updated_at=?,finished_at=? WHERE id=?`).bind(JSON.stringify({ reply }), at, at, operationId).run(); }
++async function finalizeOperation(env, operationId, reply, completed = true) { const at = nowIso(), status = completed ? 'succeeded' : 'partial'; await env.DB.prepare(`UPDATE ${TABLES.operations} SET status=?,reply_json=?,error=?,updated_at=?,finished_at=? WHERE id=?`).bind(status, JSON.stringify({ reply, completed }), completed ? null : 'Agent loop stopped at a safety boundary before proving the full goal complete.', at, at, operationId).run(); }
+ 
+ // 11 REACTIVE AGENT LOOP / OPERATION EXECUTOR / IDEMPOTENCY
+ async function loadOperationObservations(env, operationId) {
+@@ -571,8 +581,8 @@
+     "الذاكرة:", JSON.stringify(memory),
+   ].filter(Boolean).join("\n");
+   const user = JSON.stringify({ goal, verified_observations: observations.map((o) => ({ step: o.step_index, tool: o.tool, args: o.args, result: truncateObject(o.result) })) });
+-  const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.12, maxTokens: 1200, totalBudgetMs: 7000, modelTimeoutMs: 2500 });
+-  return { plan: validatePlannerDecision(extractJsonObject(r.text), capabilities, false), modelId: r.modelId };
++  const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.12, maxTokens: 1200, totalBudgetMs: 7000, modelTimeoutMs: 2500, validate: (text) => validatePlannerDecision(extractJsonObject(text), capabilities, false) });
++  return { plan: r.parsed, modelId: r.modelId };
+ }
+ async function saveOperationRuntimeState(env, opId, goal, currentPlan, observations) {
+   await env.DB.prepare(`UPDATE ${TABLES.operations} SET plan_json=?,updated_at=? WHERE id=?`).bind(JSON.stringify({ goal, current_plan: currentPlan, observations: observations.map((o) => ({ step_index: o.step_index, tool: o.tool })) }), nowIso(), opId).run();
+@@ -607,16 +617,16 @@
+     env.DB.prepare(`UPDATE ${TABLES.operations} SET status='awaiting_confirmation',updated_at=? WHERE id=?`).bind(at, op.id),
+     env.DB.prepare(`INSERT INTO ${TABLES.confirmations}(id,chat_id,user_id,operation_id,summary,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)`).bind(id, ctx.chatId, ctx.userId, op.id, summary, at, at),
+   ]);
+-  return { paused: true, reply: `قبل ما أنفذ: ${summary}\nتوافق؟`, observations };
++  return { paused: true, completed: false, reply: `قبل ما أنفذ: ${summary}\nتوافق؟`, observations };
+ }
+ async function runAgentLoop(env, ctx, op, initialPlan, options = {}) {
+   const started = nowMs(), state = parseJsonSafe(op.plan_json, {}), goal = cleanText(state?.goal, 8000) || ctx.text || "", observations = await loadOperationObservations(env, op.id); let current = initialPlan, approvedCurrent = Boolean(options.resumeCurrent);
+   await env.DB.prepare(`UPDATE ${TABLES.operations} SET status='running',error=NULL,updated_at=? WHERE id=? AND status IN ('planned','awaiting_confirmation','running')`).bind(nowIso(), op.id).run();
+   if (!approvedCurrent && observations.length) { const c = await continueAgentTurn(env, ctx, goal, observations, "استكمل من النتائج المؤكدة بعد استعادة العملية."); current = c.plan; }
+   for (let turn = 0; turn < AGENT_MAX_TOOL_STEPS + 2; turn += 1) {
+-    if (current.kind === "answer" || current.kind === "clarify") return { paused: false, reply: current.reply || resultHumanSummary({ tool: observations.at(-1)?.tool, ok: true, result: observations.at(-1)?.result }), observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) };
++    if (current.kind === "answer" || current.kind === "clarify") return { paused: false, completed: current.kind === "answer", reply: current.reply || resultHumanSummary({ tool: observations.at(-1)?.tool, ok: true, result: observations.at(-1)?.result }), observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) };
+     if (current.kind === "missing_capability") {
+-      const forged = await handleMissingCapability(env, ctx, current.missing_capability, "agent_loop"); if (!forged.enabled) return { paused: false, reply: forged.reply, observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) };
++      const forged = await handleMissingCapability(env, ctx, current.missing_capability, "agent_loop"); if (!forged.enabled) return { paused: false, completed: false, reply: forged.reply, observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) };
+       const c = await continueAgentTurn(env, ctx, goal, observations, `تمت إضافة الأداة ${forged.tool}. أعد التخطيط واستخدمها إذا كانت مناسبة.`); current = c.plan; approvedCurrent = false; continue;
+     }
+     if (current.kind !== "plan" || !current.steps?.length) throw new SandValidationError("Agent loop received invalid next action", "AI_BAD_PLAN");
+@@ -625,8 +635,8 @@
+     const repeated = observations.filter((o) => sameStepFingerprint(o, step)).length; if (repeated >= 2) throw new SandValidationError(`Agent loop repeated ${step.tool} without progress`, "AGENT_LOOP_REPEAT");
+     await saveOperationRuntimeState(env, op.id, goal, current, observations); const observation = await executeOperationStep(env, ctx, op, step); observations.push(observation); approvedCurrent = false;
+     await saveOperationRuntimeState(env, op.id, goal, null, observations);
+-    if (observations.length >= AGENT_MAX_TOOL_STEPS) { const fallback = observations.map((o) => resultHumanSummary({ tool: o.tool, ok: true, result: o.result })).join("\n"); return { paused: false, reply: fallback || "تم تنفيذ الخطوات المتاحة.", observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) }; }
+-    if (nowMs() - started > AGENT_LOOP_BUDGET_MS) { const fallback = resultHumanSummary({ tool: observation.tool, ok: true, result: observation.result }); return { paused: false, reply: fallback || "تم تنفيذ الخطوة والتحقق منها.", observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) }; }
++    if (observations.length >= AGENT_MAX_TOOL_STEPS) { const fallback = observations.map((o) => resultHumanSummary({ tool: o.tool, ok: true, result: o.result })).join("\n"); return { paused: false, completed: false, reply: `${fallback ? `${fallback}\n` : ""}وقفت عند حد الأمان قبل ما أقول إن الهدف كله خلص.`, observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) }; }
++    if (nowMs() - started > AGENT_LOOP_BUDGET_MS) { const fallback = resultHumanSummary({ tool: observation.tool, ok: true, result: observation.result }); return { paused: false, completed: false, reply: `${fallback ? `${fallback}\n` : ""}وقفت عند حد الوقت الآمن قبل ما أدعي إن باقي الهدف اتنفذ.`, observations, lastEntity: deriveLastEntity(observations.map((o) => ({ tool: o.tool, result: o.result }))) }; }
+     const c = await continueAgentTurn(env, ctx, goal, observations); current = c.plan;
+   }
+   throw new SandValidationError("Agent loop limit reached", "AGENT_LOOP_LIMIT");
+@@ -994,7 +1004,7 @@
+ }
+ async function forgeCapabilityProposal(env, ctx, missing) {
+   const system = `أنت Toolsmith داخل SAND PRIME. صمم فقط أداة HTTP declarative آمنة إذا كان الهدف يمكن تنفيذه عبر API HTTPS عام معروف. لا تكتب JavaScript. لا تخمن API keys.\nأرجع JSON فقط: {"status":"http_recipe|needs_input|needs_review","message":"...","recipe":{"name":"ext.x","description":"...","method":"GET|POST","url_template":"https://fixed-host/path?x={arg}","input_schema":{},"headers":{},"body_template":null,"extract_path":null,"test_args":{}}}.\nلو تحتاج OAuth أو endpoint غير معروف أو scraping/browser أو تنفيذ كود، استخدم needs_review/needs_input. ممنوع localhost/private IPs وممنوع secrets حرفية.`;
+-  const user = JSON.stringify({ requested_capability: missing?.name ?? "unknown", goal: missing?.description ?? "", current_time: cairoNow() }); const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.1, maxTokens: 1000 }); return { proposal: extractJsonObject(r.text), modelId: r.modelId };
++  const user = JSON.stringify({ requested_capability: missing?.name ?? "unknown", goal: missing?.description ?? "", current_time: cairoNow() }); const r = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages: [{ role: "system", content: system }, { role: "user", content: user }], temperature: 0.1, maxTokens: 1000, validate: (text) => { const proposal = extractJsonObject(text), status = cleanText(proposal?.status, 30); if (!new Set(["http_recipe", "needs_input", "needs_review"]).has(status)) throw new SandValidationError("Invalid Toolsmith status", "AI_BAD_RECIPE"); if (status === "http_recipe") validateRecipeProposal(env, proposal?.recipe); return proposal; } }); return { proposal: r.parsed, modelId: r.modelId };
+ }
+ async function handleMissingCapability(env, ctx, missing, plannerModelId) {
+   const capability = cleanText(missing?.name, 120) || "unknown", goal = cleanText(missing?.description, 1000) || "قدرة غير موجودة", requestId = uuid(), at = nowIso();
+@@ -1048,6 +1058,13 @@
+ }
+ async function adminStatus(request, env) { if (!(await adminAuthorized(request, env))) return json({ ok: false, error: "unauthorized" }, 401); await ensureAllSchema(env); const counts = {}; for (const [k, table] of Object.entries({ inbox: TABLES.inbox, messages: TABLES.messages, operations: TABLES.operations, memories: TABLES.memories, reminders: TABLES.reminders, tasks: TABLES.tasks, lists: TABLES.lists, notes: TABLES.notes, calendar: TABLES.calendarEvents, contacts: TABLES.contacts, automations: TABLES.automations, forge_requests: TABLES.forgeRequests })) counts[k] = await tableCount(env, table); return json({ ok: true, service: APP_NAME, version: APP_VERSION, counts }); }
+ async function adminTools(request, env) { if (!(await adminAuthorized(request, env))) return json({ ok: false, error: "unauthorized" }, 401); await ensureAllSchema(env); const tools = await availableCapabilities(env), forge = await env.DB.prepare(`SELECT id,capability,goal,status,error,created_at,updated_at FROM ${TABLES.forgeRequests} ORDER BY created_at DESC LIMIT 30`).all(); return json({ ok: true, tools, forge_requests: forge?.results ?? [] }); }
++async function adminRunScheduler(request, env) {
++  if (!(await adminAuthorized(request, env))) return json({ ok: false, error: "unauthorized" }, 401);
++  await ensureAllSchema(env);
++  const reminders = await deliverDueReminders(env, MAX_SCHEDULED_BATCH);
++  const automations = await runDueAutomations(env, MAX_SCHEDULED_BATCH);
++  return json({ ok: true, reminders, automations });
++}
+ async function adminSelftest(request, env) {
+   if (!(await adminAuthorized(request, env))) return json({ ok: false, error: "unauthorized" }, 401); await ensureAllSchema(env); const tests = [];
+   const add = (name, ok, detail = null) => tests.push({ name, ok: Boolean(ok), detail });

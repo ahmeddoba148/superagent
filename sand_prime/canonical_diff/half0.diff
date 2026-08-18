@@ -1,0 +1,86 @@
+--- SAND.js
++++ SAND.js
+@@ -12,11 +12,11 @@
+ const PRIME_SCHEMA_VERSION = "1";
+ const DEFAULT_TIMEZONE = "Africa/Cairo";
+ 
+-const INBOX_PROCESS_LEASE_MS = 20_000;
+-const CHAT_LEASE_MS = 28_000;
++const INBOX_PROCESS_LEASE_MS = 60_000;
++const CHAT_LEASE_MS = 65_000;
+ const CHAT_ACQUIRE_WAIT_MS = 12_000;
+-const DRAIN_BUDGET_MS = 25_000;
+-const MAX_DRAIN_BATCH = 4;
++const DRAIN_BUDGET_MS = 50_000;
++const MAX_DRAIN_BATCH = 2;
+ const CHAT_SETTLE_MS = 900;
+ const CHAT_SETTLE_MAX_WAIT_MS = 6_000;
+ 
+@@ -87,6 +87,7 @@
+       if (request.method === "GET" && url.pathname === "/admin/status") return await adminStatus(request, env);
+       if (request.method === "GET" && url.pathname === "/admin/tools") return await adminTools(request, env);
+       if (request.method === "GET" && url.pathname === "/admin/selftest") return await adminSelftest(request, env);
++      if (request.method === "POST" && url.pathname === "/admin/run-scheduler") return await adminRunScheduler(request, env);
+       return new Response("Not found", { status: 404 });
+     } catch (error) {
+       logError("fetch_unhandled", error);
+@@ -185,7 +186,7 @@
+     env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.primeMeta} (key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)`),
+     env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.decisions} (update_id INTEGER PRIMARY KEY,chat_id TEXT NOT NULL,user_id TEXT NOT NULL,decision_json TEXT NOT NULL,model_id TEXT NOT NULL,created_at TEXT NOT NULL)`),
+     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_prime_decisions_chat ON ${TABLES.decisions}(chat_id,update_id DESC)`),
+-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.operations} (id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,user_id TEXT NOT NULL,source_update_id INTEGER NOT NULL UNIQUE,kind TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('planned','awaiting_confirmation','running','succeeded','failed','cancelled')),plan_json TEXT NOT NULL,reply_json TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT)`),
++    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.operations} (id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,user_id TEXT NOT NULL,source_update_id INTEGER NOT NULL UNIQUE,kind TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('planned','awaiting_confirmation','running','succeeded','partial','failed','cancelled')),plan_json TEXT NOT NULL,reply_json TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT)`),
+     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_prime_ops_chat ON ${TABLES.operations}(chat_id,created_at DESC)`),
+     env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.operationSteps} (operation_id TEXT NOT NULL,step_index INTEGER NOT NULL,tool_name TEXT NOT NULL,args_json TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','skipped')),result_json TEXT,error TEXT,started_at TEXT,finished_at TEXT,PRIMARY KEY(operation_id,step_index))`),
+     env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.memories} (id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,user_id TEXT NOT NULL,kind TEXT NOT NULL,memory_key TEXT NOT NULL,value TEXT NOT NULL,importance INTEGER NOT NULL DEFAULT 50,confidence REAL NOT NULL DEFAULT 1,source_update_id INTEGER,active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(chat_id,user_id,kind,memory_key))`),
+@@ -338,17 +339,26 @@
+     return { text: content, latencyMs: nowMs() - started, httpStatus };
+   } finally { clearTimeout(timer); }
+ }
+-async function callAiChain(env, { chatId, updateId, messages, temperature = 0.2, maxTokens = 1400, totalBudgetMs = AI_TOTAL_BUDGET_MS, modelTimeoutMs = AI_MODEL_TIMEOUT_MS }) {
++async function callAiChain(env, { chatId, updateId, messages, temperature = 0.2, maxTokens = 1400, totalBudgetMs = AI_TOTAL_BUDGET_MS, modelTimeoutMs = AI_MODEL_TIMEOUT_MS, validate = null }) {
+   requireBinding(env, "OMNIAI_API_KEY"); const deadline = nowMs() + clampInt(totalBudgetMs, 1000, 20000, AI_TOTAL_BUDGET_MS); const failures = [];
+   for (const model of AI_MODELS) {
+     const remaining = deadline - nowMs(); if (remaining < 500) break; const timeoutMs = Math.min(clampInt(modelTimeoutMs, 800, 10000, AI_MODEL_TIMEOUT_MS), remaining), started = nowMs();
+-    try { const result = await callOneAiModel(env, model, messages, timeoutMs, { temperature, maxTokens }); await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null }); return { text: result.text, modelId: model.id }; }
++    try {
++      const result = await callOneAiModel(env, model, messages, timeoutMs, { temperature, maxTokens });
++      let parsed = null;
++      if (typeof validate === "function") {
++        try { parsed = validate(result.text); }
++        catch (error) { const code = cleanText(error?.code, 80) || "AI_BAD_OUTPUT"; await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: false, httpStatus: result.httpStatus, errorCode: code }); failures.push(`${model.id}:${code}`); logError("ai_model_output_rejected", error, { model: model.id, role: model.role, code }); continue; }
++      }
++      await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null }); return { text: result.text, modelId: model.id, parsed };
++    }
+     catch (error) { const httpStatus = error instanceof SandHttpError ? error.httpStatus : null; const code = httpStatus ? `http_${httpStatus}` : aiErrorCode(error); await recordAiCallSafe(env, { chatId, updateId, modelId: model.id, modelRole: model.role, latencyMs: nowMs() - started, ok: false, httpStatus, errorCode: code }); failures.push(`${model.id}:${code}`); logError("ai_model_failed", error, { model: model.id, role: model.role, code }); if (httpStatus === 401 || httpStatus === 403) break; }
+   }
+-  const joined = failures.join(" | "); let code = "AI_UNAVAILABLE"; if (/http_401|http_403/.test(joined)) code = "AI_AUTH"; else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL"; else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT"; else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM"; else if (/timeout/.test(joined)) code = "AI_TIMEOUT"; throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
++  const joined = failures.join(" | "); let code = "AI_UNAVAILABLE"; if (/http_401|http_403/.test(joined)) code = "AI_AUTH"; else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL"; else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT"; else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM"; else if (/timeout/.test(joined)) code = "AI_TIMEOUT"; else if (/AI_BAD_|BAD_PLAN|BAD_RECIPE/.test(joined)) code = "AI_BAD_OUTPUT"; throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
+ }
+ function extractJsonObject(raw) {
+-  const s = String(raw ?? "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""), direct = parseJsonSafe(s, undefined); if (direct !== undefined) return direct;
++  const s = String(raw ?? "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""), miss = Symbol("json_parse_miss"), direct = parseJsonSafe(s, miss);
++  if (direct !== miss) return direct;
+   const start = s.indexOf("{"); if (start < 0) throw new SandValidationError("AI did not return JSON", "AI_BAD_JSON"); let depth = 0, inString = false, escaped = false;
+   for (let i = start; i < s.length; i += 1) { const ch = s[i]; if (inString) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') inString = false; continue; } if (ch === '"') { inString = true; continue; } if (ch === "{") depth += 1; if (ch === "}") { depth -= 1; if (depth === 0) { try { return JSON.parse(s.slice(start, i + 1)); } catch { throw new SandValidationError("AI returned malformed JSON", "AI_BAD_JSON"); } } } }
+   throw new SandValidationError("AI returned incomplete JSON", "AI_BAD_JSON");
+@@ -489,8 +499,8 @@
+     "الأدوات المتاحة الآن:", capabilityPromptList(capabilities), "سياق الذاكرة:", JSON.stringify(memory),
+   ].join("\n");
+   const messages = [{ role: "system", content: system }, ...history.map((r) => ({ role: String(r.role), content: String(r.content) }))];
+-  const result = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages, temperature: 0.15, maxTokens: 1800 });
+-  return { plan: validatePlannerDecision(extractJsonObject(result.text), capabilities, Boolean(pending)), modelId: result.modelId, pending };
++  const result = await callAiChain(env, { chatId: ctx.chatId, updateId: ctx.updateId, messages, temperature: 0.15, maxTokens: 1800, validate: (text) => validatePlannerDecision(extractJsonObject(text), capabilities, Boolean(pending)) });
++  return { plan: result.parsed, modelId: result.modelId, pending };
+ }
+ function validatePlannerDecision(raw, capabilities, hasPendingConfirmation) {
+   if (!raw || typeof raw !== "object") throw new SandValidationError("Planner output must be object", "AI_BAD_PLAN");
+@@ -531,7 +541,7 @@
+     if (plan.kind !== "plan") { const reply = plan.reply || forged.reply; await saveAssistantMessage(env, chatId, updateId, reply, modelId); await sendTelegramOnce(env, `reply:${updateId}`, chatId, reply); return; }
+   }
+   const op = await getOrCreateOperation(env, ctx, plan), outcome = await runAgentLoop(env, ctx, op, plan);
+-  if (!outcome.paused) { await finalizeOperation(env, op.id, outcome.reply); await setChatState(env, chatId, userId, { last_operation_id: op.id, last_entity: outcome.lastEntity ?? null, pending_context: null }); }
++  if (!outcome.paused) { await finalizeOperation(env, op.id, outcome.reply, outcome.completed !== false); await setChatState(env, chatId, userId, { last_operation_id: op.id, last_entity: outcome.lastEntity ?? null, pending_context: outcome.completed === false ? { goal: ctx.text, operation_id: op.id, status: 'partial' } : null }); }
+   const reply = outcome.reply; await saveAssistantMessage(env, chatId, updateId, reply, modelId); await sendTelegramOnce(env, `reply:${updateId}`, chatId, reply);
+ }
+ async function getOrCreateOperation(env, ctx, plan) {
