@@ -27,17 +27,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
-      - name: Reconstruct proven canonical source
+
+      - name: Reconstruct exact PRIME source and normalize core v5
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
           test "$(sha256sum SAND.js | awk '{print $1}')" = "6d3df0dcc5880f0620f440effd1afc5d140d72bebd878cb1a0cb571eb0f04c45"
           patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
-          SHA=$(sha256sum SAND.js | awk '{print $1}')
-          echo "canonical_source_sha=$SHA"
-          test "$SHA" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
+          test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
+          node sand_prime/schema_v5_transform.mjs SAND.js
+          echo "prime_v5_source_sha=$(sha256sum SAND.js | awk '{print $1}')"
           node --check SAND.js
+          ! grep -q 'text\.includes(' SAND.js
+          ! grep -q 'Math\.random' SAND.js
+          ! grep -q '@ts-ignore\|@ts-nocheck' SAND.js
+          ! grep -Eq '\beval\(' SAND.js
+
+      - name: checkJs gate
+        run: |
+          set -euo pipefail
+          npm install --no-save typescript@5.8.3 wrangler@latest >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND.js"]}' > tsconfig.json
+          npx tsc -p tsconfig.json --pretty false
+
       - name: Probe fixed model routes
         run: |
           set -euo pipefail
@@ -47,11 +60,11 @@ jobs:
           const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
           (async()=>{for(const model of models){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000),t=Date.now();try{const r=await fetch(ep,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'هاي'}],temperature:0,max_tokens:50,stream:false}),signal:c.signal});const d=await r.json();console.log(JSON.stringify({model,status:r.status,ms:Date.now()-t,has_response:d&&typeof d==='object'}));if(!r.ok||!d||typeof d!=='object')throw Error('route failed '+model)}finally{clearTimeout(tm)}}})().catch(e=>{console.error(e);process.exit(1)});
           NODE
+
       - name: Deploy isolated PRIME staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
-          npm install --no-save wrangler@latest >/dev/null
           cat > "$CFG" <<'EOF'
           {"name":"sand-prime-staging","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false","ALLOW_FORGED_PUBLIC_GET":"true"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           EOF
@@ -60,15 +73,31 @@ jobs:
           echo "::add-mask::$W"; echo "::add-mask::$K"
           echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
           for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
-      - name: Health and selftest
+
+      - name: Health selftest and schema normalization proof
         run: |
           set -euo pipefail
-          for i in {1..25}; do code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true); if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0"&&x.prime_schema_version==="1"&&x.semantic_routing===true&&x.keyword_routing===false?0:1)'; then break; fi;sleep 2;done
+          for i in {1..25}; do
+            code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
+            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0"&&x.schema_version==="5"&&x.prime_schema_version==="1"&&x.semantic_routing===true&&x.keyword_routing===false?0:1)'; then break; fi
+            sleep 2
+          done
           cat /tmp/h
-          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.version!=="1.0.0"||x.prime_schema_version!=="1"||x.keyword_routing!==false||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.version!=="1.0.0"||x.schema_version!=="5"||x.prime_schema_version!=="1"||x.keyword_routing!==false||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
           code=0
           for i in {1..25}; do code=$(curl -sS -o /tmp/a -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true);[ "$code" = 200 ]&&break;sleep 2;done
           test "$code" = 200
           curl -fsS -H "x-sand-admin: $K" "$URL/admin/selftest" >/tmp/selftest.json
           cat /tmp/selftest.json
           node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/selftest.json"));if(!x.ok||!x.tests?.every(t=>t.ok))throw Error(JSON.stringify(x))'
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT value FROM sand_core_meta WHERE key='schema_version'; SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('sand_core_chat_leases','sand_ai_messages') ORDER BY name; SELECT COUNT(*) legacy_reminder_rows FROM sand_reminders;" --json >/tmp/dbproof.json
+          cat /tmp/dbproof.json
+          node - <<'NODE'
+          const x=JSON.parse(require('fs').readFileSync('/tmp/dbproof.json','utf8'));
+          const sets=x.map(r=>r.results||[]);
+          if(String(sets[0]?.[0]?.value)!=='5') throw Error('core meta did not normalize to 5');
+          const defs=(sets[1]||[]).map(r=>String(r.sql||'')).join('\n');
+          if(!/updated_at/.test(defs)||!/['"]system['"]/.test(defs)) throw Error('normalized core contract not present');
+          if(!sets[2]?.length) throw Error('legacy reminder table was not preserved');
+          console.log('CORE_SCHEMA_V5_LIVE_NORMALIZATION_OK');
+          NODE
