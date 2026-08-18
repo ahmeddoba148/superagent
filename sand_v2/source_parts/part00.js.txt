@@ -1,0 +1,250 @@
+/*
+ * SAND PRIME — Core V2
+ * Clean semantic conversation workspace built on a durable FIFO transport pattern.
+ * One physical Cloudflare Worker file.
+ *
+ * Design contract:
+ * - No keyword/phrase intent routing.
+ * - AI interprets meaning into an app-owned structured turn plan.
+ * - The app validates, authorizes, executes and verifies every state mutation.
+ * - Conversation focus and active objects are durable first-class state.
+ * - Follow-up turns resolve against the active workspace, not against phrase dictionaries.
+ * - AI never writes D1 directly and never sees raw secrets.
+ */
+
+const APP_NAME = "SAND PRIME Core V2";
+const APP_VERSION = "2.0.0-core-v2";
+const DATA_SCHEMA_VERSION = "1";
+
+const TZ = "Africa/Cairo";
+const INBOX_PROCESS_LEASE_MS = 25_000;
+const CHAT_LEASE_MS = 32_000;
+const CHAT_ACQUIRE_WAIT_MS = 12_000;
+const DRAIN_BUDGET_MS = 27_000;
+const MAX_DRAIN_BATCH = 4;
+const CHAT_SETTLE_MS = 900;
+const CHAT_SETTLE_MAX_WAIT_MS = 6_000;
+const AI_TOTAL_BUDGET_MS = 12_000;
+const AI_MODEL_TIMEOUT_MS = 4_000;
+const AI_HISTORY_MESSAGES = 20;
+const AI_MAX_REPLY_CHARS = 3900;
+const INBOX_TRANSIENT_MAX_ATTEMPTS = 4;
+const DELIVERY_UNCERTAIN_AFTER_MS = 30_000;
+const PLANNER_MAX_ACTIONS = 8;
+
+const AI_MODELS = Object.freeze([
+  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),
+  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_1" }),
+  Object.freeze({ id: "gemini::gemini-3.5-flash-lite", role: "fallback_2" }),
+]);
+
+const TABLES = Object.freeze({
+  meta: "sand_v2_meta",
+  inbox: "sand_v2_inbox",
+  chatLeases: "sand_v2_chat_leases",
+  chatIngress: "sand_v2_chat_ingress",
+  messages: "sand_v2_messages",
+  aiCalls: "sand_v2_ai_calls",
+  workspaces: "sand_v2_workspaces",
+  objects: "sand_v2_objects",
+  memories: "sand_v2_memories",
+  reminders: "sand_v2_reminders",
+  operations: "sand_v2_operations",
+  steps: "sand_v2_operation_steps",
+  deliveries: "sand_v2_deliveries",
+});
+
+const ALLOWED_ACTIONS = new Set([
+  "object.create",
+  "object.patch",
+  "object.archive",
+  "focus.set",
+  "focus.clear",
+  "reminder.set",
+  "reminder.cancel",
+  "memory.upsert",
+  "memory.forget",
+]);
+
+const ALLOWED_OBJECT_KINDS = new Set([
+  "commitment",
+  "task",
+  "note",
+  "contact",
+  "list",
+  "project",
+  "preference",
+  "generic",
+]);
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET" && url.pathname === "/") {
+        return json({
+          ok: true,
+          service: APP_NAME,
+          version: APP_VERSION,
+          architecture: "semantic-conversation-workspace",
+          semantic_routing: true,
+          keyword_routing: false,
+          models: AI_MODELS.map((x) => x.id),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/health") {
+        return await health(env);
+      }
+
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === "/setup") {
+        return await setup(request, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/telegram") {
+        return await telegramWebhook(request, env, ctx);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/drain") {
+        return await internalDrain(request, env, ctx);
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/status") {
+        return await adminStatus(request, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/selftest") {
+        return await adminSelftest(request, env);
+      }
+
+      return new Response("Not found", { status: 404 });
+    } catch (error) {
+      logError("fetch_unhandled", error);
+      return json({ ok: false, error: "internal_error", message: safeError(error) }, 500);
+    }
+  },
+
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await ensureSchema(env);
+          const chats = await pendingChats(env, 20);
+          await Promise.allSettled(chats.map((chatId) => drainChat(env, chatId)));
+          await deliverDueReminders(env, 30);
+          await markStaleDeliveriesUncertain(env);
+        } catch (error) {
+          logError("scheduled_recovery", error, { scheduledTime: controller?.scheduledTime ?? null });
+        }
+      })(),
+    );
+  },
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function safeError(error) {
+  if (error instanceof Error) return error.message.slice(0, 1200);
+  return String(error ?? "Unknown error").slice(0, 1200);
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function truthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function compactText(value, max = 1000) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, max);
+}
+
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(String(value ?? ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function randomId(prefix = "id") {
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+async function secretEqual(a, b) {
+  const left = new TextEncoder().encode(String(a ?? ""));
+  const right = new TextEncoder().encode(String(b ?? ""));
+  const [leftHash, rightHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", left),
+    crypto.subtle.digest("SHA-256", right),
+  ]);
+  const x = new Uint8Array(leftHash);
+  const y = new Uint8Array(rightHash);
+  let diff = 0;
+  for (let i = 0; i < x.length; i += 1) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+function requireBinding(env, name) {
+  if (!env?.[name]) throw new Error(`Missing binding: ${name}`);
+}
+
+function logError(scope, error, extra = {}) {
+  console.error(JSON.stringify({ level: "error", scope, error: safeError(error), ...extra, at: nowIso() }));
+}
+
+class SandHttpError extends Error {
+  constructor(message, httpStatus) {
+    super(message);
+    this.name = "SandHttpError";
+    this.httpStatus = httpStatus;
+  }
+}
+
+class SandAiChainError extends Error {
+  constructor(code, failures) {
+    super(`AI unavailable: ${failures.join(" | ") || code}`);
+    this.name = "SandAiChainError";
+    this.code = code;
+    this.failures = failures;
+  }
+}
+
+class SandPlanError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "SandPlanError";
+    this.code = code;
+  }
+}
+
+async function ensureSchema(env) {
+  requireBinding(env, "DB");
+  const at = nowIso();
+
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.meta} (
+      key TEXT PRIMARY KEY,
