@@ -1,0 +1,28 @@
+async function deepSelftestV127(env){
+  const chat='__sanad_v127_selftest__',tests=[];const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  const tables=['sanad_shopping','sanad_shopping_sessions','sanad_reminders','sanad_reminder_fires','sanad_recurrences','sanad_recurrence_fires','sanad_dependencies','sanad_memories','sanad_entities','sanad_edges','sanad_projects','sanad_project_tasks','sanad_waiting','sanad_prayer_rules','sanad_prayer_fires','sanad_live_watches','sanad_life_inbox','sanad_operation_snapshots','sanad_receipts','sanad_audit','sanad_failures','sanad_proactive_fires','sanad_daily_brief_fires','sanad_pending_actions','sanad_pending_conflicts','sanad_users'];
+  for(const t of tables)if(await tableExistsV125(env,t))try{await env.DB.prepare(`DELETE FROM ${t} WHERE chat_id=?`).bind(chat).run()}catch(e){add(`cleanup ${t}`,false,safeError(e));}
+  try{
+    let user=await ensureUser(env,chat,'V127Selftest');
+    let r=await toolReminderCancel(env,chat,{ids:[987654321]});add('missing reminder cancel rejected',!r.ok&&r.error==='ids_not_found',JSON.stringify(r));
+    r=await toolMemoryForget(env,chat,{ids:[987654321]});add('missing memory forget rejected',!r.ok&&r.error==='ids_not_found',JSON.stringify(r));
+    r=await toolProfileUpdateV125(env,chat,{timezone:'Not/A_Timezone'});add('invalid timezone rejected',!r.ok&&r.error==='invalid_timezone',JSON.stringify(r));
+    r=await toolProfileUpdateV125(env,chat,{latitude:91});add('invalid latitude rejected',!r.ok&&r.error==='invalid_latitude',JSON.stringify(r));
+    r=await toolProfileUpdateV125(env,chat,{morning_brief_time:'25:61'});add('invalid brief time rejected',!r.ok&&String(r.error).includes('morning_brief_time'),JSON.stringify(r));
+    r=await toolProjectCreate(env,chat,{title:'اختبار 12.7',priority:'high'});const pid=Number(r.id);add('project fixture',r.ok&&pid>0,pid);
+    r=await toolProjectTaskCreateV125(env,chat,{project_id:pid,title:'قبل التعديل'});const tid=Number(r.id);add('task fixture',r.ok&&tid>0,tid);
+    r=await toolProjectTaskUpdateV125(env,chat,{id:tid,title:'بعد التعديل',status:'done',priority:'high',due_at:'2026-12-01T10:00:00Z'});add('task exact update verified',r.ok&&r.verified&&r.after?.title==='بعد التعديل'&&r.after?.status==='done'&&r.after?.priority==='high',JSON.stringify(r.after));
+    r=await toolDependencyCreateV125(env,chat,{source_type:'project',source_id:1,target_type:'reminder',target_id:1,relation:'after_start'});add('unsupported dependency rejected',!r.ok&&r.error==='unsupported_dependency_type',JSON.stringify(r));
+    r=await toolWorldUpsertV125(env,chat,{entity_type:'concept',name:'استنتاج تجريبي',data:{x:1}});add('inferred world default confidence',r.ok&&r.after?.source==='agent_inferred'&&Number(r.after?.confidence)===0.5,JSON.stringify(r.after));
+    const snap=await snapshotUserStateV125(env,chat,[{tool:'shopping.add',args:{}}]);add('domain scoped snapshot',Object.keys(snap).every(x=>['sanad_shopping','sanad_shopping_sessions'].includes(x)),Object.keys(snap).join(','));
+    add('fallback no-op no false success',!fallbackCompose([{tool:'shopping.add',ok:true,verified:true,changed:0}]).includes('✅'));
+    add('fallback verified changed success',fallbackCompose([{tool:'shopping.add',ok:true,verified:true,changed:1}]).includes('✅'));
+    add('context shopping routed',contextDomainsV127('ضيف لبن للمشتريات').has('shopping'));
+    add('dependency spec closed',TOOL_SPECS['dependency.create']?.args?.source_type==='reminder'&&TOOL_SPECS['dependency.create']?.args?.target_type==='reminder');
+    await env.DB.prepare(`INSERT INTO sanad_meta(key,value,updated_at) VALUES('ci_silent_telegram','1',?) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=excluded.updated_at`).bind(nowIso()).run();
+    const key='v127-selftest-sendonce';await env.DB.prepare(`DELETE FROM sanad_proactive_fires WHERE chat_id=? AND fire_key=?`).bind(chat,key).run();const first=await sendOnceV125(env,chat,key,'test'),second=await sendOnceV125(env,chat,key,'test');add('sendOnce atomic single claim',first===true&&second===false,`${first}/${second}`);
+    await toolProfileUpdateV125(env,chat,{timezone:'UTC',morning_brief_enabled:1,morning_brief_time:'08:00'});user=await ensureUser(env,chat);const d='2026-08-18',last=Date.parse(`${d}T07:59:00Z`),now=Date.parse(`${d}T08:01:00Z`);await env.DB.prepare(`DELETE FROM sanad_daily_brief_fires WHERE chat_id=? AND brief_date=? AND brief_type='morning'`).bind(chat,d).run();await deliverDailyBriefsV125(env,user,last,now);const brief=await env.DB.prepare(`SELECT 1 x FROM sanad_daily_brief_fires WHERE chat_id=? AND brief_date=? AND brief_type='morning'`).bind(chat,d).first();add('daily brief window not exact minute',!!brief);
+  }catch(e){add('selftest exception',false,safeError(e));}
+  try{await env.DB.prepare(`INSERT INTO sanad_meta(key,value,updated_at) VALUES('ci_silent_telegram','0',?) ON CONFLICT(key) DO UPDATE SET value='0',updated_at=excluded.updated_at`).bind(nowIso()).run()}catch{}
+  return{ok:tests.every(x=>x.ok),version:VERSION,tests};
+}
