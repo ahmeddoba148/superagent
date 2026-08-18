@@ -20,8 +20,8 @@ jobs:
       BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
       OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
       CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
-      WORKER_NAME: sand-prime-sem-${{ github.run_id }}
-      URL: https://sand-prime-sem-${{ github.run_id }}.ahmeddoba91.workers.dev
+      WORKER_NAME: sand-prime-semantic-staging
+      URL: https://sand-prime-semantic-staging.ahmeddoba91.workers.dev
       DB: superagent-v106-staging
       CFG: wrangler.sand-prime-semantic.jsonc
     steps:
@@ -45,7 +45,7 @@ jobs:
           grep -q 'redirect: "manual"' SAND.js
           grep -q 'PUBLIC_REDIRECT_BLOCKED' SAND.js
           grep -q 'FORGE_REDIRECT_BLOCKED' SAND.js
-      - name: Deploy exact source to run-isolated staging
+      - name: Deploy exact source to dedicated semantic staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$WORKER_NAME"
