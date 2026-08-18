@@ -23,11 +23,11 @@
       },
       {
         "name": "natural shopping persisted",
-        "detail": "[{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":242,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":243,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":244,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":245,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+        "detail": "[{\"id\":246,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":247,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":248,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":249,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":250,\"title\":\"شيدر\",\"status\":\"pending\"}]"
       },
       {
         "name": "shopping target exists",
-        "detail": "{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+        "detail": "{\"id\":246,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
       },
       {
         "name": "shopping unavailable state",
@@ -39,19 +39,19 @@
       },
       {
         "name": "life inbox natural capture",
-        "detail": "{\"id\":16,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+        "detail": "{\"id\":17,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
       },
       {
         "name": "source appointment created",
-        "detail": "{\"id\":146,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:54:48.807Z\",\"updated_at\":\"2026-08-18T17:54:48.807Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+        "detail": "{\"id\":150,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T18:03:17.464Z\",\"updated_at\":\"2026-08-18T18:03:17.464Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
       },
       {
         "name": "target reminder created",
-        "detail": "{\"id\":147,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:55:02.041Z\",\"updated_at\":\"2026-08-18T17:55:02.041Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+        "detail": "{\"id\":151,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T18:03:30.703Z\",\"updated_at\":\"2026-08-18T18:03:30.703Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
       },
       {
         "name": "after-end dependency stored",
-        "detail": "{\"dep\":{\"id\":45,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":146,\"target_type\":\"reminder\",\"target_id\":147,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T17:55:14.171Z\",\"updated_at\":\"2026-08-18T17:55:14.171Z\"},\"expected_source\":146,\"expected_target\":147}"
+        "detail": "{\"dep\":{\"id\":46,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":150,\"target_type\":\"reminder\",\"target_id\":151,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T18:03:43.177Z\",\"updated_at\":\"2026-08-18T18:03:43.177Z\"},\"expected_source\":150,\"expected_target\":151}"
       },
       {
         "name": "after-end dependency propagation",
@@ -59,23 +59,23 @@
       },
       {
         "name": "recurrence exists",
-        "detail": "{\"id\":49,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+        "detail": "{\"id\":50,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
       },
       {
         "name": "recurrence id retained",
-        "detail": "49"
+        "detail": "50"
       },
       {
         "name": "temporary pause until",
-        "detail": "{\"id\":49,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+        "detail": "{\"id\":50,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
       },
       {
         "name": "recurrence resume clears pause",
-        "detail": "{\"id\":49,\"active\":1,\"paused_until\":null}"
+        "detail": "{\"id\":50,\"active\":1,\"paused_until\":null}"
       },
       {
         "name": "callback reminder exists",
-        "detail": "{\"id\":149}"
+        "detail": "{\"id\":153}"
       },
       {
         "name": "reminder callback snooze",
@@ -127,7 +127,7 @@
       },
       {
         "name": "context/memory fixtures exist",
-        "detail": "1/42"
+        "detail": "1/24"
       },
       {
         "name": "context clear does not erase long-term memory",
@@ -135,7 +135,7 @@
       },
       {
         "name": "context clear undo restores conversation",
-        "detail": "42/42"
+        "detail": "24/24"
       },
       {
         "name": "memory clear fixture exists",
@@ -201,7 +201,7 @@
         {
           "name": "scheduler cycle window fixed",
           "ok": true,
-          "detail": "{\"c1\":1787075980334,\"c2\":1787075980334}"
+          "detail": "{\"c1\":1787076494126,\"c2\":1787076494126}"
         },
         {
           "name": "D1 mid mutation batch rolls back whole group",
@@ -226,7 +226,7 @@
         {
           "name": "performance telemetry persisted",
           "ok": true,
-          "detail": "{\"operation_id\":\"v128-metric-test\",\"chat_id\":\"__sanad_v128_selftest__\",\"total_ms\":123,\"context_ms\":10,\"planning_ms\":20,\"tools_ms\":30,\"verification_ms\":5,\"compose_ms\":15,\"d1_queries\":12,\"ai_calls\":2,\"tool_calls\":2,\"context_bytes\":8000,\"budget_json\":\"{\\\"simple\\\":true,\\\"maxD1\\\":32,\\\"maxAi\\\":2,\\\"maxTools\\\":7,\\\"maxContext\\\":26000}\",\"budget_exceeded\":0,\"created_at\":\"2026-08-18T17:59:44.044Z\"}"
+          "detail": "{\"operation_id\":\"v128-metric-test\",\"chat_id\":\"__sanad_v128_selftest__\",\"total_ms\":123,\"context_ms\":10,\"planning_ms\":20,\"tools_ms\":30,\"verification_ms\":5,\"compose_ms\":15,\"d1_queries\":12,\"ai_calls\":2,\"tool_calls\":2,\"context_bytes\":8000,\"budget_json\":\"{\\\"simple\\\":true,\\\"maxD1\\\":32,\\\"maxAi\\\":2,\\\"maxTools\\\":7,\\\"maxContext\\\":26000}\",\"budget_exceeded\":0,\"created_at\":\"2026-08-18T18:08:17.837Z\"}"
         }
       ]
     },
@@ -260,7 +260,7 @@
         {
           "name": "scheduler page marks active mutation transaction",
           "ok": true,
-          "detail": "{\"chat_id\":\"__v128scale__00001\",\"timezone\":\"Africa/Cairo\",\"city\":\"Cairo\",\"country\":\"Egypt\",\"locale\":\"ar-EG\",\"display_name\":null,\"autonomy_mode\":\"full_safe\",\"created_at\":\"2026-08-18T17:59:39.034Z\",\"updated_at\":\"2026-08-18T17:59:39.034Z\",\"country_code\":\"EG\",\"latitude\":null,\"longitude\":null,\"proactive_enabled\":1,\"morning_brief_time\":\"08:00\",\"evening_brief_time\":\"20:00\",\"morning_brief_enabled\":0,\"evening_brief_enabled\":0,\"ask_before_delete\":1,\"deep_reasoning_mode\":\"auto\",\"__tx_active\":1}"
+          "detail": "{\"chat_id\":\"__v128scale__00001\",\"timezone\":\"Africa/Cairo\",\"city\":\"Cairo\",\"country\":\"Egypt\",\"locale\":\"ar-EG\",\"display_name\":null,\"autonomy_mode\":\"full_safe\",\"created_at\":\"2026-08-18T18:08:12.917Z\",\"updated_at\":\"2026-08-18T18:08:12.917Z\",\"country_code\":\"EG\",\"latitude\":null,\"longitude\":null,\"proactive_enabled\":1,\"morning_brief_time\":\"08:00\",\"evening_brief_time\":\"20:00\",\"morning_brief_enabled\":0,\"evening_brief_enabled\":0,\"ask_before_delete\":1,\"deep_reasoning_mode\":\"auto\",\"__tx_active\":1}"
         }
       ]
     },
@@ -281,12 +281,12 @@
         {
           "name": "scheduler cycle creation race closed",
           "ok": true,
-          "detail": "{\"activeCount\":1,\"ids\":[\"cycle:1787075919309:1787075979309:d63729e5-3db6-488a-9ebc-f6504af92ef7\",\"cycle:1787075919309:1787075979309:d63729e5-3db6-488a-9ebc-f6504af92ef7\"]}"
+          "detail": "{\"activeCount\":1,\"ids\":[\"cycle:1787076432914:1787076492914:f8f455ca-1ef0-4dde-8c64-2d424d5fdad5\",\"cycle:1787076432914:1787076492914:f8f455ca-1ef0-4dde-8c64-2d424d5fdad5\"]}"
         },
         {
           "name": "scheduler cycle execution lease single owner",
           "ok": true,
-          "detail": "[true,false]"
+          "detail": "[false,true]"
         }
       ]
     },

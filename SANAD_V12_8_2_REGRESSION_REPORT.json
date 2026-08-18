@@ -17,11 +17,11 @@
     },
     {
       "name": "natural shopping persisted",
-      "detail": "[{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":242,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":243,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":244,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":245,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+      "detail": "[{\"id\":246,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":247,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":248,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":249,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":250,\"title\":\"شيدر\",\"status\":\"pending\"}]"
     },
     {
       "name": "shopping target exists",
-      "detail": "{\"id\":241,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+      "detail": "{\"id\":246,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
     },
     {
       "name": "shopping unavailable state",
@@ -33,19 +33,19 @@
     },
     {
       "name": "life inbox natural capture",
-      "detail": "{\"id\":16,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+      "detail": "{\"id\":17,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
     },
     {
       "name": "source appointment created",
-      "detail": "{\"id\":146,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:54:48.807Z\",\"updated_at\":\"2026-08-18T17:54:48.807Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+      "detail": "{\"id\":150,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T18:03:17.464Z\",\"updated_at\":\"2026-08-18T18:03:17.464Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
     },
     {
       "name": "target reminder created",
-      "detail": "{\"id\":147,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T17:55:02.041Z\",\"updated_at\":\"2026-08-18T17:55:02.041Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+      "detail": "{\"id\":151,\"chat_id\":\"476223041\",\"title\":\"أبعت التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T18:03:30.703Z\",\"updated_at\":\"2026-08-18T18:03:30.703Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
     },
     {
       "name": "after-end dependency stored",
-      "detail": "{\"dep\":{\"id\":45,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":146,\"target_type\":\"reminder\",\"target_id\":147,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T17:55:14.171Z\",\"updated_at\":\"2026-08-18T17:55:14.171Z\"},\"expected_source\":146,\"expected_target\":147}"
+      "detail": "{\"dep\":{\"id\":46,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":150,\"target_type\":\"reminder\",\"target_id\":151,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T18:03:43.177Z\",\"updated_at\":\"2026-08-18T18:03:43.177Z\"},\"expected_source\":150,\"expected_target\":151}"
     },
     {
       "name": "after-end dependency propagation",
@@ -53,23 +53,23 @@
     },
     {
       "name": "recurrence exists",
-      "detail": "{\"id\":49,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+      "detail": "{\"id\":50,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
     },
     {
       "name": "recurrence id retained",
-      "detail": "49"
+      "detail": "50"
     },
     {
       "name": "temporary pause until",
-      "detail": "{\"id\":49,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+      "detail": "{\"id\":50,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
     },
     {
       "name": "recurrence resume clears pause",
-      "detail": "{\"id\":49,\"active\":1,\"paused_until\":null}"
+      "detail": "{\"id\":50,\"active\":1,\"paused_until\":null}"
     },
     {
       "name": "callback reminder exists",
-      "detail": "{\"id\":149}"
+      "detail": "{\"id\":153}"
     },
     {
       "name": "reminder callback snooze",
@@ -121,7 +121,7 @@
     },
     {
       "name": "context/memory fixtures exist",
-      "detail": "1/42"
+      "detail": "1/24"
     },
     {
       "name": "context clear does not erase long-term memory",
@@ -129,7 +129,7 @@
     },
     {
       "name": "context clear undo restores conversation",
-      "detail": "42/42"
+      "detail": "24/24"
     },
     {
       "name": "memory clear fixture exists",
