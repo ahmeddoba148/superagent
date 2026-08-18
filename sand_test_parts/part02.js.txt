@@ -1,3 +1,22 @@
+)) return true;
+
+  const raw = String(env.ALLOWED_CHAT_ID ?? "").trim();
+  if (!raw) return true;
+
+  const allowed = new Set(raw.split(",").map((x) => x.trim()).filter(Boolean));
+  return allowed.has(String(chatId));
+}
+
+async function telegramWebhook(request, env, ctx) {
+  requireBinding(env, "DB");
+  requireBinding(env, "TELEGRAM_BOT_TOKEN");
+  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
+  requireBinding(env, "OMNIAI_API_KEY");
+  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) {
+    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
+  }
+
+  const presented = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
   if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
     return new Response("Unauthorized", { status: 401 });
   }
@@ -51,11 +70,41 @@ async function internalDrain(request, env, ctx) {
 
 async function persistUpdate(env, updateId, chatId, update) {
   const at = nowIso();
-  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.inbox}
-    (update_id, chat_id, payload_json, status, attempts, created_at, updated_at)
-    VALUES (?, ?, ?, 'pending', 0, ?, ?)`)
-    .bind(updateId, chatId, JSON.stringify(update), at, at)
-    .run();
+  const settleUntil = nowMs() + CHAT_SETTLE_MS;
+
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.inbox}
+      (update_id, chat_id, payload_json, status, attempts, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', 0, ?, ?)` )
+      .bind(updateId, chatId, JSON.stringify(update), at, at),
+    env.DB.prepare(`INSERT INTO ${TABLES.chatIngress}
+      (chat_id, settle_until_ms, last_seen_update_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET
+        settle_until_ms=MAX(${TABLES.chatIngress}.settle_until_ms, excluded.settle_until_ms),
+        last_seen_update_id=MAX(${TABLES.chatIngress}.last_seen_update_id, excluded.last_seen_update_id),
+        updated_at=excluded.updated_at`)
+      .bind(chatId, settleUntil, updateId, at),
+  ]);
+}
+
+async function waitForChatSettle(env, chatId) {
+  const deadline = nowMs() + CHAT_SETTLE_MAX_WAIT_MS;
+
+  while (true) {
+    const row = await env.DB.prepare(`SELECT settle_until_ms
+      FROM ${TABLES.chatIngress}
+      WHERE chat_id=? LIMIT 1`)
+      .bind(chatId)
+      .first();
+
+    const settleUntil = Number(row?.settle_until_ms ?? 0);
+    const waitMs = settleUntil - nowMs();
+    if (waitMs <= 0) return true;
+    if (nowMs() + waitMs > deadline) return false;
+
+    await sleep(Math.min(waitMs + 25, 1000));
+  }
 }
 
 async function acquireChatLease(env, chatId, owner) {
@@ -101,54 +150,4 @@ async function claimUpdate(env, updateId) {
   const at = nowIso();
   const leaseUntil = nowMs() + INBOX_PROCESS_LEASE_MS;
 
-  return env.DB.prepare(`UPDATE ${TABLES.inbox}
-    SET status='processing',
-        attempts=attempts+1,
-        process_lease_until=?,
-        updated_at=?,
-        last_error=NULL
-    WHERE update_id=?
-      AND (
-        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
-        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
-      )
-    RETURNING attempts`)
-    .bind(leaseUntil, at, updateId, nowMs(), nowMs())
-    .first();
-}
-
-async function markUpdateDone(env, updateId) {
-  const at = nowIso();
-  await env.DB.prepare(`UPDATE ${TABLES.inbox}
-    SET status='done', process_lease_until=NULL, last_error=NULL, updated_at=?, finished_at=?
-    WHERE update_id=?`)
-    .bind(at, at, updateId)
-    .run();
-}
-
-async function hasRecoverableUpdate(env, chatId) {
-  const row = await env.DB.prepare(`SELECT 1 AS ok
-    FROM ${TABLES.inbox}
-    WHERE chat_id=?
-      AND (
-        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
-        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
-      )
-    LIMIT 1`)
-    .bind(chatId, nowMs(), nowMs())
-    .first();
-  return Number(row?.ok ?? 0) === 1;
-}
-
-async function triggerDrainContinuation(env, chatId, origin) {
-  if (!origin || !env?.TELEGRAM_WEBHOOK_SECRET) return false;
-  try {
-    const response = await fetch(`${String(origin).replace(/\/$/, "")}/internal/drain`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-Sand-Internal": env.TELEGRAM_WEBHOOK_SECRET,
-      },
-      body: JSON.stringify({ chat_id: String(chatId) }),
-    });
-    if (response.body) await response.body.cancel().catch((error) => logError("continuation_body_cancel", error));
+  return env.DB.prepare(`UPD
