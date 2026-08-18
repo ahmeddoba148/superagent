@@ -213,6 +213,7 @@ function plannerSystemPrompt(snapshot) {
     "Current Cairo local datetime: " + `${local.date}T${local.time}` + ` (${local.weekday}, ${TZ}).`,
     "Allowed object kinds: commitment, task, note, contact, list, project, preference, generic.",
     "Allowed actions: object.create, object.patch, object.archive, focus.set, focus.clear, reminder.set, reminder.cancel, memory.upsert, memory.forget.",
+    "Every action object MUST contain a non-empty type from the allowed actions and an args object matching that action contract.",
     "Target contract: use {\"mode\":\"focus\"} for current focus, or {\"mode\":\"ref\",\"ref\":\"oN\"} using only a ref exposed in active_objects for another object. Never invent or copy internal IDs.",
     "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
     "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
@@ -280,7 +281,7 @@ function extractJsonObject(text) {
   return fallback;
 }
 
-async function callStructuredPlannerChain(env, { chatId, updateId, messages }) {
+async function callStructuredPlannerChain(env, { chatId, updateId, messages, snapshot }) {
   const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
   const failures = [];
   for (const model of AI_MODELS) {
@@ -306,6 +307,28 @@ async function callStructuredPlannerChain(env, { chatId, updateId, messages }) {
         failures.push(`${model.id}:invalid_structured_output`);
         continue;
       }
+
+      let validatedPlan;
+      try {
+        validatedPlan = validateSemanticPlan(plan, snapshot);
+      } catch (validationError) {
+        const contractCode = validationError instanceof SandPlanError ? validationError.code : "invalid_plan_contract";
+        await recordAiCallSafe(env, {
+          chatId,
+          updateId,
+          phase: "semantic_plan",
+          modelId: model.id,
+          modelRole: model.role,
+          latencyMs: result.latencyMs,
+          ok: false,
+          httpStatus: result.httpStatus,
+          errorCode: `invalid_plan_${String(contractCode).toLowerCase()}`,
+        });
+        failures.push(`${model.id}:invalid_plan_contract`);
+        logError("planner_contract_rejected", validationError, { model: model.id, code: contractCode, updateId });
+        continue;
+      }
+
       await recordAiCallSafe(env, {
         chatId,
         updateId,
@@ -317,7 +340,7 @@ async function callStructuredPlannerChain(env, { chatId, updateId, messages }) {
         httpStatus: result.httpStatus,
         errorCode: null,
       });
-      return { plan, modelId: model.id };
+      return { plan: validatedPlan, modelId: model.id };
     } catch (error) {
       const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
       const code = httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
@@ -338,8 +361,13 @@ async function callStructuredPlannerChain(env, { chatId, updateId, messages }) {
   }
 
   const joined = failures.join(" | ");
-  if (failures.length > 0 && failures.every((failure) => failure.endsWith(":invalid_structured_output"))) {
-    throw new SandPlanError("BAD_JSON", `No model returned a valid structured plan: ${joined}`);
+  if (
+    failures.length > 0 &&
+    failures.every(
+      (failure) => failure.endsWith(":invalid_structured_output") || failure.endsWith(":invalid_plan_contract"),
+    )
+  ) {
+    throw new SandPlanError("BAD_PLAN", `No model returned a valid executable plan: ${joined}`);
   }
   let code = "AI_UNAVAILABLE";
   if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
@@ -355,7 +383,7 @@ async function planSemanticTurn(env, { chatId, updateId, text, snapshot }) {
     { role: "system", content: plannerSystemPrompt(snapshot) },
     ...history,
   ];
-  return callStructuredPlannerChain(env, { chatId, updateId, messages });
+  return callStructuredPlannerChain(env, { chatId, updateId, messages, snapshot });
 }
 
 function validateTarget(target, snapshot) {
