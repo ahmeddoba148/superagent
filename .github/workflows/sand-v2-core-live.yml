@@ -100,7 +100,16 @@ jobs:
           cat /tmp/a
 
       - name: Semantic conversation torture gate
-        run: node sand_v2/live_gate.mjs
+        run: |
+          set +e
+          node sand_v2/live_gate.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '===== REJECTED PLANNER CONTRACT DIAGNOSTICS ====='
+            npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT update_id,phase,model_id,model_role,ok,http_status,error_code,created_at FROM sand_v2_ai_calls ORDER BY id DESC LIMIT 18;" || true
+            exit "$rc"
+          fi
 
       - name: Upload exact certified one-file source
         uses: actions/upload-artifact@v4
