@@ -7,13 +7,23 @@ on:
       - '.github/workflows/sand-prime-schema-diagnostic.yml'
 permissions:
   contents: read
+concurrency:
+  group: sand-prime-schema-diagnostic
+  cancel-in-progress: true
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-prime-diag.jsonc
     steps:
       - uses: actions/checkout@v4
-      - name: Reconstruct canonical PRIME and compare core schema v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Reconstruct exact canonical PRIME
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
@@ -21,13 +31,33 @@ jobs:
           patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
-          echo '===== PRIME CORE SCHEMA CONTEXT ====='
-          grep -n -B 35 -A 45 'Unsupported core schema version' SAND.js
-          echo '===== FETCH REMINDER SCHEMA V4 SOURCE ====='
-          git fetch --depth=1 origin sand-v1-reminder-live-test
-          for f in part1.b64 part2.b64 part3.b64 part4a.b64 part4b.b64 part4c.b64 part4d.b64; do git show "FETCH_HEAD:sand_reminder_live/$f"; done | tr -d '\r\n' | base64 -d | gzip -d > REMINDER.js
-          test "$(sha256sum REMINDER.js | awk '{print $1}')" = "d880020f263d527a206165345a1fd345e8e3f0938ad98e3a834b596328a53fd4"
-          echo '===== REMINDER V4 MIGRATION CONTEXT ====='
-          grep -n -B 25 -A 65 -E 'migrateCoreV4|CORE_SCHEMA_VERSION|schema_version' REMINDER.js | head -n 260
-          echo '===== CORE TABLE REFERENCES IN V4 ====='
-          grep -n -E 'sand_core_|chatIngress|inbox|coreMeta' REMINDER.js | head -n 180
+          node --check SAND.js
+      - name: Inspect actual staging D1 core contract
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$CFG" <<'EOF'
+          {"name":"sand-prime-schema-diag","main":"SAND.js","compatibility_date":"2026-08-18","d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}]}
+          EOF
+          Q="SELECT 'META' section,key name,value detail FROM sand_core_meta WHERE key='schema_version'; SELECT 'TABLE' section,name,sql detail FROM sqlite_master WHERE type='table' AND name IN ('sand_core_inbox','sand_core_chat_leases','sand_core_chat_ingress','sand_ai_messages','sand_ai_calls','sand_action_decisions','sand_operations','sand_reminders') ORDER BY name; SELECT 'INDEX' section,name,sql detail FROM sqlite_master WHERE type='index' AND tbl_name IN ('sand_core_inbox','sand_core_chat_leases','sand_core_chat_ingress','sand_ai_messages','sand_ai_calls') AND sql IS NOT NULL ORDER BY name;"
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "$Q" --json > /tmp/schema.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/schema.json','utf8'));
+          const rows=x.flatMap(r=>r.results||[]);
+          console.log(JSON.stringify(rows,null,2));
+          const meta=rows.find(r=>r.section==='META');
+          if(String(meta?.detail)!=='4') throw Error('Expected staging core schema 4, got '+JSON.stringify(meta));
+          const tables=new Map(rows.filter(r=>r.section==='TABLE').map(r=>[r.name,String(r.detail||'')]));
+          const need=['sand_core_inbox','sand_core_chat_leases','sand_core_chat_ingress','sand_ai_messages','sand_ai_calls'];
+          for(const n of need) if(!tables.has(n)) throw Error('Missing required core table '+n);
+          const req={
+            sand_core_inbox:['update_id','chat_id','payload_json','status','attempts','process_lease_until','last_error','created_at','updated_at','finished_at'],
+            sand_core_chat_leases:['chat_id','owner','lease_until','updated_at'],
+            sand_core_chat_ingress:['chat_id','settle_until_ms','last_seen_update_id','updated_at'],
+            sand_ai_messages:['id','chat_id','update_id','role','content','model_id','created_at'],
+            sand_ai_calls:['id','chat_id','update_id','model_id','model_role','latency_ms','ok','http_status','error_code','created_at']
+          };
+          for(const [t,cols] of Object.entries(req)){const sql=tables.get(t);for(const c of cols)if(!new RegExp('\\b'+c+'\\b','i').test(sql))throw Error(`Core contract mismatch: ${t}.${c}`)}
+          console.log('LIVE_D1_CORE_V4_COMPATIBLE_WITH_PRIME_V3_CONTRACT');
+          NODE
