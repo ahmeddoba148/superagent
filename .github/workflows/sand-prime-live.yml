@@ -31,11 +31,7 @@ jobs:
       - name: Assemble exact PRIME source
         run: |
           set -euo pipefail
-          cat sand_prime/part00.b64 sand_prime/part01.b64 sand_prime/part02.b64 sand_prime/part03.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
-          OLD=$(sha256sum SAND.js | awk '{print $1}')
-          echo "base_source_sha=$OLD"
-          test "$OLD" = "16225f81336429d1859ae9c4565d97578572157cf910b45629c03aa6ce18da1f"
-          patch --batch SAND.js < sand_prime/latest.patch
+          cat sand_prime/final_chunks/part00.b64 sand_prime/final_chunks/part01.b64 sand_prime/final_chunks/part02.b64 sand_prime/final_chunks/part03.b64 sand_prime/final_chunks/part04.b64 sand_prime/final_chunks/part05.b64 sand_prime/final_chunks/part06.b64 sand_prime/final_chunks/part07.b64 sand_prime/final_chunks/part08.b64 sand_prime/final_chunks/part09.b64 sand_prime/final_chunks/part10.b64 sand_prime/final_chunks/part11.b64 sand_prime/final_chunks/part12.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
           SHA=$(sha256sum SAND.js | awk '{print $1}')
           echo "prime_source_sha=$SHA"
           test "$SHA" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
