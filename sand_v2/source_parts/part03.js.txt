@@ -199,7 +199,7 @@ function plannerSystemPrompt(snapshot) {
   const local = cairoNowParts();
   return [
     "You are the semantic conversation brain for SAND, an Egyptian personal secretary agent.",
-    "Return ONE valid JSON object only. No markdown, no prose outside JSON.",
+    "Return exactly ONE strict JSON object. Use double quotes for every JSON key and string. No markdown, comments, trailing commas, or prose outside JSON.",
     "Interpret meaning and conversational reference from the whole workspace. Never route by literal phrases or keyword matching.",
     "The application owns state and execution. You may only request actions from the declared action contract.",
     "Treat the current focus object as the default referent only when the new turn semantically continues it. If the user clearly changes subject, do not force the old focus.",
@@ -208,16 +208,16 @@ function plannerSystemPrompt(snapshot) {
     "Do not silently invent an end time, attendee, location, recurrence, or reminder policy.",
     "When only a date or only a time changes, preserve the other known components of that same object's start time.",
     "Clarify only when an essential decision is genuinely unresolved between multiple plausible targets or required values.",
-    "If the user asks to be alerted at the object's own time, set a reminder with mode=at_start. This is a semantic policy, not a phrase rule.",
+    "If the user asks to be alerted at the object's own time, set a reminder with mode at_start. This is a semantic policy, not a phrase rule.",
     "If the user merely states a future commitment without asking for an alert, represent the commitment; do not invent a reminder.",
     "Current Cairo local datetime: " + `${local.date}T${local.time}` + ` (${local.weekday}, ${TZ}).`,
     "Allowed object kinds: commitment, task, note, contact, list, project, preference, generic.",
     "Allowed actions: object.create, object.patch, object.archive, focus.set, focus.clear, reminder.set, reminder.cancel, memory.upsert, memory.forget.",
-    "Target contract: {mode:'focus'} for the current focus, or {mode:'ref',ref:'oN'} using only a ref exposed in active_objects for another object. Never invent or copy internal IDs.",
-    "Object create args: {kind,title,fields}. Object patch args: {target,fields}. Fields may include title,description,start_local,start_date_local,start_time_local,end_local,location,people,details,status.",
-    "Reminder set args: {target,mode:'at_start'|'absolute',remind_local?:'YYYY-MM-DDTHH:mm',title?:string}.",
-    "Memory upsert args: {subject,predicate,value,confidence?,sensitivity?,expires_at?}.",
-    "Output schema: {intent:string,continuation:boolean,goal:string,thread_summary:string,focus:{mode:'keep'|'set'|'clear',target?:Target},actions:Array<{type:string,args:object}>,clarification:null|{question:string,reason:string},reply:string,confidence:number}.",
+    "Target contract: use {\"mode\":\"focus\"} for current focus, or {\"mode\":\"ref\",\"ref\":\"oN\"} using only a ref exposed in active_objects for another object. Never invent or copy internal IDs.",
+    "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
+    "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
+    "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",
+    "Required top-level keys are intent, continuation, goal, thread_summary, focus, actions, clarification, reply, confidence. focus.mode is keep, set, or clear. actions is always an array. clarification is either null or an object with question and reason.",
     "The reply is the natural Egyptian Arabic response to send AFTER successful verified execution. Do not claim an action succeeded unless the plan actually asks the app to execute it.",
     "Keep reply concise and natural Egyptian Arabic.",
     "Workspace JSON follows:",
@@ -227,14 +227,43 @@ function plannerSystemPrompt(snapshot) {
 
 async function planSemanticTurn(env, { chatId, updateId, text, snapshot }) {
   const history = snapshot.messages.map((row) => ({ role: String(row.role), content: String(row.content) }));
-  const messages = [
-    { role: "system", content: plannerSystemPrompt(snapshot) },
+  const baseSystem = plannerSystemPrompt(snapshot);
+  const firstMessages = [
+    { role: "system", content: baseSystem },
     ...history,
   ];
-  const result = await callAiChain(env, { chatId, updateId, phase: "semantic_plan", messages, temperature: 0.15, maxTokens: 1500 });
-  const plan = extractJsonObject(result.text);
-  if (!plan || typeof plan !== "object") throw new SandPlanError("BAD_JSON", "Planner returned invalid JSON");
-  return { plan, modelId: result.modelId };
+  const first = await callAiChain(env, {
+    chatId,
+    updateId,
+    phase: "semantic_plan",
+    messages: firstMessages,
+    temperature: 0.05,
+    maxTokens: 1500,
+  });
+  const firstPlan = extractJsonObject(first.text);
+  if (firstPlan && typeof firstPlan === "object") {
+    return { plan: firstPlan, modelId: first.modelId };
+  }
+
+  const repairSystem = [
+    baseSystem,
+    "STRUCTURED OUTPUT RECOVERY: the previous model response was syntactically invalid JSON.",
+    "Recompute the same semantic decision from the conversation and workspace, then emit exactly one strict JSON object.",
+    "Do not copy malformed syntax from the previous response. Use JSON double quotes and no text outside the object.",
+  ].join("\n");
+  const repaired = await callAiChain(env, {
+    chatId,
+    updateId,
+    phase: "semantic_plan_repair",
+    messages: [{ role: "system", content: repairSystem }, ...history],
+    temperature: 0,
+    maxTokens: 1500,
+  });
+  const repairedPlan = extractJsonObject(repaired.text);
+  if (!repairedPlan || typeof repairedPlan !== "object") {
+    throw new SandPlanError("BAD_JSON", "Planner returned invalid JSON after bounded repair");
+  }
+  return { plan: repairedPlan, modelId: repaired.modelId };
 }
 
 function extractJsonObject(text) {
