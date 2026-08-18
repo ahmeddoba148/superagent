@@ -25,8 +25,9 @@ jobs:
           grep -n -B 35 -A 45 'Unsupported core schema version' SAND.js
           echo '===== FETCH REMINDER SCHEMA V4 SOURCE ====='
           git fetch --depth=1 origin sand-v1-reminder-live-test
-          git show FETCH_HEAD:sand_reminder_live/source.js.gz.b64 | tr -d '\r\n' | base64 -d | gzip -d > REMINDER.js
+          for f in part1.b64 part2.b64 part3.b64 part4a.b64 part4b.b64 part4c.b64 part4d.b64; do git show "FETCH_HEAD:sand_reminder_live/$f"; done | tr -d '\r\n' | base64 -d | gzip -d > REMINDER.js
+          test "$(sha256sum REMINDER.js | awk '{print $1}')" = "d880020f263d527a206165345a1fd345e8e3f0938ad98e3a834b596328a53fd4"
           echo '===== REMINDER V4 MIGRATION CONTEXT ====='
-          grep -n -B 20 -A 55 -E 'migrateCoreV4|CORE_SCHEMA_VERSION|schema_version' REMINDER.js | head -n 220
+          grep -n -B 25 -A 65 -E 'migrateCoreV4|CORE_SCHEMA_VERSION|schema_version' REMINDER.js | head -n 260
           echo '===== CORE TABLE REFERENCES IN V4 ====='
-          grep -n -E 'sand_core_|chatIngress|inbox|coreMeta' REMINDER.js | head -n 160
+          grep -n -E 'sand_core_|chatIngress|inbox|coreMeta' REMINDER.js | head -n 180
