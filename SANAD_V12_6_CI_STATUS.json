@@ -1,0 +1,22 @@
+{
+  "ok": false,
+  "version": "12.6.0",
+  "run_id": "32085624903",
+  "run_attempt": "1",
+  "head_sha": "bf595744c7ed85b7d8573c006d3be655d5e5d910",
+  "stages": {
+    "build": "success",
+    "syntax": "failure",
+    "pure": "skipped",
+    "deploy": "skipped",
+    "secrets": "skipped",
+    "deep": "skipped",
+    "live": "skipped",
+    "cert": "skipped",
+    "commit": "skipped"
+  },
+  "failed": [
+    "syntax"
+  ],
+  "updated_at": "2026-08-18T00:44:15.512Z"
+}
