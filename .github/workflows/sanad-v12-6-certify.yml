@@ -39,7 +39,9 @@ jobs:
 
       - name: Build V12.6 deterministically
         id: build
-        run: node tools/build_sanad_v12_6_final.mjs | tee /tmp/build126.log
+        run: |
+          set -o pipefail
+          node tools/build_sanad_v12_6_final.mjs | tee /tmp/build126.log
 
       - name: Syntax TypeScript and anti-suppression gates
         id: syntax
@@ -77,6 +79,8 @@ jobs:
           add('clear-scope',CLEAR_USER_TABLES_V126.includes('sanad_users')&&CLEAR_USER_TABLES_V126.includes('sanad_life_inbox')&&LEGACY_CLEAR_TABLES_V126.includes('life_inbox'));
           add('migration-id-map',typeof legacyMapGetV126==='function'&&typeof legacyMapPutV126==='function');
           add('diagnostics',typeof diagnosticsV126==='function');
+          add('organized-menu',typeof mainMenuKeyboardV126==='function'&&mainMenuKeyboardV126().inline_keyboard.flat().some(x=>x.callback_data==='s126:panel:data'));
+          add('data-clear-controls',typeof dataPanelKeyboardV126==='function'&&['shopping','context','memory','world','schedule','all'].every(k=>dataPanelKeyboardV126().inline_keyboard.flat().some(x=>x.callback_data===`s126:data:${k}`)));
           console.log(JSON.stringify({ok:tests.every(x=>x.ok),tests,tools:Object.keys(TOOL_SPECS).length,snapshot_tables:SNAPSHOT_TABLES.length}));
           NODE
           node /tmp/sanad126.mjs | tail -1 | tee /tmp/pure126.json
@@ -138,7 +142,7 @@ jobs:
           SHA=$(sha256sum Sanad_V12_6_ULTIMATE_PARITY.js | awk '{print $1}'); export SHA
           node - <<'NODE'
           const fs=require('fs'),live=require('./SANAD_V12_6_LIVE_REPORT.json'),pure=require('/tmp/pure126.json'),src=fs.readFileSync('Sanad_V12_6_ULTIMATE_PARITY.js','utf8');
-          const cert={ok:true,version:'12.6.0',name:'Sanad — سند V12.6 Ultimate Parity',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-ultimate-parity-agent',tools:pure.tools,snapshot_tables:pure.snapshot_tables,models:3,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),parity_closures:['full atomic user-state snapshot','shopping four states','life inbox','recurrence pause-until and shift','dependency after_start/after_end/before_start and cycle guard','lossless legacy id mapping','Hijri and Islamic occasions','Arabic holiday labels','Telegram callback parity','diagnostics/model telemetry','voice budgets','external API timeouts/stale fallback','tomorrow/list aliases','fast casual fallback'],known_parity_gaps:[],known_critical_code_failures:[],limitations:['External model, Telegram and public API availability/quota remain dependencies; passing certification proves the tested matrix, not every possible future input.']};
+          const cert={ok:true,version:'12.6.0',name:'Sanad — سند V12.6 Ultimate Parity',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-ultimate-parity-agent',tools:pure.tools,snapshot_tables:pure.snapshot_tables,models:3,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),parity_closures:['full atomic user-state snapshot','shopping four states','life inbox','recurrence pause-until and shift','dependency after_start/after_end/before_start and cycle guard','lossless legacy id mapping','Hijri and Islamic occasions','Arabic holiday labels','Telegram callback parity','diagnostics/model telemetry','voice budgets','external API timeouts/stale fallback','tomorrow/list aliases','fast casual fallback','organized V11-style control panels','verified sectional data clearing with undo','final clear-all control'],known_parity_gaps:[],known_critical_code_failures:[],limitations:['External model, Telegram and public API availability/quota remain dependencies; passing certification proves the tested matrix, not every possible future input.']};
           fs.writeFileSync('SANAD_V12_6_CERTIFICATION.json',JSON.stringify(cert,null,2));
           NODE
 
