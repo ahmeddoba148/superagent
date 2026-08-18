@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "version": "11.6.1",
+  "source_file": "worker.js",
+  "sha256": "d5da2c80eb32df035dcc68d68fd3630bee840ae5d6250a9709466c845e93120d",
+  "syntax": {
+    "ok": true,
+    "checker": "node --check"
+  },
+  "typescript": {
+    "ok": true,
+    "version": "5.8.3",
+    "project": "jsconfig.json",
+    "syntactic_errors": 0,
+    "semantic_errors": 0,
+    "compiler_output_lines": 0
+  },
+  "vscode": {
+    "javascript_validation_enabled": true,
+    "suggestion_diagnostics_enabled": false,
+    "expected_problems_from_typescript": 0
+  },
+  "suppressions": {
+    "ts_nocheck": false,
+    "ts_ignore": false,
+    "ts_expect_error": false
+  },
+  "pure_regressions": {
+    "v10": true,
+    "v11": "9/9",
+    "v113": true,
+    "v114": true,
+    "v115": true
+  },
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3.5-flash"
+  ],
+  "runtime_behavior_change_from_11_6": "none except version labels/markers and workspace diagnostics profile"
+}

@@ -1,0 +1,63 @@
+{
+  "pass": 14,
+  "fail": 0,
+  "total": 14,
+  "tests": [
+    {
+      "name": "webhook /start 200",
+      "ok": true
+    },
+    {
+      "name": "welcome sent",
+      "ok": true
+    },
+    {
+      "name": "welcome no buttons",
+      "ok": true
+    },
+    {
+      "name": "duplicate update ignored",
+      "ok": true
+    },
+    {
+      "name": "shopping add confirmation",
+      "ok": true
+    },
+    {
+      "name": "ordinary shopping add no buttons",
+      "ok": true
+    },
+    {
+      "name": "2 shopping rows",
+      "ok": true
+    },
+    {
+      "name": "hyper opens todo",
+      "ok": true
+    },
+    {
+      "name": "callback toggles bought",
+      "ok": true
+    },
+    {
+      "name": "duplicate callback does not untoggle",
+      "ok": true
+    },
+    {
+      "name": "voice transcript executed",
+      "ok": true
+    },
+    {
+      "name": "voice normal response no buttons",
+      "ok": true
+    },
+    {
+      "name": "voice added item DB",
+      "ok": true
+    },
+    {
+      "name": "all processed ledger done",
+      "ok": true
+    }
+  ]
+}

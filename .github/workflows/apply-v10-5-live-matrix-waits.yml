@@ -1,0 +1,33 @@
+name: Apply V10.5 Live Matrix Waits
+
+on:
+  push:
+    branches:
+      - superagent-v10-5-reliability-rewrite
+    paths:
+      - 'tools/patch-v10-5-live-matrix-waits.py'
+      - '.github/workflows/apply-v10-5-live-matrix-waits.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: superagent-v10-5-reliability-rewrite
+      - run: python tools/patch-v10-5-live-matrix-waits.py
+      - name: Check syntax
+        run: node --check tests/v10-5-live-staging-matrix.mjs
+      - name: Commit test correction
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/v10-5-live-staging-matrix.mjs
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Fix V10.5 live idempotency wait for real AI latency"
+          git push origin HEAD:superagent-v10-5-reliability-rewrite

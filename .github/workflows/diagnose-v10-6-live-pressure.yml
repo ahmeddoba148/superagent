@@ -1,0 +1,24 @@
+name: Diagnose V10.6 Live Pressure
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths: ['.github/workflows/diagnose-v10-6-live-pressure.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --no-save wrangler@latest
+      - name: Build config
+        run: node -e 'const fs=require("fs");let s=fs.readFileSync("wrangler.v10-6-staging.template.jsonc","utf8");s=s.replace("__D1_DATABASE_ID__","65df37bc-973d-4bfe-a3f4-7c049e570697");fs.writeFileSync("wrangler.v106.staging.jsonc",s)'
+      - name: Inspect pressure state
+        run: |
+          C="$STAGING_ADMIN_CHAT_ID"
+          npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT status,COUNT(*) c FROM telegram_updates WHERE chat_id='$C' GROUP BY status; SELECT scope,error_text,COUNT(*) c FROM runtime_failures WHERE chat_id='$C' GROUP BY scope,error_text ORDER BY c DESC; SELECT COUNT(*) c FROM smart_list_items WHERE chat_id='$C'; SELECT title FROM smart_list_items WHERE chat_id='$C' ORDER BY id; SELECT action,entity_type,summary FROM action_audit WHERE chat_id='$C' ORDER BY id DESC LIMIT 60; SELECT update_id,status,attempts,last_error FROM telegram_inbox_v106 WHERE chat_id='$C' ORDER BY CAST(update_id AS INTEGER);"

@@ -1,0 +1,129 @@
+name: V11.4 Live Certification No Cron
+
+on:
+  push:
+    branches: [superagent-v11-4-google-3models]
+    paths:
+      - tools/apply_v114_google_models.mjs
+      - .github/workflows/v11-4-live-certify-nocron.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  live-v114:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v114-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+
+      - name: Build exact V11.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/v113_patch_payload.part{0,1,2,3} > /tmp/v113.b64
+          base64 -d /tmp/v113.b64 | gunzip > /tmp/v113.patch
+          patch -o SuperAgent_V11_3_FULL.js SuperAgent_V11_2_FULL.js < /tmp/v113.patch
+          test "$(sha256sum SuperAgent_V11_3_FULL.js | awk '{print $1}')" = "d6f4d0fe093aad8699331df2083db7e0d763f448d396135c11e4622b44ddd825"
+          node tools/apply_v113_live_fixes.mjs SuperAgent_V11_3_FULL.js
+          test "$(sha256sum SuperAgent_V11_3_FULL.js | awk '{print $1}')" = "23a57a6354beed23d24f0132997236d6bad702d660df110df982c5e1bf3f446c"
+          cp SuperAgent_V11_3_FULL.js SuperAgent_V11_4_FULL.js
+          node tools/apply_v114_google_models.mjs SuperAgent_V11_4_FULL.js
+          node --check SuperAgent_V11_4_FULL.js
+          cp SuperAgent_V11_4_FULL.js /tmp/v114.mjs
+          node -e "import('/tmp/v114.mjs').then(()=>console.log('module-load PASS'))"
+          export V114_SHA="$(sha256sum SuperAgent_V11_4_FULL.js | awk '{print $1}')"
+          echo "V114_SHA=$V114_SHA" >> "$GITHUB_ENV"
+          node <<'NODE'
+          const fs=require('fs'),crypto=require('crypto');const base=fs.readFileSync('SuperAgent_V11_3_FULL.js','utf8'),out=fs.readFileSync('SuperAgent_V11_4_FULL.js','utf8');
+          const m=out.match(/const MODEL_CHAIN=\[([\s\S]*?)\n\];\nconst PRIMARY_MODEL/);if(!m)throw Error('chain missing');const ids=[...m[1].matchAll(/id:"([^"]+)"/g)].map(x=>x[1]);const exp=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];
+          const funcs=s=>new Set([...s.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(x=>x[1])),tables=s=>new Set([...s.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gi)].map(x=>x[1]));const bf=funcs(base),of=funcs(out),bt=tables(base),ot=tables(out);const mf=[...bf].filter(x=>!of.has(x)),mt=[...bt].filter(x=>!ot.has(x));
+          const checks={version:out.includes('const V10_VERSION="11.4.0"'),chain:JSON.stringify(ids)===JSON.stringify(exp),google_only:ids.every(x=>x.startsWith('gemini::')),router_off:out.includes('v11_semantic_router:false'),identity:out.includes('أنا سوبر إيجنت V11.4'),setup:out.includes('سوبر إيجنت V11.4 جاهز للعمل'),functions:mf.length===0,tables:mt.length===0};const failed=Object.entries(checks).filter(([,v])=>!v).map(([k])=>k);if(failed.length)throw Error(JSON.stringify({failed,mf,mt,ids}));
+          fs.writeFileSync('V11_4_CERTIFICATION.json',JSON.stringify({version:'11.4.0',sha256:crypto.createHash('sha256').update(out).digest('hex'),bytes:Buffer.byteLength(out),lines:out.split(/\n/).length,models:ids,base_v113_functions:bf.size,retained_functions:[...bf].filter(x=>of.has(x)).length,missing_functions:mf,base_v113_tables:bt.size,retained_tables:[...bt].filter(x=>ot.has(x)).length,missing_tables:mt,checks,failed_checks:failed},null,2));
+          NODE
+
+      - name: Deploy V11.4 isolated staging without cron
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest
+          cat > wrangler.v114.live.jsonc <<'EOF'
+          {
+            "$schema":"./node_modules/wrangler/config-schema.json",
+            "name":"superagent-v114-staging",
+            "main":"SuperAgent_V11_4_FULL.js",
+            "compatibility_date":"2026-08-16",
+            "vars":{"PUBLIC_BOT":"false","V114_STAGING_BUILD":"google-3models-live-cert"},
+            "d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],
+            "services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]
+          }
+          EOF
+          npx wrangler deploy --config wrangler.v114.live.jsonc
+          export WEBHOOK_SECRET="$(openssl rand -hex 32)" SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"; echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY"; do k="${pair%%:*}";v="${pair#*:}";printf '%s' "$v"|npx wrangler secret put "$k" --config wrangler.v114.live.jsonc >/dev/null;done
+          sleep 5
+          curl -fsS "$URL/setup?key=$SETUP_KEY&force=1" | tee /tmp/setup.json
+          node -e "const x=require('/tmp/setup.json'),e=['gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];if(!x.ok||x.message!=='سوبر إيجنت V11.4 جاهز للعمل'||x.models_total!==3||x.primary_model!=='gemini::gemini-3.5-flash-lite'||JSON.stringify(x.fallback_models)!==JSON.stringify(e)||x.router!==false)process.exit(1)"
+          curl -fsS "$URL/health" | tee /tmp/health.json
+          node -e "const x=require('/tmp/health.json');if(!x.ok||x.version!=='11.4.0'||!x.db||!x.omniai_service)process.exit(1)"
+          curl -fsS "$URL/ready?key=$SETUP_KEY&all=1" | tee /tmp/ready-all.json
+          node -e "const x=require('/tmp/ready-all.json'),e=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash'];if(!x.ok||!x.db||!x.omniai||!x.all_models_ok||x.attempts.length!==3||JSON.stringify(x.attempts.map(a=>a.model))!==JSON.stringify(e)||!x.attempts.every(a=>a.ok))process.exit(1)"
+          curl -fsS "$URL/selftest?key=$SETUP_KEY" | tee /tmp/selftest.json
+          node -e "const x=require('/tmp/selftest.json');if(!x.ok||x.version!=='11.4.0'||!x.v10.ok||!x.v11.ok||!x.v113.ok||!x.v114.ok)process.exit(1)"
+
+      - name: Real Telegram and D1 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/live114.mjs <<'NODE'
+          import {execFileSync} from 'node:child_process';import fs from 'node:fs';
+          const URL=process.env.URL,DB=process.env.DB,CHAT=String(process.env.STAGING_ADMIN_CHAT_ID),SECRET=process.env.WEBHOOK_SECRET,cfg='wrangler.v114.live.jsonc',sleep=ms=>new Promise(r=>setTimeout(r,ms)),esc=s=>String(s).replaceAll("'","''");
+          function q(sql){const o=execFileSync('npx',['wrangler','d1','execute',DB,'--remote','--config',cfg,'--command',sql],{encoding:'utf8'}),a=JSON.parse(o.slice(o.indexOf('[')));return a?.[0]?.results||[];}const started=new Date().toISOString();let seq=1950000000+(Date.now()%10000000),msg=850000;const passes=[];
+          async function post(text,id=++seq){const b={update_id:id,message:{message_id:++msg,date:Math.floor(Date.now()/1000),chat:{id:Number(CHAT),type:'private'},from:{id:Number(CHAT),is_bot:false,first_name:'V114Live'},text}},t=Date.now(),r=await fetch(URL+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':SECRET},body:JSON.stringify(b)});if(!r.ok)throw Error('webhook '+r.status);return{id,t};}
+          async function wait(id,max=45000){const end=Date.now()+max;let x;while(Date.now()<end){x=q(`SELECT status,attempts,last_error FROM telegram_inbox_v106 WHERE update_id='${id}' LIMIT 1`)[0];if(x?.status==='done')return x;if(x?.status==='failed')throw Error(`terminal ${id}: ${x.last_error||''}`);await sleep(300);}throw Error(`timeout ${id} ${JSON.stringify(x)}`);}function ok(name,c,d=''){if(!c)throw Error(`FAIL ${name}: ${d}`);passes.push({name,detail:d});console.log(`PASS ${name} ${d}`);}
+          q(`DELETE FROM shopping_sessions WHERE chat_id='${esc(CHAT)}';DELETE FROM smart_list_items WHERE chat_id='${esc(CHAT)}';DELETE FROM smart_lists WHERE chat_id='${esc(CHAT)}';DELETE FROM reminders WHERE chat_id='${esc(CHAT)}' AND title LIKE '%V114-LIVE%';`);
+          let x=await post('انت اسمك اي'),r=await wait(x.id);ok('identity',r.attempts===1,`ms=${Date.now()-x.t}`);x=await post('عامل اي');r=await wait(x.id);ok('egyptian casual',r.attempts===1,`ms=${Date.now()-x.t}`);x=await post('اشرحلي ببساطة يعني ايه ذكاء اصطناعي');r=await wait(x.id);ok('AI direct chat',r.attempts===1,`ms=${Date.now()-x.t}`);
+          const list='بص عاوز اشتري\nعيش تورتيلا\nعيش توست\nفينو اسود\nفصوص رومي\nشيدر طبيعي\nكاجو\nفستق\nكوفي شيك\nحليب دينا\nايس كريم دينا\nوبطاطس طبيعية';x=await post(list);r=await wait(x.id);const items=q(`SELECT title FROM smart_list_items WHERE chat_id='${esc(CHAT)}' AND status='pending'`);ok('shopping 11/11',items.length===11,`items=${items.length} ms=${Date.now()-x.t}`);
+          x=await post('فكرني يوم 22 أكتوبر 2026 الساعة 6:23 مساء أراجع V114-LIVE-SINGLE');r=await wait(x.id);let rem=q(`SELECT local_date,local_time FROM reminders WHERE chat_id='${esc(CHAT)}' AND title='أراجع V114-LIVE-SINGLE' AND cancelled=0`);ok('reminder exact',rem.length===1&&rem[0].local_date==='2026-10-22'&&rem[0].local_time==='18:23',`rows=${rem.length} attempts=${r.attempts} ms=${Date.now()-x.t}`);
+          const did=++seq,dt='فكرني يوم 23 أكتوبر 2026 الساعة 6:29 مساء أراجع V114-LIVE-IDEMP',t=Date.now();await Promise.all([post(dt,did),post(dt,did)]);r=await wait(did);rem=q(`SELECT id FROM reminders WHERE chat_id='${esc(CHAT)}' AND title='أراجع V114-LIVE-IDEMP' AND cancelled=0`);ok('idempotent duplicate',rem.length===1,`rows=${rem.length} ms=${Date.now()-t}`);
+          const sent=await Promise.all(['/shopping','/today','صباح الفل'].map(v=>post(v))),done=[];for(const z of sent)done.push(await wait(z.id));ok('same-chat burst',done.every(v=>v.status==='done'),JSON.stringify(done.map(v=>v.attempts)));const failures=q(`SELECT scope,error_text,created_at FROM runtime_failures WHERE created_at>='${started}' ORDER BY id`);ok('runtime failures zero',failures.length===0,JSON.stringify(failures));
+          const ready=JSON.parse(fs.readFileSync('/tmp/ready-all.json','utf8')),stats=q(`SELECT model_id,attempts,successes,failures,last_latency_ms,last_error,updated_at FROM model_stats WHERE model_id IN ('gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash') ORDER BY updated_at DESC`);fs.writeFileSync('V11_4_LIVE_REPORT.json',JSON.stringify({ok:true,version:'11.4.0',sha256:process.env.V114_SHA,started,finished:new Date().toISOString(),models:{primary:'gemini::gemini-3.5-flash-lite',fallbacks:['gemini::gemini-3.1-flash-lite','gemini::gemini-3.6-flash']},ready_all:ready.attempts,passes,runtime_failures:failures,model_stats:stats},null,2));
+          NODE
+          node /tmp/live114.mjs
+          printf '%s  SuperAgent_V11_4_FULL.js\n' "$V114_SHA" > V11_4_SHA256.txt
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.4-Live-Certified
+          retention-days: 30
+          path: |
+            SuperAgent_V11_4_FULL.js
+            V11_4_CERTIFICATION.json
+            V11_4_LIVE_REPORT.json
+            V11_4_SHA256.txt
+
+      - name: Commit certified release
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_4_FULL.js V11_4_CERTIFICATION.json V11_4_LIVE_REPORT.json V11_4_SHA256.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build and live-certify SuperAgent V11.4 Google-only release'
+          git push origin HEAD:superagent-v11-4-google-3models

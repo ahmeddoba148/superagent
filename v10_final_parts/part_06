@@ -1,0 +1,71 @@
+get)}`,prayer:x.anchor,offset:-Math.abs(Number(x.offset??fallback??0)),weekdays,max_occurrences:maxOccurrences}));
++const seen=new Set();
++return mapped.filter(r=>{const key=`${r.prayer}|${r.offset}|${r.title}|${r.weekdays.join(",")}|${r.max_occurrences??""}`;if(seen.has(key))return false;seen.add(key);return true;});
++}
++
++async function saveMultiPrayerRules(env,chatId,rules){
++const profile=await getUserProfile(env,chatId);
++const now=zonedNow(profile.timezone);
++const ts=new Date().toISOString();
++const statements=rules.map(r=>env.DB.prepare(`INSERT INTO prayer_rules(chat_id,title,prayer,offset_minutes,start_date,end_date,weekdays_json,max_occurrences,fired_count,active,paused_until,exceptions_json,created_at,updated_at) VALUES(?,?,?,?,?,NULL,?,?,0,1,NULL,'[]',?,?)`).bind(chatId,r.title,r.prayer,Number(r.offset||0),now.date,JSON.stringify(r.weekdays||[]),r.max_occurrences??null,ts,ts));
++await env.DB.batch(statements);
++const lines=rules.map(r=>`🕌 ${formatPrayerRule({...r,start_date:now.date,active:1})} — ${r.title}`);
++const msg=`✅ تم حفظ ${rules.length} تذكيرات صلاة متكررة:\n\n${lines.join("\n")}\n\n⏱️ المواعيد هتتحسب يوميًا من وقت الصلاة الفعلي حسب موقعك، مش كساعة ثابتة.`;
++await sendText(env,chatId,msg);
++await saveConversationMessage(env,chatId,"assistant",msg);
++}
++
+ function parseRecurringPrayerAnchor(text){
+ const raw=
+ String(
+@@ -10164,7 +10330,7 @@
+ );
+ 
+ const daily=
+-/(?:كل\s+يوم|يوميا|يوميًا)/u.test(n);
++/(?:كل\s+يوم|يوميا|يوميًا|التذكيرات?\s+اليوميه|تذكيرات?\s+يوميه|بشكل\s+يومي)/u.test(n);
+ 
+ const named=
+ extractNamedWeekdays(n);
+@@ -13232,12 +13398,24 @@
+ 
+ function normalizeV10Dependencies(value){
+   const arr=Array.isArray(value)?value:[];
+-  return arr.slice(0,50).map(x=>({
++  const mapped=arr.slice(0,50).map(x=>({
+     source_ref:Math.max(0,Math.trunc(Number(x?.source_ref||0))),
+     target_ref:Math.max(0,Math.trunc(Number(x?.target_ref||0))),
+     relation:["after_start","after_end","before_start"].includes(String(x?.relation||""))?String(x.relation):"after_start",
+     offset_minutes:clamp(Math.trunc(Number(x?.offset_minutes||0)),0,10080)
+   })).filter(x=>x.source_ref!==x.target_ref);
++  const seen=new Set(),out=[];
++  for(const d of mapped){const k=`${d.source_ref}>${d.target_ref}:${d.relation}`;if(seen.has(k))continue;seen.add(k);out.push(d);}
++  return out;
++}
++
++function dependencyGraphHasCycle(deps){
++const graph=new Map();
++for(const d of deps||[]){if(!graph.has(d.source_ref))graph.set(d.source_ref,[]);graph.get(d.source_ref).push(d.target_ref);}
++const state=new Map();
++const visit=n=>{const st=state.get(n)||0;if(st===1)return true;if(st===2)return false;state.set(n,1);for(const m of graph.get(n)||[])if(visit(m))return true;state.set(n,2);return false;};
++for(const n of graph.keys())if(visit(n))return true;
++return false;
+ }
+ 
+ function normalizeV10WorldUpdates(value){
+@@ -13379,6 +13557,7 @@
+ 
+ async function persistIntentDependencies(env,chatId,intent,createdOne){
+   const deps=normalizeV10Dependencies(intent?.dependencies);if(!deps.length)return;
++  if(dependencyGraphHasCycle(deps))throw new Error("Verifier رفض روابط الأحداث لأنها تعمل دائرة اعتماد.");
+   const now=new Date().toISOString();
+   for(const d of deps){
+     const s=createdOne[d.source_ref],t=createdOne[d.target_ref];if(!s||!t||!Number(s.id)||!Number(t.id))continue;
+@@ -13594,7 +13773,9 @@
+ }
+ 
+ async function runV10PeriodicIntelligence(env,scheduledTime){
+-  if(!env.DB)return;await ensureSchemaOnce(env);const users=(await env.DB.prepare(`SELECT s.*,p.timezone FROM agent_settings s LEFT JOIN user_profiles p ON p.chat_id=s.chat_id WHERE s.morning_brief_enabled=1 OR s.evening_brief_enabled=1`).all())?.results||[];
++  if(!env.DB)return;await ensureSchemaOnce(env);
++  const cairo=zonedNow(TIME_ZONE);if(cairo.time==="03:00")await cleanupTelegramUpdateLedger(env);
++  const users=(await env.DB.prepare(`SELECT s.*,p.timezone FROM agent_settings s LEFT JOIN user_profiles p ON p.chat_id=s.chat_id WHERE s.morning_brief_enabled=1 OR s.evenin

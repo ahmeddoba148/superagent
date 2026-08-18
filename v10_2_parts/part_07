@@ -1,0 +1,53 @@
++  const rows=active.slice(0,V10_MAX_SHOP_ITEMS).map(x=>[{text:`${x.status==='bought'?'✅':x.status==='unavailable'?'🚫':x.status==='skipped'?'⏭️':'⬜'} ${String(x.title).slice(0,45)}`,callback_data:`shop:toggle:${x.id}`}]);
+   rows.push([{text:"✅ إنهاء التسوق",callback_data:`shop:finish:${listId}`}]);rows.push([{text:"↩️ المشتريات",callback_data:"panel:shopping"}]);return{inline_keyboard:rows};
+ }
+ 
+ function shoppingText(items,session=false){
+-  const relevant=items.filter(x=>["pending","bought","unavailable","skipped"].includes(String(x.status)));const bought=relevant.filter(x=>x.status==='bought').length,pending=relevant.filter(x=>x.status==='pending').length;
++  const relevant=items.filter(x=>["pending","bought","unavailable","skipped"].includes(String(x.status)));const pending=relevant.filter(x=>x.status==='pending').length,done=relevant.length-pending;
+   const lines=relevant.map(x=>`${x.status==='bought'?'✅':x.status==='unavailable'?'🚫':x.status==='skipped'?'⏭️':'⬜'} ${x.title}`);
+-  return `${session?'🛒 وضع التسوق':'🛒 قائمة المشتريات'}\n\n${lines.length?lines.join("\n"):"القائمة فاضية."}\n\n${bought}/${relevant.length} تم · باقي ${pending}`;
++  return `${session?'🛒 وضع التسوق':'🛒 قائمة المشتريات'}\n\n${lines.length?lines.join("\n"):"القائمة فاضية."}\n\n${done}/${relevant.length} تم · باقي ${pending}`;
+ }
+ 
+ async function showShoppingList(env,chatId,messageId=null,{startSession=false,placeName=null}={}){
+@@ -13671,6 +13794,64 @@
+   return n;
+ }
+ 
++
++function extractV102ShoppingAddClause(text){
++  const raw=String(text||"").trim();if(!raw)return null;
++  const re=/(?:ضيف|زود|حط|سجل)\s+(.+?)\s+(?:للمشتريات|(?:في|فى)\s+(?:قائمة|قائمه)?\s*المشتريات)/iu;
++  const m=re.exec(raw);if(!m)return null;
++  const items=splitShoppingItems(m[1]);if(!items.length)return null;
++  const before=raw.slice(0,m.index).trim();const after=raw.slice(m.index+m[0].length).trim();
++  let remaining=[before,after].filter(Boolean).join(" ").replace(/^[\s،,؛;.]*(?:و?كمان|و)\s*/u,"").replace(/\s*(?:و?كمان|و)[\s،,؛;.]*$/u,"").replace(/[\s،,؛;.]+$/g,"").replace(/\s+/g," ").trim();
++  return{items,remaining,matched:m[0]};
++}
++
++async function snapshotV102ShoppingMutation(env,chatId,items){
++  const existingList=await getDefaultShoppingList(env,chatId,false);
++  const before=[];
++  if(existingList){
++    for(const title of items){
++      const n=normalizeArabicLoose(String(title||""));if(!n)continue;
++      const row=await env.DB.prepare(`SELECT * FROM smart_list_items WHERE list_id=? AND chat_id=? AND normalized_title=? ORDER BY id DESC LIMIT 1`).bind(Number(existingList.id),chatId,n).first();
++      if(row)before.push({...row});
++    }
++  }
++  const audit=await env.DB.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM action_audit WHERE chat_id=?`).bind(chatId).first();
++  return{listExisted:!!existingList,listId:Number(existingList?.id||0),before,auditId:Number(audit?.id||0)};
++}
++
++async function rollbackV102ShoppingMutation(env,chatId,snapshot,result){
++  const beforeById=new Map((snapshot?.before||[]).map(x=>[Number(x.id),x]));
++  const statements=[];
++  for(const id0 of result?.ids||[]){
++    const id=Number(id0);const prev=beforeById.get(id);
++    if(prev)statements.push(env.DB.prepare(`UPDATE smart_list_items SET status=?,title=?,normalized_title=?,quantity=?,position=?,updated_at=? WHERE id=? AND chat_id=?`).bind(prev.status,prev.title,prev.normalized_title,prev.quantity,Number(prev.position||0),new Date().toISOString(),id,chatId));
++    else statements.push(env.DB.prepare(`DELETE FROM smart_list_items WHERE id=? AND chat_id=?`).bind(id,chatId));
++  }
++  if(statements.length)await env.DB.batch(statements);
++  await env.DB.prepare(`DELETE FROM action_audit WHERE chat_id=? AND id>? AND entity_type='shopping_items'`).bind(chatId,Number(snapshot?.auditId||0)).run();
++  if(!snapshot?.listExisted&&Number(result?.list?.id||0)){

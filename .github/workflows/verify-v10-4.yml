@@ -1,0 +1,89 @@
+name: Verify SuperAgent V10.4 Zero Known Bugs
+on:
+  push:
+    branches: [superagent-v10-4-zero-known-bugs]
+    paths:
+      - 'tools/build-v10-4.py'
+      - 'tests/v10-4-killer-regression.mjs'
+      - '.github/workflows/verify-v10-4.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build V10.4
+        run: python tools/build-v10-4.py
+      - name: Syntax and IntelliSense
+        run: |
+          node --check SuperAgent_V10_4_Zero_Known_Bugs.js
+          node tests/v10-3-intellisense-regression.mjs SuperAgent_V10_4_Zero_Known_Bugs.js
+      - name: V10.4 killer regression
+        run: node tests/v10-4-killer-regression.mjs
+      - name: V10.3.4 atomic direct regression
+        run: |
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_4_Atomic_Direct.js
+          node tests/v10-3-4-atomic-direct-e2e.mjs
+          node tests/v10-3-4-natural-shopping-v2.mjs
+      - name: V10.3.3 chain regression
+        run: |
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_3_Chain_Final.js
+          node tests/v10-3-3-chain-e2e.mjs
+      - name: Cycle canonicalization regression
+        run: |
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_2_Dependency_Canonical.js
+          node tests/v10-3-2-cycle-regression.mjs
+      - name: Reliability and semantic regression
+        run: |
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-reliability.mjs
+          node tests/v10-2-semantic-ci.mjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V9.2 stress regression
+        run: node tests/stress-v9-2.cjs SuperAgent_V10_3_Reliability_Lock.js
+      - name: V10 stress E2E migration
+        run: |
+          cp SuperAgent_V10_Final_Stability.js .v101_backup.js
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_Final_Stability.js
+          node tests/v10-final-stress.mjs
+          node tests/v10-final-e2e.mjs
+          node tests/v10-final-migration.mjs
+          mv .v101_backup.js SuperAgent_V10_Final_Stability.js
+      - name: Protected diagnostics regression
+        run: |
+          cp SuperAgent_V10_4_Zero_Known_Bugs.js SuperAgent_V10_3_Reliability_Lock.js
+          node tests/v10-3-1-diagnostics.mjs
+      - name: Write report
+        run: |
+          BYTES=$(wc -c < SuperAgent_V10_4_Zero_Known_Bugs.js)
+          SHA=$(sha256sum SuperAgent_V10_4_Zero_Known_Bugs.js | cut -d' ' -f1)
+          cat > V10_4_FINAL_REPORT.txt <<REPORT
+          Super Agent V10.4 Zero Known Bugs
+          Syntax + IntelliSense: PASS
+          Exact relative reschedule + dependency propagation: PASS
+          Relative reschedule bypasses AI: PASS
+          Undo full linked chain: PASS
+          Multi-command natural shopping separation: PASS
+          No malformed merged shopping item: PASS
+          No-op update guard: ENABLED
+          V10.3.4 atomic/natural shopping regression: PASS
+          V10.3.3 chain regression: PASS
+          Cycle canonicalization regression: PASS
+          Reliability + semantic regression: PASS
+          V9.2 stress regression: PASS
+          V10 stress/E2E/migration: PASS
+          Protected diagnostics: PASS
+          Exact bytes: $BYTES
+          Exact SHA256: $SHA
+          VERIFIED
+          REPORT
+      - name: Commit verified source and report
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -- SuperAgent_V10_3_4_Atomic_Direct.js SuperAgent_V10_3_3_Chain_Final.js SuperAgent_V10_3_2_Dependency_Canonical.js SuperAgent_V10_3_Reliability_Lock.js SuperAgent_V10_Final_Stability.js || true
+          git add SuperAgent_V10_4_Zero_Known_Bugs.js V10_4_FINAL_REPORT.txt
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Verify Super Agent V10.4 full regression'
+          git push

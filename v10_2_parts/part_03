@@ -1,0 +1,64 @@
++String(safetyContext?.baseText||""),
++safetyContext?.timezone||TIME_ZONE
++);
++
+ finalSafetyCheck(
+ intent,
+ safetyContext
+@@ -6163,6 +6170,106 @@
+ return intent;
+ }
+ 
++
++function parseV102GroundedClockMentions(text){
++  const src=normalizeTimeWords(normalizeDigits(String(text||"")));
++  const re=/(?<!\d)(?:الساعة|الساعه)?\s*(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)/giu;
++  const out=[];let m;
++  while((m=re.exec(src))!==null){
++    let hour=Number(m[1]);let minute=m[2]?Number(m[2]):0;const frac=String(m[3]||"");
++    if(/نص/u.test(frac))minute=30;else if(/ربع/u.test(frac))minute=15;
++    if(/إلا|الا/u.test(frac)){hour=hour===1?12:hour-1;minute=45;}
++    const period=String(m[4]||"");const pm=/(?:ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء|المساء|بالليل|ليل)/iu.test(period);
++    let h=hour%12;if(pm)h+=12;
++    out.push({index:m.index,end:re.lastIndex,time:`${String(h).padStart(2,"0")}:${String(minute).padStart(2,"0")}`,label:m[0]});
++  }
++  return out;
++}
++
++function extractV102DominantDateCue(text,timeZone=TIME_ZONE,timeHint=null){
++  const n=normalizeArabicLoose(normalizeDigits(String(text||"")));const now=zonedNow(timeZone);const rel=[];
++  if(/(?:بعد\s+بكره|بعد\s+بكرة)/u.test(n))rel.push(addDaysIso(now.date,2));
++  const withoutAfter=n.replace(/(?:بعد\s+بكره|بعد\s+بكرة)/gu," ");
++  if(/(?:^|\s)(?:بكره|بكرة|غدا|غدًا|غداً)(?:\s|$)/u.test(withoutAfter))rel.push(addDaysIso(now.date,1));
++  if(/(?:^|\s)(?:النهارده|النهاردة|اليوم)(?:\s|$)/u.test(n))rel.push(now.date);
++  const uniq=[...new Set(rel)];if(uniq.length===1)return uniq[0];if(uniq.length>1)return null;
++  const named=extractNamedWeekdays(n);if(named.length!==1)return null;
++  for(let i=0;i<8;i++){const d=addDaysIso(now.date,i);if(isoWeekday(d)!==named[0])continue;if(i===0&&validTime(timeHint)&&localDateTimeToEpoch(`${d} ${timeHint}`,timeZone)<Date.now()-60000)continue;return d;}
++  return null;
++}
++
++function semanticTokensV102(value){
++  const stop=new Set(["انا","اني","انى","هو","هي","فى","في","من","على","علي","عند","بعد","قبل","ما","نخلص","اخلص","الدكتور","الموعد","المعاد","بكرة","بكره","الساعة","الساعه","اجيب","أجيب","جيب","هات","اخد","آخد","خد","اشتري","اشترى","اكلم","أكلم","كلم","اعمل","أعمل","روح","اروح","أروح"]);
++  return normalizeArabicLoose(String(value||"")).split(/\s+/).map(x=>x.replace(/[^\p{L}\p{N}]/gu,"")).filter(x=>x.length>1&&!stop.has(x));
++}
++
++function scoreV102TaskMatch(task,title){
++  const a=semanticTokensV102(task),b=new Set(semanticTokensV102(title));let score=0;for(const x of a)if(b.has(x)||[...b].some(y=>y.includes(x)||x.includes(y)))score+=x.length;return score;
++}
++
++function parseV102RelationTask(segment){
++  let raw=String(segment||"").trim().replace(/^[،,؛;.\s]+|[،,؛;.\s]+$/g,"");if(!raw)return{task:"",offset:null};
++  const words=raw.split(/\s+/);let best=null,bestCount=0;
++  for(let k=1;k<=Math.min(7,words.length);k++){
++    const prefRaw=words.slice(0,k).join(" ").replace(/^ب(?:ـ)?/u,"");const prefNorm=normalizeArabicLoose(prefRaw);
++    if(!/(?:دقيق(?:ه|ة)?|دقايق|دقائق|ساع(?:ه|ة|تين|ات))$/u.test(prefNorm))continue;
++    const d=parseDurationValuePhrase(prefRaw);if(d==null||d<0)continue;
++    const next=normalizeArabicLoose(words[k]||"");
++    if(next&&/^(?:و)?(?:نص|نصف|ربع|تلت|ثلث|\d+|[؀-ۿ]+\d*)$/u.test(next)&&/^(?:و)/u.test(next))continue;
++    best=d;bestCount=k;break;
++  }
++  if(bestCount)raw=words.slice(bestCount).join(" ").trim();
++  raw=raw.replace(/^ب(?=ال)/u,"").replace(/^(?:اني|انى)\s+/u,"").trim();
++  return{task:raw.slice(0,300),offset:best};
++}
++

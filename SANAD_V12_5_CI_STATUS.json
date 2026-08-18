@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "version": "12.5.0",
+  "run_id": "32082326960",
+  "run_attempt": "1",
+  "head_sha": "e75f12ad1106e8ac9c62d7bdac4e2df5cb87acc7",
+  "stages": {
+    "build": "success",
+    "syntax": "success",
+    "pure": "success",
+    "deploy": "success",
+    "secrets": "success",
+    "deep": "success",
+    "live": "success",
+    "cert": "success",
+    "commit": "success"
+  },
+  "failed": [],
+  "updated_at": "2026-08-17T23:58:01.401Z"
+}

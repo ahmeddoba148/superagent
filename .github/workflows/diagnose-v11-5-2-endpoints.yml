@@ -1,0 +1,36 @@
+name: Diagnose V11.5.2 Endpoints
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths: ['.github/workflows/diagnose-v11-5-2-endpoints.yml']
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v1152-staging.ahmeddoba91.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Configure fresh staging auth and print endpoint statuses
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > wrangler.v1152diag.jsonc <<'EOF'
+          {"name":"superagent-v1152-staging","main":"SuperAgent_V11_5_1_FULL.js","compatibility_date":"2026-08-17","d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          SETUP_KEY="$(openssl rand -hex 32)"; WEBHOOK_SECRET="$(openssl rand -hex 32)"; echo "::add-mask::$SETUP_KEY"; echo "::add-mask::$WEBHOOK_SECRET"
+          for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY";do k="${pair%%:*}";v="${pair#*:}";printf '%s' "$v"|npx wrangler secret put "$k" --config wrangler.v1152diag.jsonc >/dev/null;done
+          sleep 4
+          check(){ name="$1"; shift; code=$(curl -sS -o "/tmp/$name.out" -w '%{http_code}' "$@" || true); echo "$name HTTP=$code BODY=$(head -c 700 /tmp/$name.out)"; }
+          check root "$URL/"
+          check health "$URL/health"
+          check ready -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/ready"
+          check setup -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1"
+          check selftest -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/selftest"

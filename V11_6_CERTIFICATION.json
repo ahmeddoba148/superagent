@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "version": "11.6",
+  "sha256": "ac993a1033edd4176ce2bc460735d7c75cd9473391dab7ecb5187fc4e66a36fa",
+  "bytes": 485509,
+  "lines": 15827,
+  "typescript_check": {
+    "ok": true,
+    "errors": 0,
+    "diagnostics": 0,
+    "checker": "TypeScript 5.8.3 --allowJs --checkJs",
+    "suppressions_used": false
+  },
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3.5-flash"
+  ],
+  "static_checks": {
+    "version": true,
+    "v116Marker": true,
+    "functionsRetained": true,
+    "tablesRetained": true,
+    "noTsSuppressions": true,
+    "routerRemoved": true,
+    "budget": true,
+    "telegramAuth": true,
+    "adminAuth": true,
+    "durableInbox": true,
+    "leaseCollisionFeature": true,
+    "noUnprotectedLeaseExit": true,
+    "allLeasePathsRecovered": true,
+    "idempotency": true,
+    "undo": true,
+    "conflicts": true,
+    "recurrence": true,
+    "memory": true,
+    "world": true,
+    "voice": true,
+    "location": true,
+    "prayer": true,
+    "holidays": true,
+    "shopping": true,
+    "dependencies": true,
+    "planner": true,
+    "failureLog": true,
+    "noDead25": true,
+    "modelsUnchanged": true
+  },
+  "pure_regression_ok": true,
+  "live_scenarios": 26,
+  "live_ok": true,
+  "model_stability": {
+    "tested": true,
+    "inherited_from_certified_v1152": true,
+    "chain_unchanged": true,
+    "primary": {
+      "id": "gemini::gemini-3.5-flash-lite",
+      "successes": 8,
+      "total": 8,
+      "avg_ms": 1182
+    },
+    "fallback_1": {
+      "id": "gemini::gemini-3.1-flash-lite",
+      "successes": 8,
+      "total": 8,
+      "avg_ms": 1590
+    },
+    "fallback_2": {
+      "id": "gemini::gemini-3.5-flash",
+      "successful_pre_quota": 7,
+      "tested_pre_quota": 8,
+      "successful_latency_ms": [
+        1673,
+        1915
+      ],
+      "extended_probe": "blocked_by_provider_429_quota"
+    },
+    "rejected": {
+      "id": "gemini::gemini-2.5-flash-lite",
+      "plain_http": 404,
+      "json_http": 404
+    },
+    "interpretation": "V11.6 does not change the certified model chain; this release focuses on zero JavaScript/TypeScript diagnostics while live model-backed scenarios are re-run on staging."
+  },
+  "known_critical_code_failures": [],
+  "known_typescript_diagnostics": [],
+  "external_risks": [
+    "Google/OmniAI model quota can return 429 under sustained usage"
+  ]
+}

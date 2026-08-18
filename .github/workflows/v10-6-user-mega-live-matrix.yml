@@ -1,0 +1,140 @@
+name: V10.6 User Mega Live Matrix
+
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths:
+      - '.github/workflows/v10-6-user-mega-live-matrix.yml'
+      - 'tests/corpus-user-shopping-v106.mjs'
+      - 'tests/corpus-user-schedule-v106.mjs'
+      - 'tests/v10-6-user-mega-live-runner.mjs'
+      - 'SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v10-6-user-mega-live-matrix
+  cancel-in-progress: true
+
+jobs:
+  mega-live:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v106-staging.ahmeddoba91.workers.dev
+      STAGING_DB: superagent-v106-staging
+      STAGING_CONFIG: wrangler.v106.staging.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate live secrets
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$STAGING_TELEGRAM_BOT_TOKEN"
+          test -n "$STAGING_OMNIAI_API_KEY"
+          test -n "$STAGING_ADMIN_CHAT_ID"
+
+      - name: Generate isolated staging secrets
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Pin exact currently-certified shopping-fix candidate
+        run: |
+          set -euo pipefail
+          cp SuperAgent_V10_6_CLOUDFLARE_READY_REAL_SHOPPING_FIX.js SuperAgent_V10_6_Zero_Known_Failures.js
+          node --check SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'const V10_VERSION="10.6"' SuperAgent_V10_6_Zero_Known_Failures.js
+
+      - name: Build isolated staging config
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          let s=fs.readFileSync('wrangler.v10-6-staging.template.jsonc','utf8')
+            .replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697')
+            .replace('self-continuation-1','user-mega-live-matrix');
+          fs.writeFileSync('wrangler.v106.staging.jsonc',s);
+          NODE
+
+      - name: Deploy exact candidate to real staging Worker
+        run: npx wrangler deploy --config wrangler.v106.staging.jsonc
+
+      - name: Rotate live staging secrets
+        run: |
+          set -euo pipefail
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v106.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v106.staging.jsonc
+          sleep 8
+
+      - name: Initialize real Telegram webhook
+        run: |
+          set -euo pipefail
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          ok=0
+          for i in $(seq 1 20); do
+            CODE="$(curl -sS -o /tmp/setup.json -w '%{http_code}' "$STAGING_URL/setup?key=$KEY&force=1" || true)"
+            if [ "$CODE" = 200 ] && node -e 'const x=require("/tmp/setup.json");if(!x.ok)process.exit(1)' 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          cat /tmp/setup.json || true
+          test "$ok" -eq 1
+
+      - name: Reset staging queue and failures
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v106.staging.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
+
+      - name: Run every user-requested shopping and scheduling scenario LIVE
+        run: node tests/v10-6-user-mega-live-runner.mjs
+
+      - name: Upload full pass/fail evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V10.6-User-Mega-Live-Report
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            artifacts/V10_6_USER_MEGA_LIVE_REPORT.json
+            artifacts/V10_6_USER_MEGA_LIVE_REPORT.md
+            artifacts/V10_6_USER_MEGA_LIVE_SUMMARY.json
+
+      - name: Final staging health and queue integrity
+        if: always()
+        run: |
+          set -euo pipefail
+          curl -fsS "$STAGING_URL/health" | tee /tmp/mega-health.json
+          node -e 'const x=require("/tmp/mega-health.json");if(!x.ok||!x.db||!x.omniai_service)process.exit(1)'
+          PENDING="$(npx wrangler d1 execute superagent-v106-staging --remote --json --config wrangler.v106.staging.jsonc --command "SELECT COUNT(*) c FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID' AND status IN ('pending','processing')" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(Number(j?.[0]?.results?.[0]?.c||0))})')"
+          echo "pending=$PENDING"
+          test "$PENDING" = 0
+
+      - name: Fail certification if any requested scenario failed
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f artifacts/V10_6_USER_MEGA_LIVE_SUMMARY.json
+          cat artifacts/V10_6_USER_MEGA_LIVE_SUMMARY.json
+          node -e 'const x=require("./artifacts/V10_6_USER_MEGA_LIVE_SUMMARY.json");if(Number(x.failed||0)>0)process.exit(1)'

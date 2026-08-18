@@ -1,0 +1,23 @@
+name: Production-shaped paced Gemini 3.5 Flash stability
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths: ['.github/workflows/probe-v11-5-2-paced-prod-35flash.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Six production-shaped paced rounds
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const model='gemini::gemini-3.5-flash',endpoint='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions',key=process.env.STAGING_OMNIAI_API_KEY,sleep=m=>new Promise(r=>setTimeout(r,m));
+          async function raw(round,attempt){const c=new AbortController(),tm=setTimeout(()=>c.abort(),2700),t=Date.now();try{const r=await fetch(endpoint,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'system',content:'أنت مساعد مختصر. رد مباشرة.'},{role:'user',content:'رد بكلمة OK فقط'}],temperature:0.35,max_tokens:900,stream:false}),signal:c.signal});const txt=await r.text();let content='';try{content=String(JSON.parse(txt)?.choices?.[0]?.message?.content||'').trim()}catch{}return{round,attempt,ok:r.ok&&content.length>0,status:r.status,ms:Date.now()-t,content:content.slice(0,60),error:r.ok?null:txt.slice(0,220)}}catch(e){return{round,attempt,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const rounds=[];for(let r=1;r<=6;r++){let first=await raw(r,1),final=first;if(!first.ok){await sleep(12000);const retry=await raw(r,2);final={...first,retry,ok:retry.ok,recovered:retry.ok,final_status:retry.status,final_ms:retry.ms}}rounds.push(final);console.log(JSON.stringify(final));if(r<6)await sleep(10000)}const good=rounds.filter(x=>x.ok);const result={ok:good.length===6,model,rounds:6,successes:good.length,samples:rounds};console.log('FINAL='+JSON.stringify(result));if(!result.ok)process.exit(1)})();
+          NODE

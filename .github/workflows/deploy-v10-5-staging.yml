@@ -1,0 +1,152 @@
+name: Deploy V10.5 Staging
+# live-matrix-retry: corrected-idempotency-wait
+
+on:
+  push:
+    branches:
+      - superagent-v10-5-reliability-rewrite
+    paths:
+      - '.github/workflows/deploy-v10-5-staging.yml'
+      - 'wrangler.staging.template.jsonc'
+      - 'SuperAgent_V10_5_Reliability_Rewrite.js'
+      - 'tests/v10-5-live-staging-matrix.mjs'
+      - 'tests/v10-5-live-stale-receipt.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v10-5-staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required staging secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_TELEGRAM_BOT_TOKEN STAGING_OMNIAI_API_KEY STAGING_ADMIN_CHAT_ID; do
+            if [ -z "${!v:-}" ]; then echo "Missing secret: $v"; missing=1; fi
+          done
+          test "$missing" -eq 0
+
+      - name: Generate and mask ephemeral staging security keys
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest
+
+      - name: Resolve or create isolated D1 database
+        id: d1
+        run: |
+          set -euo pipefail
+          NAME="superagent-v105-staging"
+          LIST="$(npx wrangler d1 list --json)"
+          ID="$(node -e 'const x=JSON.parse(process.argv[1]); const r=x.find(v=>v.name===process.argv[2]); if(r) process.stdout.write(r.uuid||r.id||"")' "$LIST" "$NAME")"
+          if [ -z "$ID" ]; then
+            npx wrangler d1 create "$NAME"
+            LIST="$(npx wrangler d1 list --json)"
+            ID="$(node -e 'const x=JSON.parse(process.argv[1]); const r=x.find(v=>v.name===process.argv[2]); if(r) process.stdout.write(r.uuid||r.id||"")' "$LIST" "$NAME")"
+          fi
+          test -n "$ID"
+          echo "database_id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build staging Wrangler config
+        run: |
+          node -e 'const fs=require("fs"); let s=fs.readFileSync("wrangler.staging.template.jsonc","utf8"); s=s.replace("__D1_DATABASE_ID__",process.argv[1]); fs.writeFileSync("wrangler.staging.jsonc",s)' "${{ steps.d1.outputs.database_id }}"
+
+      - name: Deploy isolated staging Worker
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.staging.jsonc 2>&1 | tee /tmp/deploy.log
+          URL="$(grep -Eo 'https://[^ ]+\.workers\.dev' /tmp/deploy.log | tail -1 || true)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Rotate and upload staging Worker secrets
+        run: |
+          set -euo pipefail
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.staging.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.staging.jsonc
+
+      - name: Wait for live Worker propagation
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          ok=0
+          for i in $(seq 1 15); do
+            CODE="$(curl -sS -o /tmp/root.json -w '%{http_code}' "$URL/" || true)"
+            echo "root probe $i -> HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("/tmp/root.json","utf8"));if(!x.ok||x.version!=="10.5")process.exit(1)'
+              ok=1; break
+            fi
+            sleep 2
+          done
+          test "$ok" -eq 1
+
+      - name: Initialize staging bot and Telegram webhook
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          CODE="$(curl -sS -o /tmp/setup.json -w '%{http_code}' "$URL/setup?key=$KEY&force=1" || true)"
+          echo "setup -> HTTP $CODE"
+          test "$CODE" = "200"
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/setup.json","utf8")); if(!x.ok) throw new Error(JSON.stringify(x))'
+
+      - name: Live smoke tests
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}"
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          curl -fsS "$URL/" | tee /tmp/root.json
+          curl -fsS "$URL/health" | tee /tmp/health.json
+          curl -fsS "$URL/selftest?key=$KEY" | tee /tmp/selftest.json
+          node -e 'const fs=require("fs"); for (const f of ["/tmp/root.json","/tmp/health.json","/tmp/selftest.json"]) { const x=JSON.parse(fs.readFileSync(f,"utf8")); if(!x.ok) throw new Error(f+" failed: "+JSON.stringify(x)); }'
+
+      - name: Isolate live matrix receipts
+        run: |
+          npx wrangler d1 execute superagent-v105-staging --remote --config wrangler.staging.jsonc --command "DELETE FROM operation_receipts WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
+
+      - name: Real human-style behavior matrix
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: node tests/v10-5-live-staging-matrix.mjs
+
+      - name: Live recreate after undo receipt regression
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: node tests/v10-5-live-stale-receipt.mjs
+
+      - name: Publish staging URL
+        if: always()
+        run: |
+          echo "## V10.5 Staging" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Real human-style live matrix runs against Worker + D1 + OmniAI + Telegram API." >> "$GITHUB_STEP_SUMMARY"
+          echo "Access is restricted to STAGING_ADMIN_CHAT_ID." >> "$GITHUB_STEP_SUMMARY"

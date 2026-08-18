@@ -1,0 +1,37 @@
+name: Apply V10.5 Live Fixes
+
+on:
+  push:
+    branches:
+      - superagent-v10-5-reliability-rewrite
+    paths:
+      - 'tools/patch-v10-5-live-receipt-integrity.py'
+      - '.github/workflows/apply-v10-5-live-fixes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: superagent-v10-5-reliability-rewrite
+      - name: Apply live fixes
+        run: python tools/patch-v10-5-live-receipt-integrity.py
+      - name: Syntax check
+        run: node --check SuperAgent_V10_5_Reliability_Rewrite.js
+      - name: Commit patched source
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- SuperAgent_V10_5_Reliability_Rewrite.js; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SuperAgent_V10_5_Reliability_Rewrite.js
+          git commit -m "Fix V10.5 stale create receipts found in live staging"
+          git push origin HEAD:superagent-v10-5-reliability-rewrite

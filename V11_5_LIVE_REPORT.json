@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "version": "11.5.0",
+  "sha256": "d6228a00fac1e247eeda0cf5388562b03de57b49a10ee036e26ee4b85458b4ae",
+  "started": "2026-08-17T06:47:14.971Z",
+  "finished": "2026-08-17T06:48:00.190Z",
+  "model_probes": [
+    {
+      "model": "gemini::gemini-3.5-flash-lite",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1335
+    },
+    {
+      "model": "gemini::gemini-3.1-flash-lite",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1261
+    },
+    {
+      "model": "gemini::gemini-flash-lite-latest",
+      "ok": true,
+      "status": 200,
+      "latency_ms": 1416
+    }
+  ],
+  "passes": [
+    {
+      "name": "identity",
+      "detail": "ms=1368"
+    },
+    {
+      "name": "egyptian casual",
+      "detail": "ms=2973"
+    },
+    {
+      "name": "direct AI chat",
+      "detail": "ms=4427"
+    },
+    {
+      "name": "current-data safe",
+      "detail": "المعلومة دي لحظية ومفيش مصدر مباشر موصول لها حاليًا، فمش هخمن رقم أو حالة قديمة."
+    },
+    {
+      "name": "shopping 11/11",
+      "detail": "items=11 ms=7154"
+    },
+    {
+      "name": "reminder exact",
+      "detail": "[{\"local_date\":\"2026-11-01\",\"local_time\":\"19:13\"}]"
+    },
+    {
+      "name": "duplicate exactly once",
+      "detail": "rows=1 ms=7137"
+    },
+    {
+      "name": "same-chat burst",
+      "detail": "[1,1,1]"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    }
+  ],
+  "runtime_failures": []
+}

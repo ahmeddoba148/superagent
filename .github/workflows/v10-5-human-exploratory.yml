@@ -1,0 +1,15 @@
+name: V10.5 Human Exploratory Session
+on:
+  push:
+    branches: [superagent-v10-5-reliability-rewrite]
+    paths:
+      - 'tests/v10-5-human-exploratory-session.mjs'
+      - '.github/workflows/v10-5-human-exploratory.yml'
+  workflow_dispatch:
+jobs:
+  human:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: node tests/v10-5-human-exploratory-session.mjs

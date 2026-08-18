@@ -1,0 +1,30 @@
+import fs from 'fs';import {spawn} from 'child_process';import readline from 'readline';
+const dbfile='./v103_reliability.sqlite';try{fs.unlinkSync(dbfile)}catch{}
+const py=spawn('python',['tests/sqlite_server.py',dbfile],{stdio:['pipe','pipe','inherit']});const rl=readline.createInterface({input:py.stdout});const pending=[];rl.on('line',line=>{const p=pending.shift();if(!p)return;const j=JSON.parse(line);j.ok?p.resolve(j.value):p.reject(new Error(j.error+'\n'+(j.trace||'')));});
+const bridge=req=>new Promise((resolve,reject)=>{pending.push({resolve,reject});py.stdin.write(JSON.stringify(req)+'\n')});
+let failAudit=false;
+class Stmt{constructor(sql){this.sql=sql;this.args=[]}bind(...args){this.args=args;return this}run(){if(failAudit&&/INSERT INTO action_audit/i.test(this.sql))return Promise.reject(new Error('SIMULATED_AUDIT_DOWN'));return bridge({mode:'run',sql:this.sql,args:this.args})}all(){return bridge({mode:'all',sql:this.sql,args:this.args})}first(){return bridge({mode:'first',sql:this.sql,args:this.args})}}
+class DB{prepare(sql){return new Stmt(sql)}batch(stmts){if(failAudit&&stmts.some(x=>/INSERT INTO action_audit/i.test(x.sql)))return Promise.reject(new Error('SIMULATED_AUDIT_DOWN'));return bridge({mode:'batch',items:stmts.map(x=>({sql:x.sql,args:x.args}))})}}
+const telegram=[];let failNextConfirmation=false;
+globalThis.fetch=async (url,opts={})=>{const u=String(url);if(u.includes('api.telegram.org/bot')){const method=u.split('/').pop();let body={};try{body=JSON.parse(opts.body||'{}')}catch{};telegram.push({method,body});if(method==='sendMessage'&&failNextConfirmation&&String(body.text||'').startsWith('✅ تم الحفظ:')){failNextConfirmation=false;return Response.json({ok:false,error_code:502,description:'SIMULATED_TELEGRAM_CONFIRMATION_LOST'});}if(method==='sendMessage')return Response.json({ok:true,result:{message_id:telegram.length,chat:{id:body.chat_id},text:body.text}});if(method==='sendChatAction'||method==='answerCallbackQuery'||method==='editMessageText')return Response.json({ok:true,result:true});return Response.json({ok:true,result:true});}throw new Error('Unexpected fetch '+u)};
+const mod=await import(new URL('../SuperAgent_V10_3_Reliability_Lock.js?x='+Date.now(), import.meta.url).href);const worker=mod.default;
+const env={DB:new DB(),TELEGRAM_BOT_TOKEN:'TOKEN',TELEGRAM_WEBHOOK_SECRET:'SECRET',OMNIAI_API_KEY:'KEY',SETUP_KEY:'SETUP',PUBLIC_BOT:'true',OMNIAI_SERVICE:{fetch:async()=>Response.json({error:{message:'AI_DOWN'}},{status:503})}};
+let pass=0,fail=0;const errors=[];const ok=(name,c,d='')=>{if(c)pass++;else{fail++;errors.push({name,d})}};
+async function webhook(update){const waits=[];const ctx={waitUntil:p=>waits.push(Promise.resolve(p))};const r=await worker.fetch(new Request('https://x.test/telegram',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'SECRET','Content-Type':'application/json'},body:JSON.stringify(update)}),env,ctx);await Promise.allSettled(waits);return r;}
+try{
+  let h=await worker.fetch(new Request('https://x.test/health'),env,{waitUntil(){}});let hj=await h.json();ok('health 200 + db probe',h.status===200&&hj.ok&&hj.db===true&&hj.reliability_lock===true,JSON.stringify(hj));
+  const tables=(await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN ('runtime_failures','operation_receipts') ORDER BY name`).all()).results;ok('reliability tables exist',tables.length===2,JSON.stringify(tables));
+  const cmd='بكرة الساعة 5 مساء فكرني اكلم الممرضة علشان تيجي الساعة 6 مساء';failNextConfirmation=true;await webhook({update_id:100,message:{message_id:1,chat:{id:77,type:'private'},text:cmd}});
+  let rows=(await env.DB.prepare(`SELECT * FROM reminders WHERE chat_id='77' AND title LIKE '%الممرضة%'`).all()).results;ok('commit survives lost confirmation exactly once',rows.length===1,JSON.stringify(rows));
+  let receipts=(await env.DB.prepare(`SELECT * FROM operation_receipts WHERE chat_id='77'`).all()).results;ok('receipt committed before confirmation',receipts.length===1&&receipts[0].state==='committed',JSON.stringify(receipts));
+  let led=await env.DB.prepare(`SELECT status FROM telegram_updates WHERE update_id='100'`).first();ok('lost confirmation update marked failed',led?.status==='failed',JSON.stringify(led));
+  await webhook({update_id:101,message:{message_id:2,chat:{id:77,type:'private'},text:cmd}});rows=(await env.DB.prepare(`SELECT * FROM reminders WHERE chat_id='77' AND title LIKE '%الممرضة%'`).all()).results;ok('manual retry does not duplicate committed create',rows.length===1,JSON.stringify(rows));
+  const retryMsg=telegram.filter(x=>x.method==='sendMessage'&&String(x.body.text||'').startsWith('✅ تم الحفظ:'));ok('manual retry gets committed receipt response',retryMsg.length>=2,String(retryMsg.length));
+  failAudit=true;const cmd2='بكرة الساعة 8 مساء فكرني اكلم خالد علشان ييجي الساعة 9 مساء';await webhook({update_id:102,message:{message_id:3,chat:{id:77,type:'private'},text:cmd2}});failAudit=false;
+  rows=(await env.DB.prepare(`SELECT * FROM reminders WHERE chat_id='77' AND title LIKE '%خالد%'`).all()).results;ok('audit failure rolls back create',rows.length===0,JSON.stringify(rows));
+  const failures=(await env.DB.prepare(`SELECT * FROM runtime_failures ORDER BY id`).all()).results;ok('runtime failure persisted',failures.length>=2,JSON.stringify(failures));
+  const incidentMsgs=telegram.filter(x=>x.method==='sendMessage'&&String(x.body.text||'').includes('رقم التتبع'));ok('user sees safe incident id',incidentMsgs.length>=2,JSON.stringify(incidentMsgs.map(x=>x.body.text)));
+  ok('raw internal audit error not exposed',incidentMsgs.every(x=>!String(x.body.text).includes('SIMULATED_AUDIT_DOWN')),JSON.stringify(incidentMsgs));
+  h=await worker.fetch(new Request('https://x.test/health'),env,{waitUntil(){}});hj=await h.json();ok('health reports recent failures',Number(hj.recent_failures_1h)>=2,JSON.stringify(hj));
+}catch(e){fail++;errors.push({name:'unexpected',d:String(e.stack||e)})}
+console.log(JSON.stringify({pass,fail,total:pass+fail,errors},null,2));py.stdin.write(JSON.stringify({mode:'close'})+'\n');setTimeout(()=>process.exit(fail?1:0),30);

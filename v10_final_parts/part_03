@@ -1,0 +1,109 @@
+ مساءً",callback_data:"clarify:period:pm"}
+-]);
+-}
+-if(type==="meridiem_multi"){
+-rows.push([
+-{text:"☀️ كلهم صباحًا",callback_data:"clarify:period:am"},
+-{text:"🌙 كلهم مساءً",callback_data:"clarify:period:pm"}
+-]);
+-}
+-rows.push([{text:"❌ إلغاء الطلب",callback_data:"pending:cancel"}]);
+-return{inline_keyboard:rows};
++// V10.1 strict clean-chat: clarification happens by natural-language reply, not buttons.
++return null;
+ }
+ 
+ async function showMainPanel(env,chatId,messageId=null){
+@@ -865,7 +902,15 @@
+ rules.push({...r,id:results?.[i++]?.meta?.last_row_id??"?"});
+ }
+ await verifyCreatedScheduleBatch(env,chatId,one,rules);
++try{
+ await persistIntentDependencies(env,chatId,intent,one);
++}catch(e){
++const rollback=[];
++for(const x of one)if(Number(x.id))rollback.push(env.DB.prepare(`DELETE FROM reminders WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId));
++for(const x of rules)if(Number(x.id))rollback.push(env.DB.prepare(`DELETE FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId));
++if(rollback.length)await env.DB.batch(rollback);
++throw e;
++}
+ await writeAudit(env,chatId,{action:"create",entityType:"schedule_batch",entityId:"batch",summary:`إنشاء ${one.length+rules.length} موعد/تكرار`,after:{one,rules},undo:{type:"delete_created_schedule",reminder_ids:one.map(x=>Number(x.id)).filter(Boolean),rule_ids:rules.map(x=>Number(x.id)).filter(Boolean)}});
+ 
+ const lines=[];
+@@ -979,13 +1024,8 @@
+ if(!options.confirmed){
+ await savePendingConflict(env,chatId,intent,[]);
+ const label=intent.query?`المواعيد المطابقة لـ «${intent.query}»`:"المواعيد في الفترة المطلوبة";
+-const answer=`⚠️ أنت على وشك حذف ${label}. متأكد؟`;
+-await sendText(env,chatId,answer,{
+-inline_keyboard:[
+-[{text:"✅ نفّذ الحذف",callback_data:"bulk:confirm"}],
+-[{text:"❌ إلغاء",callback_data:"bulk:cancel"}]
+-]
+-});
++const answer=`⚠️ أنت على وشك حذف ${label}. لو متأكد اكتب «نفذ الحذف»، ولو مش عايز اكتب «إلغاء».`;
++await sendText(env,chatId,answer);
+ await saveConversationMessage(env,chatId,"assistant",answer);
+ return;
+ }
+@@ -998,13 +1038,8 @@
+ }
+ 
+ if(intent.action==="clear_all"){
+-const answer="⚠️ متأكد إنك عايز تمسح كل مواعيدك وكل التكرارات؟";
+-await sendText(env,chatId,answer,{
+-inline_keyboard:[
+-[{text:"✅ امسح كل مواعيدي",callback_data:"do:clear_all_user_schedule"}],
+-[{text:"↩️ إلغاء",callback_data:"panel:home"}]
+-]
+-});
++const answer="🛡️ مسح كل المواعيد عملية كبيرة. افتح /menu ثم «إدارة البيانات الحساسة» ونفّذها من هناك.";
++await sendText(env,chatId,answer);
+ await saveConversationMessage(env,chatId,"assistant",answer);
+ return;
+ }
+@@ -3366,31 +3401,11 @@
+ 
+ ${lines.join("\n")}
+ 
+-التعارض بيتحسب من وقت البداية ومدة كل موعد، مش مجرد نفس الدقيقة. لو مقصود تقدر تنفذ رغم التعارض.${modelFooter(env,chatId,intent)}`;
++التعارض بيتحسب من وقت البداية ومدة كل موعد، مش مجرد نفس الدقيقة.
+ 
+-await sendText(
+-env,
+-chatId,
+-answer,
+-{
+-inline_keyboard:[
+-[
+-{
+-text:"➕ نفذ رغم التعارض",
+-callback_data:
+-"conflict:force"
+-}
+-],
+-[
+-{
+-text:"❌ إلغاء العملية",
+-callback_data:
+-"conflict:cancel"
+-}
+-]
+-]
+-}
+-);
++لو مقصود اكتب «نفذ رغم التعارض»، ولو مش مقصود اكتب «إلغاء».${modelFooter(env,chatId,intent)}`;
++
++await sendText(env,chatId,answer);
+ 
+ await saveConversationMessage(
+ env,
+@@ -5056,10 +5071,12 @@
+ 14) أي طلب مواعيد متعدد: لا تسقط أي عنصر.
+ 15) التعارض يترك للسيرفر؛ استخرج الطلب ولا ترفضه.
+ 16) استخدم جدول المستخدم وذاكرته والواقع الحي لحل المراجع بدل الأسئلة الزائدة.
+-17) لو طلب المستخدم علاقة دائمة بين حدثين (قبل/بعد حدث آخر) املأ dependencies بمؤشرات items الصفرية، ولا تعتمد فقط على وقت ثابت.
+-18) world_updates لا تُملأ إلا بحقائق قالها المستخدم صراحة في رسالته الحالية؛ لا تستنتج صفات شخصية ولا معلومات حساسة ولا تخترع علاقات.
+-19) لو المرجع واضح من السياق لا تسأل سؤالًا توضيحيًا غير ضروري. الهدف: never ask unnecessary questions.
+-20) فرّق بين حقيقة صريحة واقتراح؛ confidence للحقائق الصريحة = 1.
++17) فرّق بين وقت تنفيذ التذكير ووقت مذكور كسبب/مرجع داخل نصه: «الساعة 5 مساء فكرني أكلم الممرضة علشان تيجي الساعة 6» = تذكير واحد الساعة 5 فقط، والساعة 6 جزء

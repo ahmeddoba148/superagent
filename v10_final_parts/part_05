@@ -1,0 +1,95 @@
+dWeekdays(n);
++if(named.length===1){
++for(let i=0;i<8;i++){
++const d=addDaysIso(now.date,i);
++if(isoWeekday(d)!==named[0])continue;
++if(i===0&&localDateTimeToEpoch(`${d} ${hhmm}`,timeZone)<Date.now()-60000)continue;
++return d;
++}
++}
++const todayAt=`${now.date} ${hhmm}`;
++return localDateTimeToEpoch(todayAt,timeZone)>=Date.now()-60000?now.date:addDaysIso(now.date,1);
++}
++
++function buildDeterministicActionReferenceIntent(text,timeZone=TIME_ZONE){
++const shape=analyzeActionReferenceShape(text);
++if(!shape)return null;
++const c=shape.actionClock;
++if(!c.period)return null;
++let hour=c.hour%12;
++if(c.period==="PM")hour+=12;
++const time=`${String(hour).padStart(2,"0")}:${String(c.minute).padStart(2,"0")}`;
++const date=resolveDeterministicReminderDate(text,time,timeZone);
++if(!date)return null;
++const raw=String(text||"");
++const verb=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu);
++if(!verb||verb.index==null)return null;
++let title=raw.slice(verb.index+verb[0].length).trim();
++title=title.replace(/^(?:الساعة|الساعه)\s*(?:1[0-2]|[1-9])(?:\s*[:٫.]\s*[0-5]?\d|\s*(?:ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(?:صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)?\s*/iu,"").trim();
++if(!title)title="التذكير المطلوب";
++return{action:"create",needs_clarification:false,question:"",reply:"",items:[{date,time,title:title.slice(0,500),kind:"reminder",duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[],world_updates:[],_timezone:timeZone};
++}
++
++function estimateMinimumItemsSemantic(text){
++const prayers=parseMultiRecurringPrayerAnchors(text);
++if(prayers.length>=2)return prayers.length;
++if(analyzeActionReferenceShape(text))return 1;
++return estimateMinimumItems(text);
++}
++
+ function estimateMinimumItems(text){
+ const t=
+ normalizeTimeWords(
+@@ -9112,6 +9220,12 @@
+ return true;
+ }
+ 
++const prayerBatch=parseMultiRecurringPrayerAnchors(raw);
++if(prayerBatch.length>=2){
++await saveMultiPrayerRules(env,chatId,prayerBatch);
++return true;
++}
++
+ const pr=
+ parseRecurringPrayerAnchor(
+ raw
+@@ -10150,6 +10264,58 @@
+ };
+ }
+ 
++
++function parseMultiRecurringPrayerAnchors(text){
++const raw=String(text||"");
++const n=normalizeArabicLoose(normalizeDigits(raw));
++const recurring=/(?:كل\s+يوم|يوميا|يوميًا|التذكيرات?\s+اليوميه|تذكيرات?\s+يوميه|بشكل\s+يومي|لكل\s+الصلوات)/u.test(n);
++if(!recurring)return[];
++const re=/(?:^|\s)و?قبل\s+(?:صلاه\s+)?(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/gu;
++const matches=[...n.matchAll(re)];
++if(matches.length<2)return[];
++const candidates=[];
++for(let i=0;i<matches.length;i++){
++const m=matches[i];
++const end=i+1<matches.length?matches[i+1].index:n.length;
++const seg=n.slice(m.index,end).trim();
++const anchor=prayerNameFromArabic(m[1]);
++const action=seg.match(/(?:نبهني|نبهنى|فكرني|فكرنى|ذكرني|ذكرنى|ابعتلي\s+(?:تنبيه|تذكير)|ابعثلي\s+(?:تنبيه|تذكير))([\s\S]*)/u);
++if(!anchor||!action)continue;
++const actionIndex=action.index==null?seg.length:action.index;
++const beforeAction=seg.slice(m[0].trim().length,actionIndex).trim();
++let offset=parseDurationValuePhrase(beforeAction);
++let targetMatch=String(action[1]||"").match(/(?:اني\s+)?(?:اصلي\s+|صلي\s+|بصلاه\s+|بالصلاه\s+|ب)?(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/u);
++if(!targetMatch)targetMatch=String(action[1]||"").match(/(الفجر|الشروق|الظهر|الضهر|العصر|المغرب|العشاء|العشا)/u);
++const target=targetMatch?prayerNameFromArabic(targetMatch[1]):null;
++if(!target)continue;
++candidates.push({anchor,target,offset});
++}
++if(candidates.length<2)return[];
++let fallback=candidates.find(x=>Number.isFinite(Number(x.offset))&&Number(x.offset)>0)?.offset??null;
++if(fallback==null){
++const firstNamed=matches[0]?.index??n.length;
++const ds=extractDurationMentionsMinutes(n.slice(0,firstNamed));
++fallback=ds.find(x=>x>0)??0;
++}
++const weekdays=extractNamedWeekdays(n);
++const maxOccurrences=parseExplicitOccurrenceCount(raw);
++const mapped=candidates.map(x=>({title:`صلي ${arabicPrayerName(x.tar

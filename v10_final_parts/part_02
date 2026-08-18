@@ -1,0 +1,93 @@
+TEXT,
++error_text TEXT
++)`).run();
++await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_telegram_updates_started ON telegram_updates(started_at)`).run();
+ /* ======================= END V10 LIFE OS SCHEMA ======================= */
+ 
+ await ensureColumn(env,"reminders","timezone","TEXT NOT NULL DEFAULT 'Africa/Cairo'");
+@@ -483,8 +494,32 @@
+ if(rows.length)await env.DB.prepare(`DELETE FROM recurring_rules`).run();
+ }
+ 
++async function claimTelegramUpdate(env,update){
++const raw=update?.update_id;
++if(raw==null)return{claimed:true,key:null};
++const key=String(raw);
++const chatId=String(update?.message?.chat?.id??update?.callback_query?.message?.chat?.id??update?.callback_query?.from?.id??"");
++const type=update?.callback_query?"callback_query":update?.message?"message":"other";
++const now=new Date().toISOString();
++const res=await env.DB.prepare(`INSERT OR IGNORE INTO telegram_updates(update_id,chat_id,update_type,status,started_at) VALUES (?,?,?,?,?)`).bind(key,chatId||null,type,"processing",now).run();
++return{claimed:Number(res?.meta?.changes||0)>0,key};
++}
++
++async function finishTelegramUpdate(env,key,status="done",error=null){
++if(!key)return;
++try{await env.DB.prepare(`UPDATE telegram_updates SET status=?,finished_at=?,error_text=? WHERE update_id=?`).bind(status,new Date().toISOString(),error?String(error).slice(0,500):null,key).run();}catch(e){console.warn("Telegram idempotency finalize failed",safeError(e));}
++}
++
++async function cleanupTelegramUpdateLedger(env){
++try{const cutoff=new Date(Date.now()-7*86400000).toISOString();await env.DB.prepare(`DELETE FROM telegram_updates WHERE started_at<?`).bind(cutoff).run();}catch(e){console.warn("Telegram ledger cleanup failed",safeError(e));}
++}
++
+ async function handleTelegramUpdate(update,env){
+ await ensureSchemaOnce(env);
++const claim=await claimTelegramUpdate(env,update);
++if(!claim.claimed)return;
++let finalStatus="done",finalError=null;
++try{
+ if(update?.callback_query){await handleCallbackQuery(update.callback_query,env);return;}
+ const message=update?.message||null;
+ if(!message)return;
+@@ -542,7 +577,8 @@
+ const savedIntent=parseJsonObject(pendingConflict.intent_json);
+ await clearPendingConflict(env,chatId);
+ if(!savedIntent?.action)throw new Error("طلب التعارض القديم غير صالح. ابعت الطلب من جديد.");
+-await executeIntent(env,chatId,savedIntent,{skipConflictCheck:true});
++const confirmOptions=savedIntent.action==="bulk_delete"?{skipConflictCheck:true,confirmed:true}:{skipConflictCheck:true};
++await executeIntent(env,chatId,savedIntent,confirmOptions);
+ return;
+ }
+ if(isConflictCancelReply(text)){
+@@ -583,10 +619,25 @@
+ }catch(sendError){
+ console.error("Failed to send error:",sendError);
+ }
++finalStatus="failed";finalError=safeError(error);
++return;
++}
++}catch(error){
++finalStatus="failed";finalError=safeError(error);
++throw error;
++}finally{
++await finishTelegramUpdate(env,claim.key,finalStatus,finalError);
+ }
+ }
+ 
+ async function processFreshAgentText(env,chatId,text,history){
++const profile=await getUserProfile(env,chatId);
++const fastActionReference=buildDeterministicActionReferenceIntent(text,profile.timezone);
++if(fastActionReference){
++fastActionReference._base_text=text;
++await executeIntent(env,chatId,fastActionReference);
++return;
++}
+ const localNeed=analyzeHardAmbiguity(text);
+ if(localNeed){
+ await savePendingDialog(env,chatId,{baseText:text,context:[],question:localNeed.question,questionType:localNeed.type,questionMeta:localNeed.meta||{}});
+@@ -596,7 +647,6 @@
+ return;
+ }
+ await enforceAiRateLimit(env,chatId);
+-const profile=await getUserProfile(env,chatId);
+ const memories=await getUserMemories(env,chatId,30);
+ const worldContext=await buildWorldModelContext(env,chatId,V10_WORLD_CONTEXT_LIMIT);
+ const reality=await buildLiveRealityContext(env,chatId,text,profile);
+@@ -694,21 +744,8 @@
+ }
+ 
+ function clarificationKeyboard(type){
+-const rows=[];
+-if(type==="meridiem_single"){
+-rows.push([
+-{text:"☀️ صباحًا",callback_data:"clarify:period:am"},
+-{text:"🌙

@@ -1,0 +1,44 @@
++    const count=await env.DB.prepare(`SELECT COUNT(*) AS c FROM smart_list_items WHERE list_id=? AND chat_id=?`).bind(Number(result.list.id),chatId).first();
++    if(Number(count?.c||0)===0)await env.DB.prepare(`DELETE FROM smart_lists WHERE id=? AND chat_id=?`).bind(Number(result.list.id),chatId).run();
++  }
++}
++
++async function handleV102CompoundInput(env,chatId,text,{fromVoice=false}={}){
++  const c=extractV102ShoppingAddClause(text);if(!c||!c.remaining)return false;
++  const history=await getRecentConversation(env,chatId,CONVERSATION_MEMORY_LIMIT);await saveConversationMessage(env,chatId,"user",String(text||""));
++  const snapshot=await snapshotV102ShoppingMutation(env,chatId,c.items);let r=null;
++  try{
++    r=await addShoppingItems(env,chatId,c.items);
++    if(await handleV10DirectCommands(env,chatId,c.remaining,{fromVoice})){}
++    else if(await handleLifeDirectCommands(env,chatId,c.remaining)){}
++    else await processFreshAgentText(env,chatId,c.remaining,history);
++  }catch(e){
++    if(r)try{await rollbackV102ShoppingMutation(env,chatId,snapshot,r);}catch(rb){console.error("V10.2 compound shopping rollback failed",rb);}
++    throw e;
++  }
++  const msg=r.added.length?`🛒 ضفت ${r.added.length} للمشتريات: ${r.added.join("، ")}`:"الأصناف دي موجودة بالفعل في المشتريات.";await sendText(env,chatId,msg);await saveConversationMessage(env,chatId,"assistant",msg);
++  return true;
++}
++
+ async function handleV10DirectCommands(env,chatId,text,{fromVoice=false}={}){
+   const raw=String(text||"").trim();const t=normalizeArabicLoose(raw);
+   if(!t)return false;
+@@ -13810,6 +13991,19 @@
+   add("multi prayer count",prayers.length===2,JSON.stringify(prayers));
+   add("multi prayer anchors",prayers[0]?.prayer==="Fajr"&&prayers[1]?.prayer==="Dhuhr",JSON.stringify(prayers));
+   add("semantic item count prayers",estimateMinimumItemsSemantic(multiPrayer)===2,String(estimateMinimumItemsSemantic(multiPrayer)));
++  const bareRef="بكرة 5 مساء فكرني اكلم الممرضة علشان تيجي 6 مساء";const bareIntent=buildDeterministicActionReferenceIntent(bareRef,TIME_ZONE);
++  add("bare reference time one item",bareIntent?.items?.length===1,JSON.stringify(bareIntent));
++  add("bare reference time grounded",bareIntent?.items?.[0]?.time==="17:00",JSON.stringify(bareIntent));
++  const cmp=extractV102ShoppingAddClause("ضيف مناديل ومعجون للمشتريات وفكرني بكرة 4 العصر أكلم أحمد");
++  add("compound shopping extraction",cmp?.items?.length===2&&/فكرني/u.test(cmp?.remaining||""),JSON.stringify(cmp));
++  const sem={action:"create",needs_clarification:false,items:[{title:"أكلم أحمد",kind:"reminder",date:addDaysIso(zonedNow(TIME_ZONE).date,2),time:"04:00",timezone:TIME_ZONE,duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[]};
++  applyV102SemanticRepairs(sem,"فكرني بكرة 4 العصر أكلم أحمد",TIME_ZONE);
++  add("semantic tomorrow repair",sem.items[0]?.date===addDaysIso(zonedNow(TIME_ZONE).date,1),JSON.stringify(sem));
++  add("semantic 4pm repair",sem.items[0]?.time==="16:00",JSON.stringify(sem));
++  const link={action:"create",needs_clarification:false,items:[{title:"دكتور مرام",kind:"appointment",date:addDaysIso(zonedNow(TIME_ZONE).date,1),time:"17:00",timezone:TIME_ZONE,duration_minutes:0,advance_alerts:[]},{title:"أجيب الدوا",kind:"reminder",date:addDaysIso(zonedNow(TIME_ZONE).date,1),time:"18:00",timezone:TIME_ZONE,duration_minutes:0,advance_alerts:[]}],recurring_items:[],dependencies:[]};
++  applyV102SemanticRepairs(link,"مرام عندها الدكتور بكرة 5، فكرني قبلها بالتحاليل وبعد ما نخلص أجيب الدوا",TIME_ZONE);
++  add("linked semantic restores missing item",link.items.length===3,JSON.stringify(link));
++  add("linked semantic persists two relations",link.dependencies.length===2,JSON.stringify(link.dependencies));
+   const passed=tests.filter(x=>x.ok).length;return{ok:passed===tests.length,passed,total:tests.length,tests};
+ }

@@ -1,0 +1,39 @@
+name: SuperAgent V11.5.2 Final Certified V3
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths:
+      - '.github/workflows/release-v11-5-2-final-certified-v3.yml'
+      - 'tools/build_v1152_final.mjs'
+      - 'tools/live_v1152_final.mjs'
+      - 'tools/release_v1152_v3.sh'
+permissions:
+  contents: write
+jobs:
+  certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v1152-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.v1152.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Run definitive certification
+        run: bash tools/release_v1152_v3.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.5.2-Final-Certified-V3
+          path: |
+            SuperAgent_V11_5_2_FULL.js
+            V11_5_2_CERTIFICATION.json
+            V11_5_2_MODEL_STABILITY.json
+            V11_5_2_LIVE_REPORT.json

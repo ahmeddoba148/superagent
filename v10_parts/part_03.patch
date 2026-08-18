@@ -1,0 +1,184 @@
++      await env.DB.prepare(`UPDATE reminders SET cancelled=0,updated_at=? WHERE id=? AND chat_id=?`).bind(new Date().toISOString(),Number(u.id),chatId).run();
++    }else if(u.type==="restore_reminder_snapshot"){
++      const x=u.row||{};
++      await env.DB.prepare(`UPDATE reminders SET title=?,kind=?,local_date=?,local_time=?,duration_minutes=?,advance_alerts_json=?,cancelled=?,sent=?,timezone=?,updated_at=? WHERE id=? AND chat_id=?`)
++        .bind(String(x.title||""),String(x.kind||"reminder"),String(x.local_date||x.date||""),String(x.local_time||x.time||""),Number(x.duration_minutes||0),String(x.advance_alerts_json||JSON.stringify(x.advance_alerts||[])),Number(x.cancelled||0),Number(x.sent||0),String(x.timezone||TIME_ZONE),new Date().toISOString(),Number(x.id),chatId).run();
++      await propagateReminderDependencies(env,chatId,Number(x.id));
++    }else if(u.type==="restore_schedule_rule"){
++      const x=u.row||{};
++      const exists=await env.DB.prepare(`SELECT id FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId).first();
++      if(exists){
++        await env.DB.prepare(`UPDATE schedule_rules SET title=?,kind=?,rule_json=?,duration_minutes=?,start_at=?,end_at=?,max_occurrences=?,fired_count=?,active=?,paused_until=?,exceptions_json=?,advance_alerts_json=?,legacy_rule_id=?,updated_at=?,timezone=? WHERE id=? AND chat_id=?`)
++          .bind(x.title,x.kind,x.rule_json,Number(x.duration_minutes||0),x.start_at,x.end_at,x.max_occurrences,Number(x.fired_count||0),Number(x.active??1),x.paused_until,x.exceptions_json||"[]",x.advance_alerts_json||"[]",x.legacy_rule_id,new Date().toISOString(),x.timezone||TIME_ZONE,Number(x.id),chatId).run();
++      }else{
++        await env.DB.prepare(`INSERT INTO schedule_rules(id,chat_id,title,kind,rule_json,duration_minutes,start_at,end_at,max_occurrences,fired_count,active,paused_until,exceptions_json,advance_alerts_json,legacy_rule_id,created_at,updated_at,timezone) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
++          .bind(Number(x.id),chatId,x.title,x.kind,x.rule_json,Number(x.duration_minutes||0),x.start_at,x.end_at,x.max_occurrences,Number(x.fired_count||0),Number(x.active??1),x.paused_until,x.exceptions_json||"[]",x.advance_alerts_json||"[]",x.legacy_rule_id,x.created_at||new Date().toISOString(),new Date().toISOString(),x.timezone||TIME_ZONE).run();
++      }
++    }else if(u.type==="delete_list_items"){
++      for(const id of (u.ids||[]))await env.DB.prepare(`DELETE FROM smart_list_items WHERE id=? AND chat_id=?`).bind(Number(id),chatId).run();
++    }else if(u.type==="restore_list_item_status"){
++      await env.DB.prepare(`UPDATE smart_list_items SET status=?,updated_at=? WHERE id=? AND chat_id=?`).bind(String(u.status||"pending"),new Date().toISOString(),Number(u.id),chatId).run();
++    }else if(u.type==="restore_deleted_list_item"){
++      const x=u.row||{};
++      await env.DB.prepare(`INSERT OR REPLACE INTO smart_list_items(id,list_id,chat_id,title,normalized_title,quantity,status,position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
++        .bind(Number(x.id),Number(x.list_id),chatId,x.title,x.normalized_title,x.quantity,x.status,Number(x.position||0),x.created_at||new Date().toISOString(),new Date().toISOString()).run();
++    }else{
++      return "آخر عملية مسجلة مش قابلة للتراجع تلقائيًا.";
++    }
++    await env.DB.prepare(`UPDATE action_audit SET undone_at=? WHERE id=? AND chat_id=?`).bind(new Date().toISOString(),Number(r.id),chatId).run();
++    return `↩️ تم التراجع: ${r.summary}`;
++  }catch(e){console.error("Undo failed",e);return `⚠️ مقدرتش أرجع العملية: ${safeError(e)}`;}
++}
++
++async function verifyCreatedScheduleBatch(env,chatId,one,rules){
++  const missing=[];
++  for(const x of one){if(!Number(x.id)||!(await env.DB.prepare(`SELECT id FROM reminders WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId).first()))missing.push(`reminder:${x.id}`);}
++  for(const x of rules){if(!Number(x.id)||!(await env.DB.prepare(`SELECT id FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId).first()))missing.push(`rule:${x.id}`);}
++  if(missing.length){
++    const stm=[];for(const x of one)if(Number(x.id))stm.push(env.DB.prepare(`DELETE FROM reminders WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId));for(const x of rules)if(Number(x.id))stm.push(env.DB.prepare(`DELETE FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(x.id),chatId));if(stm.length)await env.DB.batch(stm);
++    throw new Error(`Verifier رفض العملية لأن الحفظ ناقص: ${missing.join(", ")}`);
++  }
++}
++
++async function upsertLifeEntity(env,chatId,name,type="concept",confidence=1,source="user_explicit"){
++  name=String(name||"").trim().slice(0,120);if(!name)return null;
++  const normalized=normalizeArabicLoose(name);if(!normalized)return null;
++  const now=new Date().toISOString();
++  await env.DB.prepare(`INSERT INTO life_entities(chat_id,entity_type,name,normalized_name,confidence,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(chat_id,entity_type,normalized_name) DO UPDATE SET name=excluded.name,confidence=MAX(life_entities.confidence,excluded.confidence),updated_at=excluded.updated_at`)
++    .bind(chatId,type,name,normalized,confidence,source,now,now).run();
++  return env.DB.prepare(`SELECT * FROM life_entities WHERE chat_id=? AND entity_type=? AND normalized_name=? LIMIT 1`).bind(chatId,type,normalized).first();
++}
++
++async function persistWorldUpdatesFromIntent(env,chatId,intent){
++  for(const w of normalizeV10WorldUpdates(intent?.world_updates)){
++    const from=await upsertLifeEntity(env,chatId,w.subject,w.subject_type,w.confidence,"user_explicit");if(!from)continue;
++    let to=null,objectValue=null;
++    if(w.object_type!=="value")to=await upsertLifeEntity(env,chatId,w.object,w.object_type,w.confidence,"user_explicit");else objectValue=w.object;
++    const now=new Date().toISOString();
++    const existing=await env.DB.prepare(`SELECT id FROM life_edges WHERE chat_id=? AND from_entity_id=? AND relation=? AND COALESCE(to_entity_id,0)=? AND COALESCE(object_value,'')=? AND valid_until IS NULL LIMIT 1`)
++      .bind(chatId,Number(from.id),w.relation,Number(to?.id||0),String(objectValue||"")).first();
++    if(existing)await env.DB.prepare(`UPDATE life_edges SET confidence=?,updated_at=? WHERE id=?`).bind(w.confidence,now,Number(existing.id)).run();
++    else await env.DB.prepare(`INSERT INTO life_edges(chat_id,from_entity_id,relation,to_entity_id,object_value,confidence,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
++      .bind(chatId,Number(from.id),w.relation,to?Number(to.id):null,objectValue,w.confidence,"user_explicit",now,now).run();
++  }
++}
++
++async function persistMemoryToWorldGraph(env,chatId,memory){
++  const text=String(memory||"").trim();if(!text)return;
++  const self=await upsertLifeEntity(env,chatId,"أنا","person",1,"user_explicit");if(!self)return;
++  const now=new Date().toISOString();
++  await env.DB.prepare(`INSERT INTO life_edges(chat_id,from_entity_id,relation,to_entity_id,object_value,confidence,source,created_at,updated_at) VALUES (?,?,'memory_fact',NULL,?,1,'user_explicit',?,?)`)
++    .bind(chatId,Number(self.id),text,now,now).run();
++  const patterns=[
++    {re:/^(.+?)\s+(?:مراتي|زوجتي)$/iu,rel:"spouse",type:"person"},
++    {re:/^(.+?)\s+(?:ابني|ابنى|بنتي)$/iu,rel:"child",type:"person"},
++    {re:/^(.+?)\s+(?:اخويا|أخويا|اختي|أختي)$/iu,rel:"sibling",type:"person"}
++  ];
++  for(const p of patterns){const m=text.match(p.re);if(!m)continue;const other=await upsertLifeEntity(env,chatId,m[1].trim(),p.type,1,"user_explicit");if(other)await env.DB.prepare(`INSERT INTO life_edges(chat_id,from_entity_id,relation,to_entity_id,object_value,confidence,source,created_at,updated_at) VALUES (?,?,?,?,NULL,1,'user_explicit',?,?)`).bind(chatId,Number(self.id),p.rel,Number(other.id),now,now).run();break;}
++}
++
++async function buildWorldModelContext(env,chatId,limit=50){
++  const rows=(await env.DB.prepare(`SELECT e.name AS subject,e.entity_type,ed.relation,e2.name AS object_entity,ed.object_value,ed.confidence FROM life_edges ed JOIN life_entities e ON e.id=ed.from_entity_id LEFT JOIN life_entities e2 ON e2.id=ed.to_entity_id WHERE ed.chat_id=? AND ed.valid_until IS NULL ORDER BY ed.id DESC LIMIT ?`).bind(chatId,clamp(Number(limit||50),1,100)).all())?.results||[];
++  if(!rows.length)return "";
++  return "=== World Model المترابط (حقائق محفوظة) ===\n"+rows.map(r=>`• ${r.subject} —${r.relation}→ ${r.object_entity||r.object_value||""} [${Number(r.confidence||1).toFixed(2)}]`).join("\n");
++}
++
++async function showWorldPanel(env,chatId,messageId=null){
++  const entities=(await env.DB.prepare(`SELECT id,name,entity_type FROM life_entities WHERE chat_id=? ORDER BY id DESC LIMIT 20`).bind(chatId).all())?.results||[];
++  const edges=(await env.DB.prepare(`SELECT e.name subject,ed.relation,e2.name object_entity,ed.object_value FROM life_edges ed JOIN life_entities e ON e.id=ed.from_entity_id LEFT JOIN life_entities e2 ON e2.id=ed.to_entity_id WHERE ed.chat_id=? AND ed.valid_until IS NULL ORDER BY ed.id DESC LIMIT 20`).bind(chatId).all())?.results||[];
++  const memories=await getUserMemories(env,chatId,15);
++  let text=`🧠 World Model\n\nالكيانات: ${entities.length}\nالعلاقات الأخيرة:\n${edges.length?edges.map(x=>`• ${x.subject} → ${x.relation} → ${x.object_entity||x.object_value||""}`).join("\n"):"—"}`;
++  if(memories.length)text+=`\n\n💭 ذاكرة نصية:\n${memories.map(x=>`• ${x.memory}`).join("\n")}`;
++  return editOrSend(env,chatId,messageId,text,{inline_keyboard:[[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function persistIntentDependencies(env,chatId,intent,createdOne){
++  const deps=normalizeV10Dependencies(intent?.dependencies);if(!deps.length)return;
++  const now=new Date().toISOString();
++  for(const d of deps){
++    const s=createdOne[d.source_ref],t=createdOne[d.target_ref];if(!s||!t||!Number(s.id)||!Number(t.id))continue;
++    await env.DB.prepare(`INSERT OR REPLACE INTO event_dependencies(chat_id,source_type,source_id,target_type,target_id,relation,offset_minutes,created_at,updated_at) VALUES (?,'reminder',?,'reminder',?,?,?,?,?)`)
++      .bind(chatId,Number(s.id),Number(t.id),d.relation,d.offset_minutes,now,now).run();
++  }
++}
++
++async function propagateReminderDependencies(env,chatId,sourceId,visited=new Set(),depth=0){
++  sourceId=Number(sourceId);if(!sourceId||depth>8||visited.has(sourceId))return;visited.add(sourceId);
++  const source=await env.DB.prepare(`SELECT * FROM reminders WHERE id=? AND chat_id=? LIMIT 1`).bind(sourceId,chatId).first();if(!source)return;
++  const deps=(await env.DB.prepare(`SELECT * FROM event_dependencies WHERE chat_id=? AND source_type='reminder' AND source_id=? AND active=1`).bind(chatId,sourceId).all())?.results||[];
++  if(!deps.length)return;
++  const tz=String(source.timezone||TIME_ZONE);let base=`${source.local_date} ${source.local_time}`;
++  for(const d of deps){
++    let delta=Number(d.offset_minutes||0);
++    if(d.relation==="after_end")delta+=Number(source.duration_minutes||0);else if(d.relation==="before_start")delta=-delta;
++    const at=addMinutesLocal(base,delta,tz);const [date,time]=splitLocalDateTime(at);
++    await env.DB.prepare(`UPDATE reminders SET local_date=?,local_time=?,timezone=?,updated_at=? WHERE id=? AND chat_id=? AND cancelled=0 AND sent=0`).bind(date,time,tz,new Date().toISOString(),Number(d.target_id),chatId).run();
++    await propagateReminderDependencies(env,chatId,Number(d.target_id),visited,depth+1);
++  }
++}
++
++function splitShoppingItems(text){
++  let s=String(text||"").trim().replace(/[.؛;]+$/g,"");
++  if(!s)return[];
++  let arr=s.split(/\s*(?:،|,)\s*|\s+و\s+|\s+و(?=[\u0600-\u06FF0-9])/u).map(x=>x.trim()).filter(Boolean);
++  if(arr.length===1&&/\n/.test(s))arr=s.split(/\n+/).map(x=>x.trim()).filter(Boolean);
++  return [...new Set(arr.map(x=>x.replace(/^(?:كمان|و)\s*/u,"").trim()).filter(x=>x.length>0))].slice(0,30);
++}
++
++async function getDefaultShoppingList(env,chatId,create=true){
++  const norm=normalizeArabicLoose("مشتريات");
++  let row=await env.DB.prepare(`SELECT * FROM smart_lists WHERE chat_id=? AND normalized_name=? LIMIT 1`).bind(chatId,norm).first();
++  if(!row&&create){const now=new Date().toISOString();const res=await env.DB.prepare(`INSERT INTO smart_lists(chat_id,name,normalized_name,list_type,created_at,updated_at) VALUES (?,?,?,?,?,?)`).bind(chatId,"مشتريات",norm,"shopping",now,now).run();row=await env.DB.prepare(`SELECT * FROM smart_lists WHERE id=? AND chat_id=?`).bind(Number(res?.meta?.last_row_id||0),chatId).first();}
++  return row||null;
++}
++
++async function addShoppingItems(env,chatId,titles){
++  const list=await getDefaultShoppingList(env,chatId,true);const now=new Date().toISOString();const ids=[];const added=[];
++  const posRow=await env.DB.prepare(`SELECT COALESCE(MAX(position),0) m FROM smart_list_items WHERE list_id=? AND chat_id=?`).bind(Number(list.id),chatId).first();let pos=Number(posRow?.m||0);
++  for(const title0 of titles.slice(0,30)){
++    const title=String(title0||"").trim().slice(0,180);const n=normalizeArabicLoose(title);if(!n)continue;
++    const exists=await env.DB.prepare(`SELECT id,status FROM smart_list_items WHERE list_id=? AND chat_id=? AND normalized_title=? AND status IN ('pending','bought','unavailable','skipped') ORDER BY id DESC LIMIT 1`).bind(Number(list.id),chatId,n).first();
++    if(exists&&exists.status==='pending')continue;
++    if(exists&&exists.status!=='pending'){await env.DB.prepare(`UPDATE smart_list_items SET status='pending',updated_at=? WHERE id=?`).bind(now,Number(exists.id)).run();ids.push(Number(exists.id));added.push(title);continue;}
++    const res=await env.DB.prepare(`INSERT INTO smart_list_items(list_id,chat_id,title,normalized_title,status,position,created_at,updated_at) VALUES (?,?,?,?, 'pending',?,?,?)`).bind(Number(list.id),chatId,title,n,++pos,now,now).run();ids.push(Number(res?.meta?.last_row_id||0));added.push(title);
++  }
++  if(ids.length)await writeAudit(env,chatId,{action:"create",entityType:"shopping_items",entityId:String(list.id),summary:`إضافة ${ids.length} للمشتريات`,after:{items:added},undo:{type:"delete_list_items",ids}});
++  return {list,ids,added};
++}
++
++async function getShoppingItems(env,chatId,listId){
++  return (await env.DB.prepare(`SELECT * FROM smart_list_items WHERE chat_id=? AND list_id=? ORDER BY position,id`).bind(chatId,Number(listId)).all())?.results||[];
++}
++
++async function getActiveShoppingSession(env,chatId){return env.DB.prepare(`SELECT * FROM shopping_sessions WHERE chat_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`).bind(chatId).first();}
++
++async function startShoppingSession(env,chatId,listId,placeName=null){
++  let s=await getActiveShoppingSession(env,chatId);if(s&&Number(s.list_id)===Number(listId))return s;
++  if(s)await env.DB.prepare(`UPDATE shopping_sessions SET ended_at=? WHERE id=? AND chat_id=?`).bind(new Date().toISOString(),Number(s.id),chatId).run();
++  const now=new Date().toISOString();const r=await env.DB.prepare(`INSERT INTO shopping_sessions(chat_id,list_id,place_name,started_at,created_at) VALUES (?,?,?,?,?)`).bind(chatId,Number(listId),placeName,now,now).run();
++  return env.DB.prepare(`SELECT * FROM shopping_sessions WHERE id=?`).bind(Number(r?.meta?.last_row_id||0)).first();
++}
++
++function shoppingKeyboard(listId,items){
++  const active=items.filter(x=>["pending","bought","unavailable","skipped"].includes(String(x.status)));
++  const rows=active.slice(0,V10_MAX_SHOP_ITEMS).map(x=>[{text:`${x.status==='bought'?'✅':'⬜'} ${String(x.title).slice(0,45)}`,callback_data:`shop:toggle:${x.id}`}]);
++  rows.push([{text:"✅ إنهاء التسوق",callback_data:`shop:finish:${listId}`}]);rows.push([{text:"↩️ المشتريات",callback_data:"panel:shopping"}]);return{inline_keyboard:rows};
++}
++
++function shoppingText(items,session=false){
++  const relevant=items.filter(x=>["pending","bought","unavailable","skipped"].includes(String(x.status)));const bought=relevant.filter(x=>x.status==='bought').length,pending=relevant.filter(x=>x.status==='pending').length;
++  const lines=relevant.map(x=>`${x.status==='bought'?'✅':x.status==='unavailable'?'🚫':x.status==='skipped'?'⏭️':'⬜'} ${x.title}`);
++  return `${session?'🛒 وضع التسوق':'🛒 قائمة المشتريات'}\n\n${lines.length?lines.join("\n"):"القائمة فاضية."}\n\n${bought}/${relevant.length} تم · باقي ${pending}`;
++}
++
++async function showShoppingList(env,chatId,messageId=null,{startSession=false,placeName=null}={}){
++  const list=await getDefaultShoppingList(env,chatId,true);const items=await getShoppingItems(env,chatId,list.id);if(startSession)await startShoppingSession(env,chatId,list.id,placeName);
++  return editOrSend(env,chatId,messageId,shoppingText(items,startSession||!!(await getActiveShoppingSession(env,chatId))),shoppingKeyboard(list.id,items));
++}
++
++async function showShoppingHub(env,chatId,messageId=null){
++  const list=await getDefaultShoppingList(env,chatId,true);const items=await getShoppingItems(env,chatId,list.id);const pending=items.filter(x=>x.status==='pending').length;const bought=items.filter(x=>x.status==='bought').length;
++  return editOrSend(env,chatId,messageId,`🛒 المشتريات\n\nمتبقي: ${pending}\nتم شراؤه: ${bought}\n\nتقدر تضيف أصناف بالكلام الطبيعي: «ضيف لبن وبيض للمشتريات».`,{inline_keyboard:[[{text:"🛒 افتح To‑Do",callback_data:"shop:open"}],[{text:"👀 عرض القائمة",callback_data:"shop:view"}],[{text:"↩️ لوحة التحكم",callback_data:"panel:home"}]]});
++}
++
++async function toggleShoppingItemCallback(env,chatId,messageId,itemId){

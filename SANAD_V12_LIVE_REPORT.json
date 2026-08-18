@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "version": "12.0.0",
+  "scenario_count": 8,
+  "passes": [
+    {
+      "name": "natural shopping persisted",
+      "detail": "[{\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"title\":\"عيش توست\",\"status\":\"pending\"},{\"title\":\"كيس رز\",\"status\":\"pending\"},{\"title\":\"بطاطس\",\"status\":\"pending\"},{\"title\":\"شيدر\",\"status\":\"pending\"}]"
+    },
+    {
+      "name": "shopping read command",
+      "detail": "attempts=1"
+    },
+    {
+      "name": "natural reminder verified",
+      "detail": "{\"title\":\"أكلم دكتور الأسنان\",\"local_date\":\"2026-11-03\",\"local_time\":\"19:23\",\"status\":\"active\"}"
+    },
+    {
+      "name": "memory tools",
+      "detail": "[{\"content\":\"مقاسي في التيشيرتات Large وبفضل القهوة من غير سكر\",\"memory_type\":\"preference\"}]"
+    },
+    {
+      "name": "multi-tool one message",
+      "detail": "shop=6 rem=1"
+    },
+    {
+      "name": "telegram idempotency",
+      "detail": "rows=1"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    },
+    {
+      "name": "no unverified success mutations",
+      "detail": "[]"
+    }
+  ]
+}

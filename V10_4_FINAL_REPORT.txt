@@ -1,0 +1,18 @@
+Super Agent V10.4 Zero Known Bugs
+Syntax + IntelliSense: PASS
+Exact relative reschedule + dependency propagation: PASS
+Relative reschedule bypasses AI: PASS
+Undo full linked chain: PASS
+Multi-command natural shopping separation: PASS
+No malformed merged shopping item: PASS
+No-op update guard: ENABLED
+V10.3.4 atomic/natural shopping regression: PASS
+V10.3.3 chain regression: PASS
+Cycle canonicalization regression: PASS
+Reliability + semantic regression: PASS
+V9.2 stress regression: PASS
+V10 stress/E2E/migration: PASS
+Protected diagnostics: PASS
+Exact bytes: 327572
+Exact SHA256: 5e934144535783a30bf379417c8b2b1af3e4d1022e4d55b15f37cb388f5928a5
+VERIFIED

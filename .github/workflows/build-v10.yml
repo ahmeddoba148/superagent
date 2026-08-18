@@ -1,0 +1,47 @@
+name: Build & Verify SuperAgent V10
+
+on:
+  push:
+    branches: [superagent-v10-life-os]
+    paths:
+      - 'v10_parts/**'
+      - '.github/workflows/build-v10.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-verify-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild V10 from trusted V9.1 base
+        shell: bash
+        run: |
+          cp SuperAgent_V9.1_Final_Fix.js SuperAgent_V10_LifeOS.js
+          cat v10_parts/part_*.patch > v10.patch
+          sed -i '1c--- SuperAgent_V10_LifeOS.js' v10.patch
+          sed -i '2c+++ SuperAgent_V10_LifeOS.js' v10.patch
+          patch -p0 < v10.patch
+
+      - name: Verify exact integrity and syntax
+        shell: bash
+        run: |
+          node --check SuperAgent_V10_LifeOS.js
+          test "$(wc -c < SuperAgent_V10_LifeOS.js)" -eq 269722
+          test "$(sha256sum SuperAgent_V10_LifeOS.js | cut -d' ' -f1)" = "d37746931272a2caa650ff14f31f5c03f0bcefa8825590dd8724dacb1ceae820"
+
+      - name: Commit verified full V10 source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SuperAgent_V10_LifeOS.js
+          if git diff --cached --quiet; then
+            echo "V10 already matches verified artifact"
+            exit 0
+          fi
+          git commit -m "Build and verify Super Agent V10 Life OS"
+          git push

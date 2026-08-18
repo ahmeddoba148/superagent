@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "version": "12.5.0",
+  "name": "Sanad — سند V12.5 Full-Life",
+  "sha256": "1e898105c3efee1f4c9780e63fcc8c701fd7caf8184322b58758096d3735cc62",
+  "bytes": 163986,
+  "lines": 1412,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "architecture": "single-brain-full-life-agent",
+  "tools": 64,
+  "models": 3,
+  "explicit_temporal_grounding": true,
+  "explicit_life_grounding": true,
+  "goal_completion_gate": true,
+  "structural_dependency_guard": true,
+  "live_ok": true,
+  "live_scenarios": 19,
+  "known_critical_code_failures": [],
+  "limitations": [
+    "External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs."
+  ]
+}

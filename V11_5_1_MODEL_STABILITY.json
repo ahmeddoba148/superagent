@@ -1,0 +1,180 @@
+{
+  "ok": true,
+  "rounds": 6,
+  "requests": 18,
+  "per_model": {
+    "gemini::gemini-3.5-flash-lite": {
+      "successes": 6,
+      "total": 6,
+      "min_ms": 1103,
+      "max_ms": 1439,
+      "avg_ms": 1267
+    },
+    "gemini::gemini-3.1-flash-lite": {
+      "successes": 6,
+      "total": 6,
+      "min_ms": 1315,
+      "max_ms": 1899,
+      "avg_ms": 1564
+    },
+    "gemini::gemini-3-flash-preview": {
+      "successes": 6,
+      "total": 6,
+      "min_ms": 1354,
+      "max_ms": 1502,
+      "avg_ms": 1447
+    }
+  },
+  "samples": [
+    {
+      "round": 1,
+      "http": 200,
+      "wall_ms": 7241,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1439
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1899
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1396
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "http": 200,
+      "wall_ms": 4094,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1147
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1383
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1499
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "http": 200,
+      "wall_ms": 4440,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1261
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1669
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1443
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "http": 200,
+      "wall_ms": 4270,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1217
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1636
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1354
+        }
+      ]
+    },
+    {
+      "round": 5,
+      "http": 200,
+      "wall_ms": 4141,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1103
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1484
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1487
+        }
+      ]
+    },
+    {
+      "round": 6,
+      "http": 200,
+      "wall_ms": 4311,
+      "attempts": [
+        {
+          "model": "gemini::gemini-3.5-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1432
+        },
+        {
+          "model": "gemini::gemini-3.1-flash-lite",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1315
+        },
+        {
+          "model": "gemini::gemini-3-flash-preview",
+          "ok": true,
+          "status": 200,
+          "latency_ms": 1502
+        }
+      ]
+    }
+  ]
+}

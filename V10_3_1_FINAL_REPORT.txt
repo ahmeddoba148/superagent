@@ -1,0 +1,11 @@
+Super Agent V10.3.1 Diagnostics
+Syntax: PASS
+Protected diagnostics auth/redaction: PASS
+Exact hard production scenario: PASS
+V10.3 failure injection: PASS
+V10.2 semantic regression: PASS
+V9.2 stress regression: PASS
+V10.1 compatibility stress/E2E/migration: PASS
+Exact bytes: 308129
+Exact SHA256: 588918e3539a80545238808286e0bddd808e209a40a0334e2e64ea04d43a5df4
+VERIFIED

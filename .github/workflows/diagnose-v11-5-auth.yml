@@ -1,0 +1,45 @@
+name: Diagnose V11.5 Auth
+on:
+  push:
+    branches: [superagent-v11-5-hardening]
+    paths: ['.github/workflows/diagnose-v11-5-auth.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v115-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Build deploy diagnose
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/build_v11_5.mjs SuperAgent_V11_4_FULL.js SuperAgent_V11_5_FULL.js
+          npm install --no-save wrangler@latest >/dev/null
+          cat > wrangler.v115.diag.jsonc <<'EOF'
+          {"name":"superagent-v115-staging","main":"SuperAgent_V11_5_FULL.js","compatibility_date":"2026-08-17","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config wrangler.v115.diag.jsonc >/dev/null
+          export WEBHOOK_SECRET="$(openssl rand -hex 32)" SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY"; do k="${pair%%:*}";v="${pair#*:}";printf '%s' "$v"|npx wrangler secret put "$k" --config wrangler.v115.diag.jsonc >/dev/null;done
+          sleep 5
+          echo '--- QUERY AUTH ---'
+          curl -sS -D /tmp/h1 -o /tmp/b1 "$URL/ready?key=$SETUP_KEY" || true; head -1 /tmp/h1; cat /tmp/b1; echo
+          echo '--- HEADER SETUP POST ---'
+          curl -sS -D /tmp/h2 -o /tmp/b2 -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1" || true; head -1 /tmp/h2; cat /tmp/b2; echo
+          echo '--- HEADER READY ---'
+          curl -sS -D /tmp/h3 -o /tmp/b3 -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/ready" || true; head -1 /tmp/h3; cat /tmp/b3; echo
+          echo '--- HEALTH ---'
+          curl -sS -D /tmp/h4 -o /tmp/b4 "$URL/health" || true; head -1 /tmp/h4; cat /tmp/b4; echo

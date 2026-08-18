@@ -1,0 +1,60 @@
+name: SuperAgent V11.6.1 CLEAN
+on:
+  push:
+    branches: [superagent-v11-6-1-clean]
+    paths:
+      - '.github/workflows/release-v11-6-1-clean.yml'
+      - 'tools/build_v1161_clean.mjs'
+permissions:
+  contents: write
+jobs:
+  certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Build exact V11.6.1 clean worker
+        run: node tools/build_v1161_clean.mjs
+      - name: Syntax check
+        run: node --check worker.js
+      - name: TypeScript checkJs gate
+        run: npx -y -p typescript@5.8.3 tsc -p jsconfig.json --pretty false
+      - name: Verify exact certified source SHA
+        run: |
+          SHA=$(sha256sum worker.js | awk '{print $1}')
+          echo "worker sha256=$SHA"
+          test "$SHA" = "d5da2c80eb32df035dcc68d68fd3630bee840ae5d6250a9709466c845e93120d"
+      - name: Pure regression suites
+        run: |
+          cp worker.js /tmp/self.mjs
+          printf '\nconsole.log(JSON.stringify({v10:runV10SelfTests(),v11:runV11PureSelfTests(),v113:runV113PureSelfTests(),v114:runV114PureSelfTests(),v115:runV115PureSelfTests()}));\n' >> /tmp/self.mjs
+          node /tmp/self.mjs | tail -1 > /tmp/pure.json
+          node - <<'NODE'
+          const x=require('/tmp/pure.json');
+          if(!x.v10?.ok||!Array.isArray(x.v11)||!x.v11.every(t=>t.ok)||!x.v113?.ok||!x.v114?.ok||!x.v115?.ok)throw Error(JSON.stringify(x));
+          console.log('PURE ALL PASS');
+          NODE
+      - name: Finalize certification
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const c=require('./V11_6_1_CERTIFICATION.json');
+          const p=require('/tmp/pure.json');
+          c.ok=true;
+          c.syntax={ok:true,checker:'node --check'};
+          c.typescript={ok:true,version:'5.8.3',project:'jsconfig.json',syntactic_errors:0,semantic_errors:0,compiler_output_lines:0};
+          c.pure_regressions={v10:!!p.v10?.ok,v11:`${p.v11.filter(x=>x.ok).length}/${p.v11.length}`,v113:!!p.v113?.ok,v114:!!p.v114?.ok,v115:!!p.v115?.ok};
+          c.models=['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.5-flash'];
+          c.runtime_behavior_change_from_11_6='none except version labels/markers and workspace diagnostics profile';
+          fs.writeFileSync('V11_6_1_CERTIFICATION.json',JSON.stringify(c,null,2)+'\n');
+          NODE
+      - name: Commit certified clean package
+        run: |
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add worker.js jsconfig.json .vscode/settings.json V11_6_1_CERTIFICATION.json
+          git commit -m "Build certified SuperAgent V11.6.1 CLEAN"
+          git push origin HEAD:superagent-v11-6-1-clean

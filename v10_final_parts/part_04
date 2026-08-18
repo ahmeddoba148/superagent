@@ -1,0 +1,91 @@
+ من محتوى التذكير وليست موعدًا ثانيًا إلا لو طلب المستخدم تسجيلها صراحة.
++18) لو المستخدم طلب عدة تذكيرات صلاة يومية مرتبطة بمواقيت مختلفة، فكل علاقة صلاة قاعدة مستقلة ولا تسقط أي واحدة؛ الوقت يُحسب يوميًا من Prayer Anchor وليس ساعة ثابتة.
++19) لو طلب المستخدم علاقة دائمة بين حدثين (قبل/بعد حدث آخر) املأ dependencies بمؤشرات items الصفرية، ولا تعتمد فقط على وقت ثابت.
++20) world_updates لا تُملأ إلا بحقائق قالها المستخدم صراحة في رسالته الحالية؛ لا تستنتج صفات شخصية ولا معلومات حساسة ولا تخترع علاقات.
++21) لو المرجع واضح من السياق لا تسأل سؤالًا توضيحيًا غير ضروري. الهدف: never ask unnecessary questions.
++22) فرّق بين حقيقة صريحة واقتراح؛ confidence للحقائق الصريحة = 1.
+ `.trim();
+ }
+ 
+@@ -7552,7 +7569,7 @@
+ 
+ if(intent.action==="create"){
+ const expected=
+-estimateMinimumItems(
++estimateMinimumItemsSemantic(
+ base
+ );
+ 
+@@ -7986,12 +8003,11 @@
+ function analyzeHardAmbiguity(
+ originalText
+ ){
++const ambiguitySource=stripReferenceOnlyTailForAmbiguity(String(originalText||""));
+ const text=
+ normalizeTimeWords(
+ normalizeDigits(
+-String(
+-originalText||""
+-)
++ambiguitySource
+ )
+ ).trim();
+ 
+@@ -8296,6 +8312,98 @@
+ );
+ }
+ 
++
++function stripReferenceOnlyTailForAmbiguity(text){
++const raw=String(text||"");
++const cause=raw.match(/(?:علشان|عشان|بحيث|لأن|لان|لكي)/iu);
++if(!cause||cause.index==null)return raw;
++const before=raw.slice(0,cause.index);
++const after=raw.slice(cause.index+cause[0].length);
++if(!/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu.test(before))return raw;
++if(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|سجل|احفظ|ضيف\s+موعد|اضف\s+موعد|موعد\s+تاني|ميعاد\s+تاني)/iu.test(after))return raw;
++return before;
++}
++
++function parseClockMentionsForSemantics(text){
++const s=normalizeTimeWords(normalizeDigits(String(text||"")));
++const re=/(?:الساعة|الساعه)\s*(1[0-2]|[1-9])(?:\s*[:٫.]\s*([0-5]?\d)|\s*(ونص|و\s*نص|وربع|و\s*ربع|إلا\s*ربع|الا\s*ربع))?\s*(صباح(?:ًا|ا)?|الصبح|صبح|الفجر|ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء(?:ً|ا)?|المساء|بالليل|ليل)?/giu;
++const out=[];let m;
++while((m=re.exec(s))!==null){
++const suffix=String(m[3]||"").replace(/\s+/g," ").trim();
++let minute=m[2]?Number(m[2]):/نص/u.test(suffix)?30:/ربع/u.test(suffix)?15:0;
++let hour=Number(m[1]);
++if(/إلا|الا/u.test(suffix)){hour=hour===1?12:hour-1;minute=45;}
++const period=String(m[4]||"");
++let code=null;
++if(/(?:صباح|الصبح|صبح|الفجر)/iu.test(period))code="AM";
++else if(/(?:ظهر|الظهر|الضهر|عصر|العصر|مغرب|المغرب|مساء|المساء|بالليل|ليل)/iu.test(period))code="PM";
++out.push({index:m.index,end:re.lastIndex,hour,minute,period:code,label:m[0]});
++}
++return out;
++}
++
++function analyzeActionReferenceShape(text){
++const raw=String(text||"");
++const normalized=normalizeTimeWords(normalizeDigits(raw));
++const cause=normalized.match(/(?:علشان|عشان|بحيث|لأن|لان|لكي)/iu);
++if(!cause||cause.index==null)return null;
++const verb=normalized.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu);
++if(!verb||verb.index==null||verb.index>cause.index)return null;
++const tail=normalized.slice(cause.index+cause[0].length);
++if(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى|سجل|احفظ|ضيف\s+موعد|اضف\s+موعد|موعد\s+تاني|ميعاد\s+تاني)/iu.test(tail))return null;
++const clocks=parseClockMentionsForSemantics(normalized);
++const before=clocks.filter(x=>x.index<cause.index);
++const after=clocks.filter(x=>x.index>cause.index);
++if(before.length!==1||after.length<1)return null;
++return{raw,normalized,cause,verb,actionClock:before[0],referenceClocks:after};
++}
++
++function resolveDeterministicReminderDate(text,hhmm,timeZone=TIME_ZONE){
++const n=normalizeArabicLoose(normalizeDigits(String(text||"")));
++const now=zonedNow(timeZone);
++if(/(?:بعد\s+بكره|بعد\s+بكرة)/u.test(n))return addDaysIso(now.date,2);
++if(/(?:بكره|بكرة|غدا|غدًا|غداً)/u.test(n))return addDaysIso(now.date,1);
++if(/(?:النهارده|النهاردة|اليوم)/u.test(n))return now.date;
++if(/\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/u.test(n)||/(?:يناير|فبراير|مارس|ابريل|مايو|يونيو|يوليو|اغسطس|سبتمبر|اكتوبر|نوفمبر|ديسمبر)/u.test(n))return null;
++const named=extractName

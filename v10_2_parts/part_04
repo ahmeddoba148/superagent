@@ -1,0 +1,43 @@
++function ensureV102LinkedTarget(intent,sourceIndex,task,relation,explicitOffset,timeZone){
++  if(!task||!intent?.items?.[sourceIndex])return null;const source=intent.items[sourceIndex];let targetIndex=-1,best=0;
++  for(let i=0;i<intent.items.length;i++){if(i===sourceIndex)continue;const sc=scoreV102TaskMatch(task,intent.items[i].title);if(sc>best){best=sc;targetIndex=i;}}
++  if(best<2)targetIndex=-1;
++  let dependencyOffset=explicitOffset;
++  if(targetIndex<0){
++    let at=`${source.date} ${source.time}`;if(Number.isFinite(explicitOffset)){
++      let delta=Number(explicitOffset||0);if(relation==="before_start")delta=-delta;else if(relation==="after_end")delta+=Number(source.duration_minutes||0);at=addMinutesLocal(at,delta,timeZone);
++    }
++    const[d,t]=splitLocalDateTime(at);intent.items.push({title:task,kind:"reminder",date:d,time:t,timezone:timeZone,duration_minutes:0,advance_alerts:[]});targetIndex=intent.items.length-1;
++  }else if(!Number.isFinite(dependencyOffset)){
++    try{
++      const sMs=localDateTimeToEpoch(`${source.date} ${source.time}`,timeZone);const target=intent.items[targetIndex];const tMs=localDateTimeToEpoch(`${target.date} ${target.time}`,timeZone);let diff=Math.max(0,Math.round((tMs-sMs)/60000));
++      if(relation==="before_start")diff=Math.max(0,Math.round((sMs-tMs)/60000));
++      if(relation==="after_end")diff=Math.max(0,diff-Number(source.duration_minutes||0));dependencyOffset=diff;
++    }catch{dependencyOffset=0;}
++  }
++  if(!Number.isFinite(dependencyOffset))dependencyOffset=0;
++  intent.dependencies=normalizeV10Dependencies([...(intent.dependencies||[]),{source_ref:sourceIndex,target_ref:targetIndex,relation,offset_minutes:dependencyOffset}]);
++  return targetIndex;
++}
++
++function repairV102LinkedEventIntent(intent,base,timeZone=TIME_ZONE){
++  if(intent?.action!=="create"||!Array.isArray(intent.items)||!intent.items.length)return;
++  const raw=String(base||"");if(!/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)/iu.test(raw))return;
++  if(!/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(raw))return;
++  let sourceIndex=intent.items.findIndex(x=>x.kind==="appointment");if(sourceIndex<0)sourceIndex=intent.items.findIndex(x=>/(?:دكتور|طبيب|كشف|موعد|ميعاد|اجتماع|مقابله|مقابلة)/iu.test(String(x.title||"")));if(sourceIndex<0)sourceIndex=0;
++  const before=raw.match(/(?:فكرني|فكرنى|ذكرني|ذكرنى|نبهني|نبهنى)\s+قبلها\s+(.+?)(?=\s+(?:و?بعد(?:ها|\s+ما)?|و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى)|$)/iu);
++  if(before){const x=parseV102RelationTask(before[1]);if(x.task)ensureV102LinkedTarget(intent,sourceIndex,x.task,"before_start",x.offset,timeZone);}
++  let after=raw.match(/(?:^|\s)و?بعد\s+ما\s+(?:نخلص|اخلص|أخلص)\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
++  if(!after)after=raw.match(/(?:^|\s)و?بعدها\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
++  if(!after)after=raw.match(/(?:^|\s)و?بعد\s+(?:الدكتور|الطبيب|الكشف|الموعد|ميعاد|الاجتماع|المقابلة|المقابله)\s+(.+?)(?=\s+(?:و?فكرني|و?فكرنى|و?ذكرني|و?ذكرنى|و?نبهني|و?نبهنى|و?قبلها)|$)/iu);
++  if(after){const x=parseV102RelationTask(after[1]);if(x.task)ensureV102LinkedTarget(intent,sourceIndex,x.task,"after_end",x.offset,timeZone);}
++}
++
++function applyV102SemanticRepairs(intent,base,timeZone=TIME_ZONE){
++  if(intent?.needs_clarification||intent?.action!=="create")return intent;
++  const items=Array.isArray(intent.items)?intent.items:[];
++  const clocks=parseV102GroundedClockMentions(base);
++  if(items.length===1&&clocks.length===1)items[0].time=clocks[0].time;
++  const dateCue=extractV102DominantDateCue(base,timeZone,items.length===1?items[0].time:null);
++  if(dateCue&&items.length===1)items[0].date=dateCue;
++  repairV102LinkedEventIntent(intent,base,timeZone);

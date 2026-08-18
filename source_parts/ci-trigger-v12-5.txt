@@ -1,0 +1,2 @@
+Trigger definitive Sanad V12.5 certification after prayer + brief + dependency grounding fixes.
+Target patch commit: 953dc289e3e1ebf76d7b6d63769d4c55d60beed8

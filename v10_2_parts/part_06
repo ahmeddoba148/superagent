@@ -1,0 +1,51 @@
+       for(const id of (u.rule_ids||[])){stm.push(env.DB.prepare(`DELETE FROM schedule_fires WHERE rule_id=? AND chat_id=?`).bind(Number(id),chatId));stm.push(env.DB.prepare(`DELETE FROM schedule_rules WHERE id=? AND chat_id=?`).bind(Number(id),chatId));}
+       if(stm.length)await env.DB.batch(stm);
+     }else if(u.type==="restore_cancelled_reminder"){
+@@ -13558,27 +13675,33 @@
+ async function persistIntentDependencies(env,chatId,intent,createdOne){
+   const deps=normalizeV10Dependencies(intent?.dependencies);if(!deps.length)return;
+   if(dependencyGraphHasCycle(deps))throw new Error("Verifier رفض روابط الأحداث لأنها تعمل دائرة اعتماد.");
+-  const now=new Date().toISOString();
++  const now=new Date().toISOString();const resolved=[];
+   for(const d of deps){
+-    const s=createdOne[d.source_ref],t=createdOne[d.target_ref];if(!s||!t||!Number(s.id)||!Number(t.id))continue;
++    const s=createdOne[d.source_ref],t=createdOne[d.target_ref];
++    if(!s||!t||!Number(s.id)||!Number(t.id))throw new Error(`Verifier رفض dependency غير صالحة: ${d.source_ref}→${d.target_ref}`);
++    resolved.push({d,sid:Number(s.id),tid:Number(t.id)});
++  }
++  for(const x of resolved){
+     await env.DB.prepare(`INSERT OR REPLACE INTO event_dependencies(chat_id,source_type,source_id,target_type,target_id,relation,offset_minutes,created_at,updated_at) VALUES (?,'reminder',?,'reminder',?,?,?,?,?)`)
+-      .bind(chatId,Number(s.id),Number(t.id),d.relation,d.offset_minutes,now,now).run();
++      .bind(chatId,x.sid,x.tid,x.d.relation,x.d.offset_minutes,now,now).run();
+   }
+ }
+ 
+ async function propagateReminderDependencies(env,chatId,sourceId,visited=new Set(),depth=0){
+-  sourceId=Number(sourceId);if(!sourceId||depth>8||visited.has(sourceId))return;visited.add(sourceId);
+-  const source=await env.DB.prepare(`SELECT * FROM reminders WHERE id=? AND chat_id=? LIMIT 1`).bind(sourceId,chatId).first();if(!source)return;
++  sourceId=Number(sourceId);if(!sourceId||depth>12||visited.has(sourceId))return 0;visited.add(sourceId);
++  const source=await env.DB.prepare(`SELECT * FROM reminders WHERE id=? AND chat_id=? LIMIT 1`).bind(sourceId,chatId).first();if(!source)return 0;
+   const deps=(await env.DB.prepare(`SELECT * FROM event_dependencies WHERE chat_id=? AND source_type='reminder' AND source_id=? AND active=1`).bind(chatId,sourceId).all())?.results||[];
+-  if(!deps.length)return;
+-  const tz=String(source.timezone||TIME_ZONE);let base=`${source.local_date} ${source.local_time}`;
++  if(!deps.length)return 0;
++  const tz=String(source.timezone||TIME_ZONE);const base=`${source.local_date} ${source.local_time}`;let moved=0;
+   for(const d of deps){
++    if(visited.has(Number(d.target_id)))continue;
+     let delta=Number(d.offset_minutes||0);
+     if(d.relation==="after_end")delta+=Number(source.duration_minutes||0);else if(d.relation==="before_start")delta=-delta;
+     const at=addMinutesLocal(base,delta,tz);const [date,time]=splitLocalDateTime(at);
+-    await env.DB.prepare(`UPDATE reminders SET local_date=?,local_time=?,timezone=?,updated_at=? WHERE id=? AND chat_id=? AND cancelled=0 AND sent=0`).bind(date,time,tz,new Date().toISOString(),Number(d.target_id),chatId).run();
+-    await propagateReminderDependencies(env,chatId,Number(d.target_id),visited,depth+1);
++    const res=await env.DB.prepare(`UPDATE reminders SET local_date=?,local_time=?,timezone=?,updated_at=? WHERE id=? AND chat_id=? AND cancelled=0 AND sent=0`).bind(date,time,tz,new Date().toISOString(),Number(d.target_id),chatId).run();
++    if(Number(res?.meta?.changes||0)>0){moved++;moved+=await propagateReminderDependencies(env,chatId,Number(d.target_id),visited,depth+1);}
+   }
++  return moved;
+ }
+ 
+ function splitShoppingItems(text){
+@@ -13625,14 +13748,14 @@
+ 
+ function shoppingKeyboard(listId,items){
+   const active=items.filter(x=>["pending","bought","unavailable","skipped"].includes(String(x.status)));
+-  const rows=active.slice(0,V10_MAX_SHOP_ITEMS).map(x=>[{text:`${x.status==='bought'?'✅':'⬜'} ${String(x.title).slice(0,45)}`,callback_data:`shop:toggle:${x.id}`}]);

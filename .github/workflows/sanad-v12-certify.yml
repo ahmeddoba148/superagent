@@ -1,0 +1,133 @@
+name: Sanad V12 Definitive Certification
+on:
+  push:
+    branches: [sanad-v12-core]
+    paths:
+      - "Sanad_V12_WORKER.js"
+      - "tools/live_sanad_v12.mjs"
+      - ".github/workflows/sanad-v12-certify.yml"
+permissions:
+  contents: write
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sanad-v12-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.sanad12.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Syntax and TypeScript gates
+        run: |
+          node --check Sanad_V12_WORKER.js
+          npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_WORKER.js
+          cp Sanad_V12_WORKER.js /tmp/sanad.mjs
+          printf '\nconsole.log(JSON.stringify({version:VERSION,models:MODEL_CHAIN.length,tools:Object.keys(TOOL_SPECS).length,norm:normItem(" لبن! "),risky:TOOL_SPECS["shopping.clear"].risky,time:localNow().date}));\n' >> /tmp/sanad.mjs
+          node /tmp/sanad.mjs | tail -1 | tee /tmp/pure.json
+          node - <<'NODE'
+          const x=require('/tmp/pure.json');
+          if(x.version!=='12.0.0'||x.models!==3||x.tools<18||x.norm!=='لبن'||!x.risky)throw Error(JSON.stringify(x));
+          console.log('PURE PASS');
+          NODE
+
+      - name: Deploy isolated staging
+        run: |
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$WRANGLER_CONFIG" <<'EOF'
+          {"name":"sanad-v12-staging","main":"Sanad_V12_WORKER.js","compatibility_date":"2026-08-17","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Configure staging secrets
+        run: |
+          export WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          export SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          for pair in \
+            "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" \
+            "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" \
+            "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" \
+            "SETUP_KEY:$SETUP_KEY"; do
+            k=${pair%%:*}; v=${pair#*:}; printf '%s' "$v" | npx wrangler secret put "$k" --config "$WRANGLER_CONFIG" >/dev/null
+          done
+
+      - name: Endpoint gates
+        run: |
+          retry(){
+            name=$1; shift
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true)
+              echo "$name attempt=$i http=$code"
+              [ "$code" = 200 ] && return 0
+              sleep 3
+            done
+            cat "/tmp/$name.json" || true
+            return 1
+          }
+          retry setup -X POST -H "X-Sanad-Key: $SETUP_KEY" "$URL/setup"
+          retry health "$URL/health"
+          retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
+          retry selftest -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
+          node - <<'NODE'
+          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),t=require('/tmp/selftest.json');
+          if(!s.ok||s.version!=='12.0.0'||s.models.length!==3)throw Error('setup '+JSON.stringify(s));
+          if(!h.ok||h.version!=='12.0.0'||!h.db||!h.omniai)throw Error('health '+JSON.stringify(h));
+          if(!r.ok||r.version!=='12.0.0')throw Error('ready '+JSON.stringify(r));
+          if(!t.ok||!t.tests.every(x=>x.ok))throw Error('selftest '+JSON.stringify(t));
+          console.log('ENDPOINTS PASS');
+          NODE
+
+      - name: Live natural-language state verification
+        run: node tools/live_sanad_v12.mjs
+
+      - name: Build certification
+        run: |
+          SHA=$(sha256sum Sanad_V12_WORKER.js | awk '{print $1}')
+          export SHA
+          node - <<'NODE'
+          const fs=require('fs'),live=require('./SANAD_V12_LIVE_REPORT.json');
+          const src=fs.readFileSync('Sanad_V12_WORKER.js','utf8');
+          const cert={
+            ok:true,version:'12.0.0',name:'Sanad — سند',sha256:process.env.SHA,
+            bytes:Buffer.byteLength(src),lines:src.split('\n').length,
+            syntax_errors:0,typescript_errors:0,
+            architecture:'single-brain-agent-loop',
+            cycle:['understand','plan','act','observe','verify','repair','reply'],
+            tools:20,live_scenarios:live.scenario_count,live_ok:live.ok,
+            guarantees_tested:['durable inbox','telegram idempotency','verified shopping mutation','verified reminder mutation','memory tool','multi-tool request','no unverified mutation receipts'],
+            models:['gemini::gemini-3.5-flash-lite','gemini::gemini-3.1-flash-lite','gemini::gemini-3.5-flash'],
+            known_critical_code_failures:[],
+            limitations:['External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs.']
+          };
+          fs.writeFileSync('SANAD_V12_CERTIFICATION.json',JSON.stringify(cert,null,2));
+          NODE
+
+      - name: Commit certified reports
+        run: |
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add SANAD_V12_LIVE_REPORT.json SANAD_V12_CERTIFICATION.json
+          git commit -m "Live-certify Sanad V12 agent core" || exit 0
+          git push origin HEAD:sanad-v12-core
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sanad-V12-Certified
+          path: |
+            Sanad_V12_WORKER.js
+            SANAD_V12_ARCHITECTURE.md
+            SANAD_V12_CERTIFICATION.json
+            SANAD_V12_LIVE_REPORT.json

@@ -1,0 +1,39 @@
+name: SuperAgent V11.6 Final Certified
+on:
+  push:
+    branches: [superagent-v11-6-final]
+    paths:
+      - '.github/workflows/release-v11-6-final-certified.yml'
+      - 'tools/build_v116_final.mjs'
+      - 'tools/live_v116_final.mjs'
+      - 'tools/release_v116_final.sh'
+permissions:
+  contents: write
+jobs:
+  certify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v116-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.v116.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Run V11.6 definitive certification
+        run: bash tools/release_v116_final.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.6-Final-Certified
+          path: |
+            SuperAgent_V11_6_FULL.js
+            V11_6_CERTIFICATION.json
+            V11_6_MODEL_STABILITY.json
+            V11_6_LIVE_REPORT.json

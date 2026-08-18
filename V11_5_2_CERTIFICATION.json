@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "version": "11.5.2",
+  "sha256": "e699daa0755d7410e7036c293dab0ca933808a2e9eb629f113bbe423535a0084",
+  "bytes": 483852,
+  "lines": 15823,
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3.5-flash"
+  ],
+  "requested_but_unavailable": "gemini::gemini-2.5-flash-lite",
+  "static_checks": {
+    "version": true,
+    "functionsRetained": true,
+    "tablesRetained": true,
+    "routerRemoved": true,
+    "budget": true,
+    "telegramAuth": true,
+    "adminAuth": true,
+    "durableInbox": true,
+    "leaseCollisionFeature": true,
+    "noUnprotectedLeaseExit": true,
+    "allLeasePathsRecovered": true,
+    "idempotency": true,
+    "undo": true,
+    "conflicts": true,
+    "recurrence": true,
+    "memory": true,
+    "world": true,
+    "voice": true,
+    "location": true,
+    "prayer": true,
+    "holidays": true,
+    "shopping": true,
+    "dependencies": true,
+    "planner": true,
+    "failureLog": true,
+    "noDead25": true
+  },
+  "pure_regression_ok": true,
+  "live_scenarios": 26,
+  "live_ok": true,
+  "lease_collision_recovery": true,
+  "lease_recovery_paths": 2,
+  "model_stability": {
+    "tested": true,
+    "primary": {
+      "id": "gemini::gemini-3.5-flash-lite",
+      "successes": 8,
+      "total": 8,
+      "avg_ms": 1182
+    },
+    "fallback_1": {
+      "id": "gemini::gemini-3.1-flash-lite",
+      "successes": 8,
+      "total": 8,
+      "avg_ms": 1590
+    },
+    "fallback_2": {
+      "id": "gemini::gemini-3.5-flash",
+      "successful_pre_quota": 7,
+      "tested_pre_quota": 8,
+      "successful_latency_ms": [
+        1673,
+        1915
+      ],
+      "extended_probe": "blocked_by_provider_429_quota"
+    },
+    "rejected": {
+      "id": "gemini::gemini-2.5-flash-lite",
+      "plain_http": 404,
+      "json_http": 404
+    },
+    "interpretation": "Core failover code is bounded and tested. Extended repeated fallback2 probing was limited by external Google/OmniAI quota."
+  },
+  "known_critical_code_failures": [],
+  "external_risks": [
+    "Google/OmniAI model quota can return 429 under sustained usage"
+  ]
+}

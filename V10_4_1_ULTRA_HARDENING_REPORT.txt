@@ -1,0 +1,27 @@
+Super Agent V10.4.1 Ultra Hardened
+New deterministic/fuzz assertions: 4644/4644 PASS
+New boundary/dependency/concurrency assertions: 5112/5112 PASS
+New hardening assertions total: 9756/9756 PASS
+AI calls in deterministic stress: 0
+Midnight/month/year/leap transitions: PASS
+Long dependency chains + fan-out: PASS
+Projected descendant conflict blocking: PASS
+Parallel multi-user isolation: PASS
+Concurrent Telegram idempotency: PASS
+Relative duration grammar incl. Arabic digits/multi-hour: PASS
+Multi-command Egyptian shopping language incl. waw: PASS
+Timed purchase/reminder separation: PASS
+V10.4 killer regression x5: PASS
+V10.3.4 atomic/natural regression: PASS
+V10.3.3 linked-chain regression: PASS
+Adversarial cyclic dependency regression x20: PASS
+Reliability failure injection x10: PASS
+Semantic regression: PASS
+V9.2 33006 assertion stress regression: PASS
+V10 stress/E2E/migration: PASS
+Protected diagnostics: PASS
+Syntax + IntelliSense: PASS
+Known test failures: 0
+Exact bytes: 329708
+Exact SHA256: d4a81abeccbc3a0289606585e688f4e95a2f15b2540135afafc4455c3ec52fa4
+VERIFIED — ZERO KNOWN FAILURES ACROSS TESTED MATRIX

@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "superagent-v10-6",
+  "main": "./SuperAgent_V10_6_CLOUDFLARE_READY.js",
+  "compatibility_date": "2026-08-16",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "vars": {
+    "PUBLIC_BOT": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "superagent",
+      "database_id": "__YOUR_D1_DATABASE_ID__"
+    }
+  ],
+  "services": [
+    {
+      "binding": "OMNIAI_SERVICE",
+      "service": "omniai-engine"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}

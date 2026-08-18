@@ -1,0 +1,190 @@
+name: Sanad V12.5 Full-Life Definitive Certification
+on:
+  push:
+    branches: [sanad-v12-5-full-life]
+    paths:
+      - "tools/build_sanad_v12_5.mjs"
+      - "tools/patch_sanad_v12_5_life_grounding.mjs"
+      - "source_parts/**"
+      - "tools/live_sanad_v12_5.mjs"
+      - ".github/workflows/sanad-v12-5-certify.yml"
+      - "SANAD_V12_5_ARCHITECTURE.md"
+  workflow_dispatch:
+permissions:
+  contents: write
+
+concurrency:
+  group: sanad-v12-5-certification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sanad-v12-5-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.sanad125.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rebuild and life-ground V12.5 source deterministically
+        id: build
+        run: |
+          node tools/build_sanad_v12_5.mjs | tee /tmp/build-base.json
+          node tools/patch_sanad_v12_5_life_grounding.mjs | tee /tmp/build.json
+          node - <<'NODE'
+          const b=require('/tmp/build-base.json'),p=require('/tmp/build.json');
+          if(!b.ok||!b.base_sha256||!p.ok||!p.sha256)throw Error(JSON.stringify({b,p}));
+          console.log('BUILD SHA',p.sha256);
+          NODE
+
+      - name: Syntax TypeScript and anti-suppression gates
+        id: syntax
+        run: |
+          node --check Sanad_V12_5_FULL.js
+          npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_5_FULL.js
+          if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_5_FULL.js; then exit 1; fi
+          if grep -En 'eval\(|new Function\(' Sanad_V12_5_FULL.js; then exit 1; fi
+
+      - name: Pure architecture and grounding gates
+        id: pure
+        run: |
+          cp Sanad_V12_5_FULL.js /tmp/sanad125.mjs
+          cat >> /tmp/sanad125.mjs <<'NODE'
+          const monthly=generateRecurrenceOccurrencesV125({rule_json:JSON.stringify({unit:'months',every:1,times:['08:00']}),start_date:'2026-01-15',end_date:null,max_occurrences:null,fired_count:0,exceptions_json:'[]'},'2026-01-01','2026-04-30',20);
+          const groundedMorning=groundExplicitTemporalFactsV125('من يوم 25 اغسطس 2026 فكرني كل يوم الساعة 8:15 الصبح أخد الدوا',[{tool:'recurrence.create',args:{title:'أخد الدوا',rule:{unit:'days',every:1,times:['09:00']},start_date:'2026-08-25'}}]);
+          const groundedNight=groundExplicitTemporalFactsV125('فكرني يوم 3 نوفمبر 2026 الساعة 7:23 بالليل أكلم الدكتور',[{tool:'reminders.create',args:{title:'أكلم الدكتور',local_date:'2026-11-03',local_time:'07:23'}}]);
+          const prayer=explicitPrayerRuleHintV125('كل يوم نبهني قبل الفجر بعشر دقايق');
+          const brief=explicitBriefHintV125('شغللي الملخص الصباحي كل يوم الساعة 8 الصبح');
+          const augmented=augmentExplicitLifeStepsV125('اعمل مشروع اسمه تجهيز البيت وحط جواه مهمة اسمها مراجعة الكهرباء',[{tool:'projects.create',args:{title:'تجهيز البيت'}}]);
+          console.log(JSON.stringify({version:VERSION,models:MODEL_CHAIN.length,tools:Object.keys(TOOL_SPECS).length,mutations:Object.values(TOOL_SPECS).filter(x=>x.mutation).length,risky:Object.values(TOOL_SPECS).filter(x=>x.risky).length,monthly:monthly.map(x=>x.date),cairo:new Date(zonedLocalToEpochV125('2026-08-17','19:00','Africa/Cairo')).toISOString(),snapshotTables:SNAPSHOT_TABLES.length,groundedMorning:groundedMorning[0],groundedNight:groundedNight[0],prayer,brief,augmented}));
+          NODE
+          node /tmp/sanad125.mjs | tail -1 | tee /tmp/pure.json
+          node - <<'NODE'
+          const x=require('/tmp/pure.json');
+          if(x.version!=='12.5.0'||x.models!==3||x.tools<64||x.mutations<40||x.risky<5)throw Error(JSON.stringify(x));
+          if(JSON.stringify(x.monthly)!==JSON.stringify(['2026-01-15','2026-02-15','2026-03-15','2026-04-15']))throw Error(JSON.stringify(x));
+          if(x.cairo!=='2026-08-17T16:00:00.000Z'||x.snapshotTables<10)throw Error(JSON.stringify(x));
+          if(x.groundedMorning?.args?.rule?.times?.[0]!=='08:15'||x.groundedMorning?.args?.start_date!=='2026-08-25')throw Error('morning grounding '+JSON.stringify(x.groundedMorning));
+          if(x.groundedNight?.args?.local_time!=='19:23'||x.groundedNight?.args?.local_date!=='2026-11-03')throw Error('night grounding '+JSON.stringify(x.groundedNight));
+          if(x.prayer?.prayer!=='Fajr'||Number(x.prayer?.offset_minutes)!==-10)throw Error('prayer grounding '+JSON.stringify(x.prayer));
+          if(Number(x.brief?.morning_brief_enabled)!==1||x.brief?.morning_brief_time!=='08:00')throw Error('brief grounding '+JSON.stringify(x.brief));
+          if(!Array.isArray(x.augmented)||!x.augmented.some(s=>s.tool==='project_tasks.create'&&s.args?.project_id==='$step:1.id'))throw Error('dependency grounding '+JSON.stringify(x.augmented));
+          NODE
+          [ "$(grep -c '^async function runAgent' Sanad_V12_5_FULL.js)" = "1" ]
+
+      - name: Deploy isolated staging
+        id: deploy
+        run: |
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$WRANGLER_CONFIG" <<'JSON'
+          {"name":"sanad-v12-5-staging","main":"Sanad_V12_5_FULL.js","compatibility_date":"2026-08-17","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          JSON
+          npx wrangler deploy --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Configure staging secrets
+        id: secrets
+        run: |
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"
+          echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Endpoint and deep D1 gates
+        id: deep
+        run: |
+          retry(){ name=$1; shift; for i in 1 2 3 4 5 6 7 8 9 10; do code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true); echo "$name attempt=$i http=$code"; [ "$code" = 200 ] && return 0; sleep 3; done; cat "/tmp/$name.json" || true; return 1; }
+          retry setup -X POST -H "X-Sanad-Key: $SETUP_KEY" "$URL/setup"
+          retry health "$URL/health"
+          retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
+          retry selftest -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
+          retry deep -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?deep=1"
+          node - <<'NODE'
+          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),t=require('/tmp/selftest.json'),d=require('/tmp/deep.json');
+          if(!s.ok||s.version!=='12.5.0'||s.tools<64||s.models.length!==3)throw Error('setup '+JSON.stringify(s));
+          if(!h.ok||h.version!=='12.5.0'||!h.db||!h.omniai)throw Error('health '+JSON.stringify(h));
+          if(!r.ok||r.version!=='12.5.0')throw Error('ready '+JSON.stringify(r));
+          if(!t.ok||!t.tests.every(x=>x.ok))throw Error('selftest '+JSON.stringify(t));
+          if(!d.ok||d.count<20||!d.tests.every(x=>x.ok))throw Error('deep '+JSON.stringify(d));
+          NODE
+
+      - name: Live Egyptian natural-language matrix
+        id: live
+        run: node tools/live_sanad_v12_5.mjs
+
+      - name: Build certification
+        id: cert
+        run: |
+          SHA=$(sha256sum Sanad_V12_5_FULL.js | awk '{print $1}'); export SHA
+          node - <<'NODE'
+          const fs=require('fs');
+          const live=require('./SANAD_V12_5_LIVE_REPORT.json');
+          const src=fs.readFileSync('Sanad_V12_5_FULL.js','utf8');
+          const pure=require('/tmp/pure.json');
+          const cert={ok:true,version:'12.5.0',name:'Sanad — سند V12.5 Full-Life',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-full-life-agent',tools:pure.tools,models:pure.models,explicit_temporal_grounding:true,explicit_life_grounding:true,goal_completion_gate:true,structural_dependency_guard:true,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),known_critical_code_failures:[],limitations:['External model/API availability and quota remain dependencies; no software can be proven bug-free for all future inputs.']};
+          fs.writeFileSync('SANAD_V12_5_CERTIFICATION.json',JSON.stringify(cert,null,2));
+          NODE
+
+      - name: Commit certified reports
+        id: commitcert
+        run: |
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add Sanad_V12_5_FULL.js SANAD_V12_5_LIVE_REPORT.json SANAD_V12_5_CERTIFICATION.json
+          git commit -m "Live-certify Sanad V12.5 Full-Life Agent" || exit 0
+          git push origin HEAD:sanad-v12-5-full-life
+
+      - name: Publish CI status
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SYNTAX_OUTCOME: ${{ steps.syntax.outcome }}
+          PURE_OUTCOME: ${{ steps.pure.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          DEEP_OUTCOME: ${{ steps.deep.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          CERT_OUTCOME: ${{ steps.cert.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commitcert.outcome }}
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const names=['build','syntax','pure','deploy','secrets','deep','live','cert','commit'];
+          const keys=['BUILD_OUTCOME','SYNTAX_OUTCOME','PURE_OUTCOME','DEPLOY_OUTCOME','SECRETS_OUTCOME','DEEP_OUTCOME','LIVE_OUTCOME','CERT_OUTCOME','COMMIT_OUTCOME'];
+          const stages=Object.fromEntries(names.map((n,i)=>[n,process.env[keys[i]]||'unknown']));
+          const failed=Object.entries(stages).filter(([,v])=>v==='failure').map(([k])=>k);
+          const status={ok:failed.length===0&&stages.live==='success'&&stages.cert==='success',version:'12.5.0',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,head_sha:process.env.GITHUB_SHA,stages,failed,updated_at:new Date().toISOString()};
+          fs.writeFileSync('SANAD_V12_5_CI_STATUS.json',JSON.stringify(status,null,2));
+          NODE
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add SANAD_V12_5_CI_STATUS.json
+          git commit -m "Record Sanad V12.5 CI status" || exit 0
+          git push origin HEAD:sanad-v12-5-full-life
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sanad-V12.5-Full-Life-Certified
+          path: |
+            Sanad_V12_5_FULL.js
+            SANAD_V12_5_ARCHITECTURE.md
+            SANAD_V12_5_CERTIFICATION.json
+            SANAD_V12_5_LIVE_REPORT.json

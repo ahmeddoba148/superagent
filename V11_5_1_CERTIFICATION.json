@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "version": "11.5.1",
+  "sha256": "d02252e5028f4b9da8a692f94889b9c978849e3137a8c93067cce84c5a89dee8",
+  "bytes": 482896,
+  "lines": 15822,
+  "models": [
+    "gemini::gemini-3.5-flash-lite",
+    "gemini::gemini-3.1-flash-lite",
+    "gemini::gemini-3-flash-preview"
+  ],
+  "model_timeouts_ms": {
+    "primary": 3000,
+    "fallback_1": 3600,
+    "fallback_2": 3000
+  },
+  "total_ai_budget_ms": 10000,
+  "router": false,
+  "model_policy": "Google-only; Lite priority for primary/fallback1; stronger third fallback after live availability/stability probes.",
+  "note": "V11.5 hardening retained. gemini-2.5-flash-lite was rejected after the actual OmniAI route returned 404. Gemini 3 Flash Preview was selected as fallback 2 only after a 4/4 live probe; final release still requires multi-round stability plus Telegram/D1 regression.",
+  "base_functions": 419,
+  "retained_functions": 419,
+  "base_tables": 36,
+  "retained_tables": 36,
+  "model_timeouts": [
+    3000,
+    3600,
+    3000
+  ],
+  "checks": {
+    "version": true,
+    "models": true,
+    "googleOnly": true,
+    "litePriority": true,
+    "strongThird": true,
+    "noLatestLiteAlias": true,
+    "noBroken25": true,
+    "routerRemoved": true,
+    "budget": true,
+    "functionsRetained": true,
+    "tablesRetained": true,
+    "noNewFunctionDeclarations": true,
+    "noQuerySecrets": true,
+    "headerAuth": true,
+    "queueHeartbeat": true,
+    "mutationDisarm": true,
+    "voiceDeadline": true,
+    "telegramTimeout": true,
+    "continuationTimeout": true,
+    "currentGate": true,
+    "personalGate": true,
+    "purge": true,
+    "worldUpdates": true,
+    "schemaFast": true,
+    "briefWindows": true,
+    "holidaySafe": true,
+    "directHandlerOnce": true,
+    "failureIncident": true,
+    "accurateTimeout": true,
+    "noEvalRegression": true
+  },
+  "failed_checks": []
+}

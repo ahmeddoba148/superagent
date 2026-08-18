@@ -1,0 +1,25 @@
+name: Apply V10.6 Subrequest Budget Fix
+on:
+  push:
+    branches: [superagent-v10-6-zero-known-failures]
+    paths: ['tools/patch-v10-6-subrequest-budget.py']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python tools/patch-v10-6-subrequest-budget.py
+      - run: |
+          python tools/build-v10-6.py
+          node --check SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'V106_INBOX_BATCH_SIZE=4' SuperAgent_V10_6_Zero_Known_Failures.js
+          grep -q 'v106_ledger_confirmed_delivery:true' SuperAgent_V10_6_Zero_Known_Failures.js
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/build-v10-6.py SuperAgent_V10_6_Zero_Known_Failures.js
+          git commit -m 'Fix V10.6 Cloudflare subrequest exhaustion and delivery confirmation'
+          git push

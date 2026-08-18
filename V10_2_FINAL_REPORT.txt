@@ -1,0 +1,16 @@
+Super Agent V10.2 Semantic Stability
+Syntax: PASS
+Exact bytes: 300316
+Exact SHA256: 260ad855562534386ac80a49f645e9466ce1d965a59eeefd149289813709f5fe
+Production regressions reported by user: PASS
+Doctor dependency chain repair: PASS
+Default before-event offset when unspecified: 60 minutes
+Compound voice shopping + reminder separation: PASS
+Bare action/reference time grounding: PASS
+Dependency cycle guard and large dependency preservation: PASS
+V9.2 original stress suite: PASS
+V10.1 stress suite: PASS
+V10.1 Telegram/Voice/Shopping E2E: PASS
+Legacy DB migration: PASS
+Compound shopping rollback on downstream failure: enabled
+Clean chat mode: preserved

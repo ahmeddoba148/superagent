@@ -1,0 +1,176 @@
+name: V10.7.1 Fix Ambiguous Shopping Reference
+
+on:
+  push:
+    branches: [superagent-v10-7-universal-agent]
+    paths:
+      - '.github/workflows/v10-7-1-fix-ambiguous-shopping.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v10-7-1-ambiguity-fix
+  cancel-in-progress: false
+
+jobs:
+  fix-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      STAGING_URL: https://superagent-v107-staging.ahmeddoba91.workers.dev
+      STAGING_DB: superagent-v106-staging
+      STAGING_CONFIG: wrangler.v1071.fix.jsonc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+
+      - name: Restore last certified V10.7 source and apply V10.7.1 guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show ab3ebfd3947ddb541289243c0d5e45266a3fc3e5:SuperAgent_V10_7_Universal_Agent.js > SuperAgent_V10_7_Universal_Agent.js
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('SuperAgent_V10_7_Universal_Agent.js')
+          s=p.read_text()
+          s=s.replace('const V10_VERSION="10.7";const V10_NAME="سوبر إيجنت 10.7 — الوكيل الدلالي الشامل";', 'const V10_VERSION="10.7.1";const V10_NAME="سوبر إيجنت 10.7.1 — الوكيل الدلالي الشامل";',1)
+          s=s.replace('v107_transactional_shopping:true,reliability_lock:true', 'v107_transactional_shopping:true,v1071_reference_grounding_guard:true,reliability_lock:true',1)
+          s=s.replace('message:"سوبر إيجنت 10.7 جاهز للعمل"', 'message:"سوبر إيجنت 10.7.1 جاهز للعمل"',1)
+          anchor="async function snapshotShoppingV107(env,chatId){const list=await getDefaultShoppingList(env,chatId,false);return list?{list:{...list},items:(await getShoppingItems(env,chatId,list.id)).map(x=>({...x}))}:{list:null,items:[]}}"
+          insert=r'''
+          function shoppingReferenceTokensV107(value){
+            return normalizeArabicLoose(String(value||''))
+              .replace(/[^\p{L}\p{N}\s]/gu,' ')
+              .replace(/\s+/g,' ')
+              .trim()
+              .split(' ')
+              .filter(Boolean);
+          }
+          function isShoppingPlaceholderOnlyV107(value){
+            const tokens=shoppingReferenceTokensV107(value);if(!tokens.length)return false;
+            const stop=new Set(['ال','من','في','فى','على','علي','ده','دا','دي','دى','دول','النوع','نوع','الحاجه','الحاجة','الحاجات','واحد','واحده','واحدة','منه','منها','نفسه','نفسها','نفس','اللي','الى','الذي','التي','قولتلك','قلتلك','عليه','عليها','بتاع','بتاعه','بتاعها','كبير','كبيره','كبيرة','الكبير','الكبيره','الكبيرة','صغير','صغيره','صغيرة','الصغير','الصغيره','الصغيرة','وسط','الوسط','متوسط','متوسطه','متوسطة','المتوسط','المتوسطه','المتوسطة','اخر','آخر','الاخير','الأخير','الاول','الأول','التاني','الثاني','التالته','الثالث']);
+            return tokens.every(t=>/^\d+(?:[.,]\d+)?$/.test(t)||stop.has(t));
+          }
+          function rawShoppingReferenceOnlyV107(text){
+            const n=normalizeArabicLoose(normalizeDigits(String(text||''))).replace(/[؟?!.,،؛;]+/gu,' ').replace(/\s+/g,' ').trim();if(!n)return false;
+            if(!/(?:هات|هاتلي|جيب|جيبلي|اجيب|أجيب|اشتري|اشترى|عاوز|عايز|محتاج|حط|ضيف|زود)/u.test(n))return false;
+            const tail=n.replace(/^(?:(?:بص|طب|طيب)\s+)?(?:(?:انا\s+)?(?:عاوز|عايز|محتاج)\s+)?(?:هاتلي|هات|جيبلي|جيب|اجيب|أجيب|اشتري|اشترى|حط|ضيف|زود)\s+/u,'').trim();
+            if(!tail)return false;
+            return isShoppingPlaceholderOnlyV107(tail);
+          }
+          async function detectShoppingReferenceAmbiguityV107(env,chatId,text,intent=null){
+            const make=(label)=>({type:'shopping_reference',question:`تقصد إيه بـ «${String(label||'المرجع ده').trim()}»؟ قولّي اسم الحاجة أو النوع المقصود عشان ما أخمّنش.`,meta:{reference:String(label||'').slice(0,160)}});
+            const list=await getDefaultShoppingList(env,chatId,false);const rows=list?(await getShoppingItems(env,chatId,list.id)).filter(x=>['pending','bought','unavailable','skipped'].includes(String(x.status))):[];
+            if(!intent&&rawShoppingReferenceOnlyV107(text)&&rows.length===0){return make(String(text||'').trim());}
+            if(intent?.action!=='shopping')return null;
+            const plan=normalizeShoppingPlanV107(intent.shopping);if(plan.mode!=='mutate')return null;
+            for(const op of plan.operations){
+              if(op.op==='add'&&isShoppingPlaceholderOnlyV107(op.title))return make(op.title);
+              if(op.op!=='add'&&op.op!=='reorder'&&op.target&&isShoppingPlaceholderOnlyV107(op.target)){
+                const hits=await resolveShopTargetsV107(env,chatId,op.target);if(hits.length!==1)return make(op.target);
+              }
+            }
+            return null;
+          }
+          '''
+          if anchor not in s: raise SystemExit('anchor not found')
+          s=s.replace(anchor,insert+'\n'+anchor,1)
+          needle='''const localNeed=analyzeHardAmbiguity(text);\nif(localNeed){\nawait savePendingDialog(env,chatId,{baseText:text,context:[],question:localNeed.question,questionType:localNeed.type,questionMeta:localNeed.meta||{}});\nconst answer=`❓ ${localNeed.question}`;\nawait sendText(env,chatId,answer,clarificationKeyboard(localNeed.type));\nawait saveConversationMessage(env,chatId,"assistant",answer);\nreturn;\n}\nawait enforceAiRateLimit(env,chatId);'''
+          repl='''const localNeed=analyzeHardAmbiguity(text);\nif(localNeed){\nawait savePendingDialog(env,chatId,{baseText:text,context:[],question:localNeed.question,questionType:localNeed.type,questionMeta:localNeed.meta||{}});\nconst answer=`❓ ${localNeed.question}`;\nawait sendText(env,chatId,answer,clarificationKeyboard(localNeed.type));\nawait saveConversationMessage(env,chatId,"assistant",answer);\nreturn;\n}\nconst rawShoppingNeed=await detectShoppingReferenceAmbiguityV107(env,chatId,text,null);\nif(rawShoppingNeed){\nawait savePendingDialog(env,chatId,{baseText:text,context:[],question:rawShoppingNeed.question,questionType:rawShoppingNeed.type,questionMeta:rawShoppingNeed.meta||{}});\nconst answer=`❓ ${rawShoppingNeed.question}`;\nawait sendText(env,chatId,answer);\nawait saveConversationMessage(env,chatId,"assistant",answer);\nreturn;\n}\nawait enforceAiRateLimit(env,chatId);'''
+          if needle not in s: raise SystemExit('process needle not found')
+          s=s.replace(needle,repl,1)
+          needle2='''applyPrayerGrounding(intent,text,reality);\n\nif(intent.needs_clarification){'''
+          repl2='''applyPrayerGrounding(intent,text,reality);\n\nconst semanticShoppingNeed=await detectShoppingReferenceAmbiguityV107(env,chatId,text,intent);\nif(semanticShoppingNeed){\nawait savePendingDialog(env,chatId,{baseText:text,context:[],question:semanticShoppingNeed.question,questionType:semanticShoppingNeed.type,questionMeta:semanticShoppingNeed.meta||{}});\nconst answer=`❓ ${semanticShoppingNeed.question}`;\nawait sendText(env,chatId,answer);\nawait saveConversationMessage(env,chatId,"assistant",answer);\nreturn;\n}\n\nif(intent.needs_clarification){'''
+          if needle2 not in s: raise SystemExit('post ai needle not found')
+          s=s.replace(needle2,repl2,1)
+          needle3='''applyPrayerGrounding(intent,pending.base_text,reality);\n\nif(intent.needs_clarification){'''
+          repl3='''applyPrayerGrounding(intent,pending.base_text,reality);\n\nconst semanticShoppingNeed=await detectShoppingReferenceAmbiguityV107(env,chatId,pending.base_text,intent);\nif(semanticShoppingNeed){\nawait savePendingDialog(env,chatId,{baseText:pending.base_text,context:newContext,question:semanticShoppingNeed.question,questionType:semanticShoppingNeed.type,questionMeta:semanticShoppingNeed.meta||{}});\nconst answer=`❓ ${semanticShoppingNeed.question}`;\nawait sendText(env,chatId,answer);\nawait saveConversationMessage(env,chatId,"assistant",answer);\nreturn;\n}\n\nif(intent.needs_clarification){'''
+          if needle3 not in s: raise SystemExit('pending needle not found')
+          s=s.replace(needle3,repl3,1)
+          prompt='''34) لو الرسالة تحتمل مشتريات وتذكير، وجود وقت تنبيه صريح هو الفاصل: من غير وقت صريح ومعنى الكلام شراء/احتياجات => shopping؛ مع وقت صريح وطلب تذكير => schedule.\n`.trim();'''
+          prompt_repl='''34) لو الرسالة تحتمل مشتريات وتذكير، وجود وقت تنبيه صريح هو الفاصل: من غير وقت صريح ومعنى الكلام شراء/احتياجات => shopping؛ مع وقت صريح وطلب تذكير => schedule.\n35) ممنوع اعتبار وصف مرجعي وحده اسم منتج. أمثلة «الكبير»، «الصغيرة»، «النوع ده»، «منه»، «اللي قولتلك عليه» ليست أسماء مشتريات. لو لم يوجد عنصر واحد محدد بوضوح في السياق الحقيقي، needs_clarification=true. مثال: «هاتلي 3 من الكبير» والقائمة/السياق لا يحددان المنتج => اسأل عن اسم الحاجة ولا تنشئ عنصرًا اسمه «الكبير».\n`.trim();'''
+          if prompt not in s: raise SystemExit('prompt needle not found')
+          s=s.replace(prompt,prompt_repl,1)
+          needle4='''  add("shopping split Arabic",eq(splitShoppingItems("لبن و بيض، جبنة"),["لبن","بيض","جبنة"]),JSON.stringify(splitShoppingItems("لبن و بيض، جبنة")));'''
+          repl4=needle4+'''\n  add("v1071 placeholder الكبير",isShoppingPlaceholderOnlyV107("الكبير")===true);\n  add("v1071 placeholder النوع ده",isShoppingPlaceholderOnlyV107("النوع ده")===true);\n  add("v1071 concrete مية صغيرة",isShoppingPlaceholderOnlyV107("مية صغيرة")===false);\n  add("v1071 raw ambiguous",rawShoppingReferenceOnlyV107("هاتلي 3 من الكبير")===true);'''
+          if needle4 not in s: raise SystemExit('selftest needle not found')
+          s=s.replace(needle4,repl4,1)
+          p.write_text(s)
+          PY
+          node --check SuperAgent_V10_7_Universal_Agent.js
+          grep -q 'const V10_VERSION="10.7.1"' SuperAgent_V10_7_Universal_Agent.js
+          grep -q 'v1071_reference_grounding_guard:true' SuperAgent_V10_7_Universal_Agent.js
+          sha256sum SuperAgent_V10_7_Universal_Agent.js | tee /tmp/v1071.sha
+
+      - name: Validate secrets
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$STAGING_TELEGRAM_BOT_TOKEN"; test -n "$STAGING_OMNIAI_API_KEY"; test -n "$STAGING_ADMIN_CHAT_ID"
+
+      - name: Install Wrangler and prepare config
+        run: |
+          npm install --no-save wrangler@latest
+          node - <<'NODE'
+          const fs=require('fs');
+          fs.writeFileSync('wrangler.v1071.fix.jsonc',fs.readFileSync('wrangler.v10-7-staging.template.jsonc','utf8').replace('__D1_DATABASE_ID__','65df37bc-973d-4bfe-a3f4-7c049e570697'));
+          NODE
+
+      - name: Deploy patched V10.7.1 to isolated staging
+        run: npx wrangler deploy --config wrangler.v1071.fix.jsonc
+
+      - name: Rotate staging secrets and initialize webhook
+        shell: bash
+        run: |
+          set -euo pipefail
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"; SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          echo "STAGING_TELEGRAM_WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "STAGING_SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.v1071.fix.jsonc
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.v1071.fix.jsonc
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config wrangler.v1071.fix.jsonc
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config wrangler.v1071.fix.jsonc
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config wrangler.v1071.fix.jsonc
+          sleep 5
+          KEY="$(node -p 'encodeURIComponent(process.env.STAGING_SETUP_KEY)')"
+          curl -fsS "$STAGING_URL/setup?key=$KEY&force=1" | tee /tmp/setup.json
+          node -e 'const x=require("/tmp/setup.json");if(!x.ok||!String(x.message||"").includes("10.7.1"))process.exit(1)'
+
+      - name: Reset staging queue
+        run: |
+          npx wrangler d1 execute superagent-v106-staging --remote --config wrangler.v1071.fix.jsonc --command "DELETE FROM runtime_failures WHERE chat_id='$STAGING_ADMIN_CHAT_ID' OR chat_id IS NULL; DELETE FROM telegram_inbox_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_chat_leases_v106 WHERE chat_id='$STAGING_ADMIN_CHAT_ID'; DELETE FROM telegram_updates WHERE chat_id='$STAGING_ADMIN_CHAT_ID';"
+
+      - name: Run focused live regression including ambiguity failure
+        run: node tests/v10-7-current-live-recheck.mjs
+
+      - name: Final health
+        run: |
+          curl -fsS "$STAGING_URL/health" | tee /tmp/health.json
+          node -e 'const x=require("/tmp/health.json");if(!x.ok||String(x.version)!=="10.7.1")process.exit(1)'
+
+      - name: Commit verified V10.7.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="$(cut -d' ' -f1 /tmp/v1071.sha)"
+          cat > V10_7_1_CERTIFICATE.txt <<EOF
+          Super Agent V10.7.1 — Ambiguous Reference Grounding Fix
+          Exact live Telegram regression: PASS
+          Ambiguous shopping reference guard: PASS
+          Existing V10.7 focused regression set: PASS
+          Runtime health: PASS
+          SHA256: $SHA
+          GitHub Actions run: $GITHUB_RUN_ID
+          EOF
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V10_7_Universal_Agent.js V10_7_1_CERTIFICATE.txt
+          git commit -m 'Release V10.7.1 ambiguity-grounded shopping agent'
+          git push origin HEAD:superagent-v10-7-universal-agent

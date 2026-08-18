@@ -1,0 +1,96 @@
+name: Final2 SuperAgent V11.5.1 Certification
+on:
+  push:
+    branches: [superagent-v11-5-1-final]
+    paths: ['.github/workflows/release-v11-5-1-final2.yml']
+permissions:
+  contents: write
+jobs:
+  final-v1151:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://superagent-v1151-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+
+      - name: Build syntax audit and inherited regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/build_v11_5_1.mjs SuperAgent_V11_5_FULL.js SuperAgent_V11_5_1_FULL.js
+          node --check SuperAgent_V11_5_1_FULL.js
+          cp SuperAgent_V11_5_1_FULL.js /tmp/v1151.mjs; node -e "import('/tmp/v1151.mjs').then(()=>console.log('module-load PASS'))"
+          node tools/audit_v11_5_1.mjs SuperAgent_V11_5_FULL.js SuperAgent_V11_5_1_FULL.js
+          SHA="$(sha256sum SuperAgent_V11_5_1_FULL.js|awk '{print $1}')"; echo "V1151_SHA=$SHA" >> "$GITHUB_ENV"
+          cp SuperAgent_V11_5_1_FULL.js /tmp/self.mjs
+          printf '\nconsole.log(JSON.stringify({v10:runV10SelfTests(),v11:runV11PureSelfTests(),v113:runV113PureSelfTests(),v114:runV114PureSelfTests(),v115:runV115PureSelfTests()}));\n' >> /tmp/self.mjs
+          node /tmp/self.mjs | tail -1 > /tmp/self.json
+          node - <<'NODE'
+          const x=JSON.parse(require('fs').readFileSync('/tmp/self.json','utf8'));if(!x.v10?.ok)throw Error('v10');if(!Array.isArray(x.v11)||!x.v11.every(t=>t.ok))throw Error('v11');for(const k of ['v113','v114','v115'])if(!x[k]?.ok)throw Error(k);console.log('all pure suites PASS');
+          NODE
+
+      - name: Deploy exact V11.5.1 staging and secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save wrangler@latest >/dev/null
+          cat > wrangler.v1151.jsonc <<'EOF'
+          {"name":"superagent-v1151-staging","main":"SuperAgent_V11_5_1_FULL.js","compatibility_date":"2026-08-17","vars":{"PUBLIC_BOT":"false","V1151_STAGING_BUILD":"final2-live-cert"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config wrangler.v1151.jsonc >/dev/null
+          WEBHOOK_SECRET="$(openssl rand -hex 32)";SETUP_KEY="$(openssl rand -hex 32)";echo "::add-mask::$WEBHOOK_SECRET";echo "::add-mask::$SETUP_KEY";echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV";echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          for pair in "TELEGRAM_BOT_TOKEN:$STAGING_TELEGRAM_BOT_TOKEN" "OMNIAI_API_KEY:$STAGING_OMNIAI_API_KEY" "ADMIN_CHAT_ID:$STAGING_ADMIN_CHAT_ID" "ALLOWED_CHAT_IDS:$STAGING_ADMIN_CHAT_ID" "TELEGRAM_WEBHOOK_SECRET:$WEBHOOK_SECRET" "SETUP_KEY:$SETUP_KEY";do k="${pair%%:*}";v="${pair#*:}";printf '%s' "$v"|npx wrangler secret put "$k" --config wrangler.v1151.jsonc >/dev/null;done
+          sleep 8
+
+      - name: Secure setup health and six-round model stability
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(curl -sS -o /tmp/q.json -w '%{http_code}' "$URL/ready?key=$SETUP_KEY")" = 401
+          good=0
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /tmp/setup.json -w '%{http_code}' -X POST -H "X-SuperAgent-Key: $SETUP_KEY" "$URL/setup?force=1" || true)
+            if [ "$code" = 200 ]; then good=1; break; fi
+            echo "setup HTTP $code attempt $i"; sleep 3
+          done
+          test "$good" = 1
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/setup.json","utf8")),e=["gemini::gemini-3.1-flash-lite","gemini::gemini-2.5-flash-lite"];if(!x.ok||x.models_total!==3||x.primary_model!=="gemini::gemini-3.5-flash-lite"||JSON.stringify(x.fallback_models)!==JSON.stringify(e)||x.router!==false)throw Error(JSON.stringify(x))'
+          curl -fsS "$URL/health" > /tmp/health.json
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/health.json","utf8"));if(!x.ok||x.version!=="11.5.1"||!x.db||!x.omniai_service)throw Error(JSON.stringify(x))'
+          STABILITY_ROUNDS=6 node tools/stability_v11_5_1.mjs
+          curl -fsS -H "Authorization: Bearer $SETUP_KEY" "$URL/selftest" > /tmp/selfendpoint.json
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/selfendpoint.json","utf8"));if(!x.ok||x.version!=="11.5.1"||!x.v10?.ok||!x.v11?.ok||!x.v113?.ok||!x.v114?.ok||!x.v115?.ok)throw Error(JSON.stringify(x))'
+
+      - name: Real Telegram D1 live regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          WRANGLER_CONFIG=wrangler.v1151.jsonc node tools/live_v11_5_1.mjs
+
+      - name: Commit exact certified source and reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]';git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_5_1_FULL.js V11_5_1_CERTIFICATION.json V11_5_1_MODEL_STABILITY.json V11_5_1_LIVE_REPORT.json
+          git commit -m 'Build and live-certify SuperAgent V11.5.1 final'
+          git push origin HEAD:superagent-v11-5-1-final
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperAgent-V11.5.1-Final-Certified
+          path: |
+            SuperAgent_V11_5_1_FULL.js
+            V11_5_1_CERTIFICATION.json
+            V11_5_1_MODEL_STABILITY.json
+            V11_5_1_LIVE_REPORT.json

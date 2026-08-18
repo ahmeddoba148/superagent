@@ -1,0 +1,40 @@
+Super Agent V10.6 — CLOUDFLARE READY CERTIFICATE
+=================================================
+Certification UTC: 2026-08-16T17:43:06Z
+Source workflow commit: 8ee38f33591c64adccc20be8a7883cfbc5100ffc
+Staging Worker: https://superagent-v106-staging.ahmeddoba91.workers.dev
+Source bytes: 359218
+SHA256: 6d850482df6602f73416f4083e1a2b08196eecf668ca789b1709f133336d26e3
+
+PASSED GATES
+- JavaScript syntax
+- V10.6 internal selftest 33/33 or greater
+- Semantic regression smoke
+- Legacy stress regression smoke
+- Real Cloudflare deployment
+- Real D1 database binding
+- Real OmniAI service binding
+- Real Telegram getMe/API reachability
+- Real Telegram webhook setup
+- Protected internal continuation authorization
+- Invalid-secret rejection
+- Malformed-JSON rejection
+- Durable duplicate idempotency
+- 25-way duplicate pressure
+- 40-way same-chat pressure with fresh-invocation continuation
+- Crash/expired-lease recovery
+- Cross-request ordering + undo
+- Human Arabic natural-language matrix
+- Recurring reminder create/edit/delete/undo
+- Natural shopping parsing/dedupe
+- Mixed reminder + shopping parsing
+- Stale receipt/replay regression
+- 36-update multi-wave burst
+- General chat / AI live path
+- Cron-only durable inbox recovery
+- Actual scheduled reminder delivery through Telegram
+- Final queue/ledger integrity
+- Final runtime-failure gate
+- Final health gate
+
+RESULT: CERTIFIED_FOR_CLOUDFLARE_UPLOAD

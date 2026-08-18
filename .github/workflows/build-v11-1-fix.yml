@@ -1,0 +1,102 @@
+name: Build SuperAgent V11.1 FIX
+
+on:
+  push:
+    branches:
+      - superagent-v11-1-fix
+    paths:
+      - tools/build_v11_1_fix.mjs
+      - tools/patch_v111fix_builder.mjs
+      - .github/workflows/build-v11-1-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-v11-1-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Patch builder template literals
+        run: node tools/patch_v111fix_builder.mjs
+      - name: Build V11.1 FIX from V11.1
+        run: node tools/build_v11_1_fix.mjs
+      - name: JavaScript syntax check
+        run: node --check SuperAgent_V11_1_FIX.js
+      - name: Routing and latency gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'const V10_VERSION="11.1.1"' SuperAgent_V11_1_FIX.js
+          grep -q 'v111_fix:true' SuperAgent_V11_1_FIX.js
+          grep -q 'v111_three_model_execution:true' SuperAgent_V11_1_FIX.js
+          grep -q 'v111_direct_chat:true' SuperAgent_V11_1_FIX.js
+          grep -q 'const V111FIX_CHAT_MODELS=' SuperAgent_V11_1_FIX.js
+          grep -q 'tryV111FixFastChat' SuperAgent_V11_1_FIX.js
+          grep -q 'تمام يا معلم 😄 إنت عامل إيه؟' SuperAgent_V11_1_FIX.js
+          grep -q 'selected=v11ProviderDiverse(ranked,3).slice(0,3)' SuperAgent_V11_1_FIX.js
+          ! grep -q 'const selected=candidates.slice' SuperAgent_V11_1_FIX.js
+          ! grep -q '_v111_hedged:true' SuperAgent_V11_1_FIX.js
+          test "$(grep -o 'tier:\"easy\"' SuperAgent_V11_1_FIX.js | wc -l)" -eq 10
+          test "$(grep -o 'tier:\"complex\"' SuperAgent_V11_1_FIX.js | wc -l)" -eq 10
+          test "$(grep -o 'short:\"R-' SuperAgent_V11_1_FIX.js | wc -l)" -eq 3
+          grep -q 'const TOTAL_AI_BUDGET_MS=10000' SuperAgent_V11_1_FIX.js
+          grep -q 'const V106_LEASE_RETRY_DELAY_MS=35' SuperAgent_V11_1_FIX.js
+          grep -q 'const V106_INTER_UPDATE_DELAY_MS=5' SuperAgent_V11_1_FIX.js
+          grep -q 'function shoppingKeyboard' SuperAgent_V11_1_FIX.js
+          grep -q 'shop:toggle:' SuperAgent_V11_1_FIX.js
+          grep -q 'deterministic:explicit-shopping-list' SuperAgent_V11_1_FIX.js
+      - name: Full pre-V11 structural parity
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs=require('fs');
+          const crypto=require('crypto');
+          const base=fs.readFileSync('SuperAgent_V10_7_Universal_Agent.js','utf8');
+          const out=fs.readFileSync('SuperAgent_V11_1_FIX.js','utf8');
+          const funcs=s=>new Set([...s.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(m=>m[1]));
+          const tables=s=>new Set([...s.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gi)].map(m=>m[1]));
+          const bf=funcs(base), of=funcs(out), bt=tables(base), ot=tables(out);
+          const missingFunctions=[...bf].filter(x=>!of.has(x));
+          const missingTables=[...bt].filter(x=>!ot.has(x));
+          const checks={
+            version:out.includes('const V10_VERSION="11.1.1"'),
+            direct_chat:out.includes('tryV111FixFastChat'),
+            primary_plus_two_fallbacks:out.includes('v11ProviderDiverse(ranked,3).slice(0,3)'),
+            no_hedged_planner:!out.includes('_v111_hedged:true'),
+            shopping_todo:out.includes('shop:toggle:'),
+            deterministic_long_shopping:out.includes('deterministic:explicit-shopping-list'),
+            durable_inbox:out.includes('v106_durable_telegram_inbox:true'),
+            audit_undo:out.includes('audit_undo:true'),
+            voice:out.includes('voice_first:true'),
+            recurrence:out.includes('universal_recurrence:true'),
+            life_os:out.includes('life_os:true'),
+            dependencies:out.includes('event_dependencies:true'),
+            memory:out.includes('long_term_memory:true'),
+            no_missing_base_functions:missingFunctions.length===0,
+            no_missing_base_tables:missingTables.length===0,
+          };
+          const failed=Object.entries(checks).filter(([,v])=>!v).map(([k])=>k);
+          if(failed.length||missingFunctions.length||missingTables.length){console.error({failed,missingFunctions,missingTables});process.exit(1);}
+          const sha=crypto.createHash('sha256').update(out).digest('hex');
+          const report={build:'SuperAgent V11.1 FIX',version:'11.1.1',sha256:sha,bytes:Buffer.byteLength(out),lines:out.split(/\n/).length,base_v10_7_1_named_functions:bf.size,retained_named_functions:[...bf].filter(x=>of.has(x)).length,missing_functions:missingFunctions,base_v10_7_1_tables:bt.size,retained_tables:[...bt].filter(x=>ot.has(x)).length,missing_tables:missingTables,checks,failed_checks:failed,note:'Static/CI parity and syntax certification; live Cloudflare/Telegram/provider latency must still be measured.'};
+          fs.writeFileSync('V11_1_FIX_CERTIFICATION.json',JSON.stringify(report,null,2));
+          fs.writeFileSync('V11_1_FIX_BUILD_REPORT.txt',`V11.1 FIX certification PASS\nversion=11.1.1\nbytes=${report.bytes}\nlines=${report.lines}\nbase_functions=${bf.size}\nretained_functions=${report.retained_named_functions}\nbase_tables=${bt.size}\nretained_tables=${report.retained_tables}\nsha256=${sha}\n`);
+          fs.writeFileSync('V11_1_FIX_SHA256.txt',`${sha}  SuperAgent_V11_1_FIX.js\n`);
+          NODE
+      - name: Commit V11.1 FIX release
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add SuperAgent_V11_1_FIX.js V11_1_FIX_CERTIFICATION.json V11_1_FIX_BUILD_REPORT.txt V11_1_FIX_SHA256.txt
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build SuperAgent V11.1 FIX fast natural release'
+          git push origin HEAD:superagent-v11-1-fix

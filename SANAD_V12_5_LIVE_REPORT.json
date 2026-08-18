@@ -1,0 +1,83 @@
+{
+  "ok": true,
+  "version": "12.5.0",
+  "scenario_count": 19,
+  "passes": [
+    {
+      "name": "natural shopping persisted",
+      "detail": "[{\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"title\":\"عيش توست\",\"status\":\"pending\"},{\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"title\":\"بطاطس\",\"status\":\"pending\"},{\"title\":\"شيدر\",\"status\":\"pending\"}]"
+    },
+    {
+      "name": "exact reminder persisted",
+      "detail": "{\"title\":\"أكلم دكتور الأسنان\",\"local_date\":\"2026-11-03\",\"local_time\":\"19:23\",\"status\":\"active\"}"
+    },
+    {
+      "name": "natural recurrence",
+      "detail": "{\"title\":\"أخد الدوا\",\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:15\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[]}\",\"start_date\":\"2026-08-25\",\"active\":1}"
+    },
+    {
+      "name": "layered memory",
+      "detail": "[{\"content\":\"مقاس التيشيرتات هو Large\",\"memory_type\":\"preference\"},{\"content\":\"بيحب القهوة من غير سكر\",\"memory_type\":\"preference\"}]"
+    },
+    {
+      "name": "project plus task one message",
+      "detail": "{\"project\":{\"id\":14,\"title\":\"تجهيز البيت\",\"priority\":\"high\"},\"tasks\":[{\"title\":\"مراجعة الكهرباء\"}]}"
+    },
+    {
+      "name": "waiting list",
+      "detail": "[{\"title\":\"رد المهندس على مقاسات المطبخ\",\"waiting_on\":\"المهندس\",\"status\":\"waiting\"}]"
+    },
+    {
+      "name": "prayer relative rule",
+      "detail": "{\"prayer\":\"Fajr\",\"offset_minutes\":-10,\"active\":1}"
+    },
+    {
+      "name": "morning brief settings",
+      "detail": "{\"morning_brief_enabled\":1,\"morning_brief_time\":\"08:00\"}"
+    },
+    {
+      "name": "location persisted",
+      "detail": "{\"latitude\":30.0444,\"longitude\":31.2357}"
+    },
+    {
+      "name": "three-domain one message",
+      "detail": "shop=6 rem=1 mem=3"
+    },
+    {
+      "name": "telegram idempotency",
+      "detail": "rows=1"
+    },
+    {
+      "name": "same-chat serialized burst",
+      "detail": "[{\"normalized\":\"رز بسمتي\"},{\"normalized\":\"بطاطس\"},{\"normalized\":\"شيدر\"},{\"normalized\":\"زبادي يوناني\"},{\"normalized\":\"مانجا\"},{\"normalized\":\"تفاح\"},{\"normalized\":\"برتقال\"},{\"normalized\":\"خيار\"}]"
+    },
+    {
+      "name": "risky action waits confirmation",
+      "detail": "before=10 after=10"
+    },
+    {
+      "name": "confirmed clear verified",
+      "detail": "rows=0"
+    },
+    {
+      "name": "undo restores atomic snapshot",
+      "detail": "rows=10"
+    },
+    {
+      "name": "week command",
+      "detail": "attempts=1"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    },
+    {
+      "name": "no changed mutation left unverified",
+      "detail": "[]"
+    },
+    {
+      "name": "durable atomic snapshots",
+      "detail": "committed=14"
+    }
+  ]
+}

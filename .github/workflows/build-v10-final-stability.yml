@@ -1,0 +1,95 @@
+name: Build & Verify SuperAgent V10 Final Stability
+
+on:
+  push:
+    branches: [superagent-v10-final-stability]
+    paths:
+      - 'v10_final_parts/**'
+      - 'tests/v10-final-*.mjs'
+      - 'tests/sqlite_server.py'
+      - '.github/workflows/build-v10-final-stability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct stability patch
+        shell: bash
+        run: |
+          cat v10_final_parts/part_* > v10_final_stability.patch
+          echo "Patch bytes: $(wc -c < v10_final_stability.patch)"
+          echo "Patch SHA256: $(sha256sum v10_final_stability.patch | cut -d' ' -f1)"
+
+      - name: Build V10.1 Final Stability
+        shell: bash
+        run: |
+          cp SuperAgent_V10_LifeOS.js SuperAgent_V10_Final_Stability.js
+          patch -p0 < v10_final_stability.patch
+
+      - name: Verify exact source integrity
+        shell: bash
+        run: |
+          node --check SuperAgent_V10_Final_Stability.js
+          test "$(wc -c < SuperAgent_V10_Final_Stability.js)" -eq 284357
+          test "$(sha256sum SuperAgent_V10_Final_Stability.js | cut -d' ' -f1)" = "fac108bb0acc18c38113f442f8e76527750b5c8b2579267ad0d03aa69535bfef"
+          grep -q 'const V10_VERSION="10.1"' SuperAgent_V10_Final_Stability.js
+          grep -q 'telegram_idempotency:true' SuperAgent_V10_Final_Stability.js
+          grep -q 'multi_prayer_rules_safe:true' SuperAgent_V10_Final_Stability.js
+          grep -q 'dependency_cycle_guard:true' SuperAgent_V10_Final_Stability.js
+
+      - name: Run semantic and stress regression suite
+        shell: bash
+        run: |
+          node tests/v10-final-stress.mjs | tee V10_STRESS_REPORT.txt
+          grep -q '"passed": 15280' V10_STRESS_REPORT.txt
+          grep -q '"failed": 0' V10_STRESS_REPORT.txt
+
+      - name: Run Telegram and shopping E2E suite
+        shell: bash
+        run: |
+          node tests/v10-final-e2e.mjs | tee V10_E2E_REPORT.txt
+          grep -q '"pass": 14' V10_E2E_REPORT.txt
+          grep -q '"fail": 0' V10_E2E_REPORT.txt
+
+      - name: Run legacy database migration suite
+        shell: bash
+        run: |
+          node tests/v10-final-migration.mjs | tee V10_MIGRATION_REPORT.txt
+          grep -q '"pass": 8' V10_MIGRATION_REPORT.txt
+          grep -q '"fail": 0' V10_MIGRATION_REPORT.txt
+
+      - name: Write release verification report
+        shell: bash
+        run: |
+          cat > V10_FINAL_STABILITY_REPORT.txt <<'EOF'
+          Super Agent V10.1 Final Stability
+          Syntax: PASS
+          Exact source SHA256: fac108bb0acc18c38113f442f8e76527750b5c8b2579267ad0d03aa69535bfef
+          Exact bytes: 284357
+          Stress assertions: 15280 passed / 0 failed
+          Telegram + Voice + Shopping E2E: 14 passed / 0 failed
+          Legacy DB migration: 8 passed / 0 failed
+          V9.2 semantic/prayer fixes: integrated
+          Telegram update idempotency: enabled
+          Dependency cycle protection + rollback: enabled
+          Strict clean-chat mode: enabled
+          EOF
+
+      - name: Commit tested final source and reports
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- SuperAgent_V10_Final_Stability.js v10_final_stability.patch V10_STRESS_REPORT.txt V10_E2E_REPORT.txt V10_MIGRATION_REPORT.txt V10_FINAL_STABILITY_REPORT.txt
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+            exit 0
+          fi
+          git commit -m "Build and verify Super Agent V10.1 Final Stability"
+          git push

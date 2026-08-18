@@ -1,0 +1,30 @@
+name: Verify V11.5.2 legacy model assertions
+on:
+  push:
+    branches: [superagent-v11-5-2-final]
+    paths: ['.github/workflows/probe-v11-5-2-purefix.yml']
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Build candidate and run every inherited pure suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');let s=fs.readFileSync('SuperAgent_V11_5_1_FULL.js','utf8');
+          s=s.replaceAll('SuperAgent V11.5.1','SuperAgent V11.5.2').replaceAll('سوبر إيجنت V11.5.1','سوبر إيجنت V11.5.2').replace('const V10_VERSION="11.5.1"','const V10_VERSION="11.5.2"');
+          s=s.replace('{short:"G3-FP",name:"Gemini 3 Flash Preview",id:"gemini::gemini-3-flash-preview",timeoutMs:3000,role:"fallback_2",tags:["chat","shopping","schedule","coding","json","arabic"]}','{short:"G3.5-F",name:"Gemini 3.5 Flash",id:"gemini::gemini-3.5-flash",timeoutMs:3000,role:"fallback_2",tags:["chat","shopping","schedule","coding","json","arabic"]}');
+          s=s.replace('push("v114_fallback2_is_gemini36_flash",FALLBACK_MODELS[1]?.id==="gemini::gemini-3-flash-preview",FALLBACK_MODELS[1]?.id||"");','push("v1152_fallback2_is_gemini35_flash",FALLBACK_MODELS[1]?.id==="gemini::gemini-3.5-flash",FALLBACK_MODELS[1]?.id||"");');
+          s=s.replace("add('v114 fallback2 Gemini 3 Flash Preview',ids[2]==='gemini::gemini-3-flash-preview',ids[2]||'');","add('v1152 fallback2 Gemini 3.5 Flash',ids[2]==='gemini::gemini-3.5-flash',ids[2]||'');");
+          fs.writeFileSync('/tmp/candidate.mjs',s+'\nconsole.log(JSON.stringify({v10:runV10SelfTests(),v11:runV11PureSelfTests(),v113:runV113PureSelfTests(),v114:runV114PureSelfTests(),v115:runV115PureSelfTests()}));\n');
+          NODE
+          node --check /tmp/candidate.mjs
+          node /tmp/candidate.mjs | tail -1 > /tmp/pure.json
+          cat /tmp/pure.json
+          node - <<'NODE'
+          const x=require('/tmp/pure.json');const failed={};if(!x.v10?.ok)failed.v10=x.v10;if(!Array.isArray(x.v11)||!x.v11.every(t=>t.ok))failed.v11=x.v11?.filter(t=>!t.ok);for(const k of ['v113','v114','v115'])if(!x[k]?.ok)failed[k]=x[k]?.tests?.filter(t=>!t.ok)||x[k];if(Object.keys(failed).length)throw Error(JSON.stringify(failed));console.log('ALL PURE SUITES PASS');
+          NODE

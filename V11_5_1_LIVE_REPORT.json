@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "version": "11.5.1",
+  "sha256": "d02252e5028f4b9da8a692f94889b9c978849e3137a8c93067cce84c5a89dee8",
+  "started": "2026-08-17T07:17:57.999Z",
+  "finished": "2026-08-17T07:18:41.227Z",
+  "passes": [
+    {
+      "name": "identity",
+      "detail": "1796ms"
+    },
+    {
+      "name": "egyptian casual",
+      "detail": "3855ms"
+    },
+    {
+      "name": "current-data no stale guess",
+      "detail": "المعلومة دي لحظية ومفيش مصدر مباشر موصول لها حاليًا، فمش هخمن رقم أو حالة قديمة."
+    },
+    {
+      "name": "shopping 11/11",
+      "detail": "items=11"
+    },
+    {
+      "name": "reminder exact",
+      "detail": "[{\"local_date\":\"2026-11-03\",\"local_time\":\"19:23\"}]"
+    },
+    {
+      "name": "duplicate exactly once",
+      "detail": "rows=1 attempts=1"
+    },
+    {
+      "name": "same-chat burst",
+      "detail": "[1,1,1]"
+    },
+    {
+      "name": "runtime failures zero",
+      "detail": "[]"
+    }
+  ],
+  "runtime_failures": []
+}
