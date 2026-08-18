@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "version": "12.7.0",
+  "name": "Sanad — سند V12.7 Correctness Hardened",
+  "sha256": "8d8961de92ab15e92383f932c1217c5822e6bf34a4d56823bee079475b0c0dae",
+  "bytes": 325551,
+  "lines": 2437,
+  "syntax_errors": 0,
+  "typescript_errors": 0,
+  "architecture": "single-brain-correctness-hardened-agent",
+  "models": 3,
+  "pure_invariants": 24,
+  "regression_scenarios": 39,
+  "hardening_live_tests": 19,
+  "fixes_certified": 21,
+  "known_critical_code_failures": [],
+  "limitations": [
+    "External model, Telegram and public API availability remain dependencies. Cross-system exactly-once delivery cannot be mathematically guaranteed across an unrecoverable process crash between Telegram accepting a message and the local delivery marker being finalized; V12.7 uses atomic claims and retry release for observable send failures."
+  ]
+}

@@ -1,0 +1,270 @@
+{
+  "ok": true,
+  "version": "12.7.0",
+  "regression_scenarios": 39,
+  "hardening_tests": 19,
+  "regression": {
+    "ok": true,
+    "version": "12.7.0",
+    "scenario_count": 39,
+    "passes": [
+      {
+        "name": "organized menu layer present",
+        "detail": ""
+      },
+      {
+        "name": "data clear controls present",
+        "detail": ""
+      },
+      {
+        "name": "direct clear command present",
+        "detail": ""
+      },
+      {
+        "name": "natural shopping persisted",
+        "detail": "[{\"id\":175,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"},{\"id\":176,\"title\":\"عيش توست\",\"status\":\"pending\"},{\"id\":177,\"title\":\"رز بسمتي\",\"status\":\"pending\"},{\"id\":178,\"title\":\"بطاطس\",\"status\":\"pending\"},{\"id\":179,\"title\":\"شيدر\",\"status\":\"pending\"}]"
+      },
+      {
+        "name": "shopping target exists",
+        "detail": "{\"id\":175,\"title\":\"لبن كامل الدسم\",\"status\":\"pending\"}"
+      },
+      {
+        "name": "shopping unavailable state",
+        "detail": "{\"status\":\"unavailable\"}"
+      },
+      {
+        "name": "shopping skipped state",
+        "detail": "{\"status\":\"skipped\"}"
+      },
+      {
+        "name": "life inbox natural capture",
+        "detail": "{\"id\":10,\"text\":\"أكلم شركة الصيانة بخصوص التكييف\",\"status\":\"open\"}"
+      },
+      {
+        "name": "source appointment created",
+        "detail": "{\"id\":109,\"chat_id\":\"476223041\",\"title\":\"اجتماع الفريق\",\"local_date\":\"2026-12-10\",\"local_time\":\"18:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":60,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:48:07.160Z\",\"updated_at\":\"2026-08-18T02:48:07.160Z\",\"kind\":\"appointment\",\"advance_json\":\"[]\"}"
+      },
+      {
+        "name": "target reminder created",
+        "detail": "{\"id\":110,\"chat_id\":\"476223041\",\"title\":\"إرسال التقرير\",\"local_date\":\"2026-12-10\",\"local_time\":\"20:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:48:16.480Z\",\"updated_at\":\"2026-08-18T02:48:16.480Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"}"
+      },
+      {
+        "name": "after-end dependency stored",
+        "detail": "{\"dep\":{\"id\":29,\"chat_id\":\"476223041\",\"source_type\":\"reminder\",\"source_id\":109,\"target_type\":\"reminder\",\"target_id\":110,\"relation\":\"after_end\",\"offset_minutes\":30,\"condition_json\":\"{}\",\"active\":1,\"created_at\":\"2026-08-18T02:48:25.892Z\",\"updated_at\":\"2026-08-18T02:48:25.892Z\"},\"expected_source\":109,\"expected_target\":110}"
+      },
+      {
+        "name": "after-end dependency propagation",
+        "detail": "{\"local_time\":\"21:00\"}"
+      },
+      {
+        "name": "recurrence exists",
+        "detail": "{\"id\":35,\"rule_json\":\"{\\\"every\\\":1,\\\"unit\\\":\\\"days\\\",\\\"times\\\":[\\\"08:00\\\"],\\\"weekdays\\\":[],\\\"monthdays\\\":[],\\\"months\\\":[],\\\"shift_minutes\\\":0}\",\"start_date\":\"2026-09-01\",\"active\":1,\"paused_until\":null}"
+      },
+      {
+        "name": "recurrence id retained",
+        "detail": "35"
+      },
+      {
+        "name": "temporary pause until",
+        "detail": "{\"id\":35,\"active\":1,\"paused_until\":\"2026-09-05T20:59:00.000Z\"}"
+      },
+      {
+        "name": "recurrence resume clears pause",
+        "detail": "{\"id\":35,\"active\":1,\"paused_until\":null}"
+      },
+      {
+        "name": "callback reminder exists",
+        "detail": "{\"id\":112}"
+      },
+      {
+        "name": "reminder callback snooze",
+        "detail": "{\"local_time\":\"21:10\"}"
+      },
+      {
+        "name": "reminder callback done",
+        "detail": "{\"status\":\"done\"}"
+      },
+      {
+        "name": "/tomorrow alias",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "/list alias",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "/live composite reality",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "protected diagnostics",
+        "detail": "{\"status\":200,\"version\":\"12.7.0\",\"tools\":75,\"snapshot_tables\":22}"
+      },
+      {
+        "name": "organized /menu command",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "data management panel callback",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "shopping clear fixture exists",
+        "detail": "5"
+      },
+      {
+        "name": "shopping clear confirmation screen",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "verified shopping clear",
+        "detail": "0"
+      },
+      {
+        "name": "shopping clear undo restores data",
+        "detail": "5/5"
+      },
+      {
+        "name": "context/memory fixtures exist",
+        "detail": "1/40"
+      },
+      {
+        "name": "context clear does not erase long-term memory",
+        "detail": "0/1"
+      },
+      {
+        "name": "context clear undo restores conversation",
+        "detail": "40/40"
+      },
+      {
+        "name": "memory clear fixture exists",
+        "detail": "1"
+      },
+      {
+        "name": "verified long-term memory clear",
+        "detail": "0"
+      },
+      {
+        "name": "memory clear undo restores data",
+        "detail": "1/1"
+      },
+      {
+        "name": "runtime failures zero",
+        "detail": "[]"
+      },
+      {
+        "name": "no changed mutation left unverified",
+        "detail": "[]"
+      },
+      {
+        "name": "clear-all final confirmation screen",
+        "detail": "{\"status\":\"done\",\"attempts\":1,\"last_error\":null}"
+      },
+      {
+        "name": "verified clear all personal data",
+        "detail": "{\"sanad_users\":0,\"sanad_conversation\":0,\"sanad_shopping\":0,\"sanad_shopping_sessions\":0,\"sanad_reminders\":0,\"sanad_recurrences\":0,\"sanad_dependencies\":0,\"sanad_memories\":0,\"sanad_entities\":0,\"sanad_edges\":0,\"sanad_projects\":0,\"sanad_project_tasks\":0,\"sanad_waiting\":0,\"sanad_prayer_rules\":0,\"sanad_live_watches\":0,\"sanad_life_inbox\":0,\"sanad_pending_actions\":0,\"sanad_pending_conflicts\":0,\"sanad_operation_snapshots\":0,\"sanad_receipts\":0}"
+      }
+    ]
+  },
+  "hardening": {
+    "ok": true,
+    "version": "12.7.0",
+    "tests": [
+      {
+        "name": "missing reminder cancel rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"ids_not_found\",\"missing\":[987654321]}"
+      },
+      {
+        "name": "missing memory forget rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"ids_not_found\",\"missing\":[987654321]}"
+      },
+      {
+        "name": "invalid timezone rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"invalid_timezone\"}"
+      },
+      {
+        "name": "invalid latitude rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"invalid_latitude\"}"
+      },
+      {
+        "name": "invalid brief time rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"invalid_morning_brief_time\"}"
+      },
+      {
+        "name": "project fixture",
+        "ok": true,
+        "detail": "31"
+      },
+      {
+        "name": "task fixture",
+        "ok": true,
+        "detail": "31"
+      },
+      {
+        "name": "task exact update verified",
+        "ok": true,
+        "detail": "{\"id\":31,\"project_id\":31,\"chat_id\":\"__sanad_v127_selftest__\",\"title\":\"بعد التعديل\",\"status\":\"done\",\"due_at\":\"2026-12-01T10:00:00Z\",\"priority\":\"high\",\"created_at\":\"2026-08-18T02:51:04.654Z\",\"updated_at\":\"2026-08-18T02:51:04.691Z\"}"
+      },
+      {
+        "name": "unsupported dependency rejected",
+        "ok": true,
+        "detail": "{\"ok\":false,\"changed\":0,\"verified\":false,\"error\":\"unsupported_dependency_type\",\"supported\":\"reminder->reminder\"}"
+      },
+      {
+        "name": "inferred world default confidence",
+        "ok": true,
+        "detail": "{\"id\":25,\"chat_id\":\"__sanad_v127_selftest__\",\"entity_type\":\"concept\",\"name\":\"استنتاج تجريبي\",\"normalized\":\"استنتاج تجريبي\",\"data_json\":\"{\\\"x\\\":1}\",\"confidence\":0.5,\"source\":\"agent_inferred\",\"created_at\":\"2026-08-18T02:51:04.721Z\",\"updated_at\":\"2026-08-18T02:51:04.721Z\"}"
+      },
+      {
+        "name": "domain scoped snapshot",
+        "ok": true,
+        "detail": "sanad_shopping,sanad_shopping_sessions"
+      },
+      {
+        "name": "fallback no-op no false success",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "fallback verified changed success",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "context shopping routed",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "dependency spec closed",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "sendOnce atomic single claim",
+        "ok": true,
+        "detail": "true/false"
+      },
+      {
+        "name": "dedupe reminder fixture",
+        "ok": true,
+        "detail": "113"
+      },
+      {
+        "name": "duplicate temporal mutation suppressed",
+        "ok": true,
+        "detail": "{\"sh1\":{\"ok\":true,\"changed\":1,\"verified\":true,\"before\":{\"id\":113,\"chat_id\":\"__sanad_v127_selftest__\",\"title\":\"اختبار منع التكرار\",\"local_date\":\"2026-12-15\",\"local_time\":\"10:00\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:51:04.935Z\",\"updated_at\":\"2026-08-18T02:51:04.935Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"},\"after\":{\"id\":113,\"chat_id\":\"__sanad_v127_selftest__\",\"title\":\"اختبار منع التكرار\",\"local_date\":\"2026-12-15\",\"local_time\":\"10:30\",\"timezone\":\"Africa/Cairo\",\"duration_minutes\":0,\"status\":\"active\",\"recurrence_json\":\"{}\",\"advance_minutes\":0,\"sent\":0,\"created_at\":\"2026-08-18T02:51:04.935Z\",\"updated_at\":\"2026-08-18T02:51:05.005Z\",\"kind\":\"reminder\",\"advance_json\":\"[]\"},\"dependencies_verified\":true,\"dependency_changes\":0},\"sh2\":{\"ok\":true,\"changed\":0,\"verified\":true,\"deduplicated\":true,\"original_changed\":1,\"fingerprint\":\"reminder-shift:113:30\"},\"shifted\":{\"local_time\":\"10:30\"}}"
+      },
+      {
+        "name": "daily brief window not exact minute",
+        "ok": true,
+        "detail": ""
+      }
+    ]
+  }
+}
