@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Reconstruct canonical PRIME and show migration context
+      - name: Reconstruct canonical PRIME and compare core schema v4
         run: |
           set -euo pipefail
           cat sand_prime/final_chunks/part{00..12}.b64 | tr -d '\r\n' | base64 -d | gzip -d > SAND.js
@@ -21,7 +21,12 @@ jobs:
           patch --batch SAND.js < sand_prime/canonical_diff/half0.diff >/dev/null
           patch --batch SAND.js < sand_prime/canonical_diff/half1.diff >/dev/null
           test "$(sha256sum SAND.js | awk '{print $1}')" = "8f41ce84e6c07104907041d297ce27c6ac143361d6211a38db05e394c56897ea"
-          echo '===== CORE SCHEMA CONTEXT ====='
+          echo '===== PRIME CORE SCHEMA CONTEXT ====='
           grep -n -B 35 -A 45 'Unsupported core schema version' SAND.js
-          echo '===== META / MIGRATION REFERENCES ====='
-          grep -n -E 'CORE_SCHEMA_VERSION|schema_version|ensureCoreSchema|migrat|coreMeta' SAND.js | head -n 120
+          echo '===== FETCH REMINDER SCHEMA V4 SOURCE ====='
+          git fetch --depth=1 origin sand-v1-reminder-live-test
+          git show FETCH_HEAD:sand_reminder_live/source.js.gz.b64 | tr -d '\r\n' | base64 -d | gzip -d > REMINDER.js
+          echo '===== REMINDER V4 MIGRATION CONTEXT ====='
+          grep -n -B 20 -A 55 -E 'migrateCoreV4|CORE_SCHEMA_VERSION|schema_version' REMINDER.js | head -n 220
+          echo '===== CORE TABLE REFERENCES IN V4 ====='
+          grep -n -E 'sand_core_|chatIngress|inbox|coreMeta' REMINDER.js | head -n 160
