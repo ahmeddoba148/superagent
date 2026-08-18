@@ -60,6 +60,7 @@ jobs:
             dead_letter:s.includes('sanad_dead_letters')&&s.includes('deadLetterAdminV128')&&s.includes('replayDueDeadLettersV128'),
             observability:s.includes('sanad_operation_metrics')&&s.includes('oldest_inbox_age_ms')&&s.includes('p95_ms')&&s.includes('scheduler'),
             performance_budget:s.includes('maxD1')&&s.includes('maxAi')&&s.includes('maxTools')&&s.includes('context_ms')&&s.includes('verification_ms'),
+            split_stress:s.includes('deepSelftestV128Crash')&&s.includes('deepSelftestV128Scale'),
             canonical:!s.includes('BeforeHardening')&&!s.includes('BeforeOperationDedupe')
           };console.log(JSON.stringify(tests,null,2));if(Object.values(tests).some(x=>!x))process.exit(1);
           NODE
@@ -94,10 +95,13 @@ jobs:
           retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
           retry base -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
           retry deep -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?deep=1"
-          retry v128 -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?v128=1"
+          retry v128base -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?v128=1"
+          retry v128crash -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?v128=crash"
+          retry v128scale -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?v128=scale"
           node - <<'NODE'
-          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),b=require('/tmp/base.json'),d=require('/tmp/deep.json'),v=require('/tmp/v128.json');
-          if(!s.ok||s.version!=='12.8.0')throw Error('setup '+JSON.stringify(s));if(!h.ok||h.version!=='12.8.0')throw Error('health '+JSON.stringify(h));if(!r.ok||r.version!=='12.8.0')throw Error('ready '+JSON.stringify(r));if(!b.ok||b.tests?.some(x=>!x.ok))throw Error('base '+JSON.stringify(b));if(!d.ok||d.tests?.some(x=>!x.ok))throw Error('deep '+JSON.stringify(d));if(!v.ok||v.tests?.some(x=>!x.ok))throw Error('v128 '+JSON.stringify(v));
+          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),b=require('/tmp/base.json'),d=require('/tmp/deep.json'),v=require('/tmp/v128base.json'),c=require('/tmp/v128crash.json'),sc=require('/tmp/v128scale.json');
+          const good=x=>x&&x.ok&&!x.tests?.some(t=>!t.ok);
+          if(!s.ok||s.version!=='12.8.0')throw Error('setup '+JSON.stringify(s));if(!h.ok||h.version!=='12.8.0')throw Error('health '+JSON.stringify(h));if(!r.ok||r.version!=='12.8.0')throw Error('ready '+JSON.stringify(r));if(!good(b))throw Error('base '+JSON.stringify(b));if(!good(d))throw Error('deep '+JSON.stringify(d));if(!good(v))throw Error('v128base '+JSON.stringify(v));if(!good(c))throw Error('v128crash '+JSON.stringify(c));if(!good(sc))throw Error('v128scale '+JSON.stringify(sc));
           NODE
 
       - name: Live V12.7 regression plus V12.8 architecture matrix
