@@ -1,0 +1,184 @@
+name: Sanad V12.6 Ultimate Parity Certification
+on:
+  push:
+    branches: [sanad-v12-6-ultimate-parity]
+    paths:
+      - "tools/build_sanad_v12_6.mjs"
+      - "tools/build_sanad_v12_6_final.mjs"
+      - "tools/sanad_v12_6_parity_pack*.jsfrag"
+      - "tools/live_sanad_v12_6.mjs"
+      - ".github/workflows/sanad-v12-6-certify.yml"
+      - "V11_TO_V12_5_CAPABILITY_AUDIT.md"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sanad-v12-6-ultimate-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_TELEGRAM_BOT_TOKEN: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      STAGING_OMNIAI_API_KEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      STAGING_ADMIN_CHAT_ID: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sanad-v12-6-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      WRANGLER_CONFIG: wrangler.sanad126.jsonc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build V12.6 deterministically
+        id: build
+        run: node tools/build_sanad_v12_6_final.mjs | tee /tmp/build126.log
+
+      - name: Syntax TypeScript and anti-suppression gates
+        id: syntax
+        run: |
+          node --check Sanad_V12_6_ULTIMATE_PARITY.js
+          npx -p typescript@5.8.3 tsc --allowJs --checkJs --noEmit --target ES2022 --module ESNext --lib ES2022,DOM Sanad_V12_6_ULTIMATE_PARITY.js
+          if grep -En '@ts-(nocheck|ignore|expect-error)' Sanad_V12_6_ULTIMATE_PARITY.js; then exit 1; fi
+          if grep -En 'eval\(|new Function\(' Sanad_V12_6_ULTIMATE_PARITY.js; then exit 1; fi
+
+      - name: Pure V11 parity closure gates
+        id: pure
+        run: |
+          cp Sanad_V12_6_ULTIMATE_PARITY.js /tmp/sanad126.mjs
+          cat >> /tmp/sanad126.mjs <<'NODE'
+          const tests=[];const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail)});
+          add('version',VERSION==='12.6.0',VERSION);
+          add('tool-count',Object.keys(TOOL_SPECS).length>=74,Object.keys(TOOL_SPECS).length);
+          add('snapshot-user',SNAPSHOT_TABLES.includes('sanad_users'),SNAPSHOT_TABLES.join(','));
+          add('snapshot-conversation',SNAPSHOT_TABLES.includes('sanad_conversation'));
+          add('snapshot-fire-ledgers',SNAPSHOT_TABLES.includes('sanad_reminder_fires')&&SNAPSHOT_TABLES.includes('sanad_recurrence_fires')&&SNAPSHOT_TABLES.includes('sanad_prayer_fires'));
+          add('life-inbox-tool',!!TOOL_SPECS['inbox.add']&&!!TOOL_SPECS['inbox.read']);
+          add('shopping-four-states',String(TOOL_SPECS['shopping.update']?.args?.status||'').includes('unavailable')&&String(TOOL_SPECS['shopping.update']?.args?.status||'').includes('skipped'));
+          add('dependency-relations',String(TOOL_SPECS['dependency.create']?.args?.relation||'').includes('after_end')&&String(TOOL_SPECS['dependency.create']?.args?.relation||'').includes('before_start'));
+          add('dependency-cycle',dependencyCycleV126([{source_type:'reminder',source_id:1,target_type:'reminder',target_id:2}],{source_type:'reminder',source_id:2,target_type:'reminder',target_id:1})===true);
+          add('dependency-acyclic',dependencyCycleV126([{source_type:'reminder',source_id:1,target_type:'reminder',target_id:2}],{source_type:'reminder',source_id:2,target_type:'reminder',target_id:3})===false);
+          const row={rule_json:JSON.stringify({unit:'days',every:1,times:['08:00'],shift_minutes:60}),start_date:'2026-09-01',end_date:null,max_occurrences:null,fired_count:0,exceptions_json:'[]'};
+          const occ=generateRecurrenceOccurrencesV125(row,'2026-09-01','2026-09-02',10);
+          add('recurrence-shift',occ[0]?.time==='09:00',JSON.stringify(occ));
+          add('recurrence-pause-until',String(TOOL_SPECS['recurrence.pause']?.args?.until||'').length>0);
+          add('hijri-tool',!!TOOL_SPECS['calendar.hijri']);
+          add('live-reality-tool',!!TOOL_SPECS['live.reality']);
+          add('arabic-holiday-label',holidayArabicV126({name:'Eid al-Fitr'}).includes('عيد الفطر'),holidayArabicV126({name:'Eid al-Fitr'}));
+          add('fast-casual',!!fastCasualReplyV126('صباح الخير'));
+          let voiceError='';try{await transcribeVoice({}, {file_id:'x',file_size:VOICE_MAX_BYTES+1});}catch(e){voiceError=String(e?.message||e)}add('voice-size-guard',voiceError==='voice_too_large',voiceError);
+          add('clear-scope',CLEAR_USER_TABLES_V126.includes('sanad_users')&&CLEAR_USER_TABLES_V126.includes('sanad_life_inbox')&&LEGACY_CLEAR_TABLES_V126.includes('life_inbox'));
+          add('migration-id-map',typeof legacyMapGetV126==='function'&&typeof legacyMapPutV126==='function');
+          add('diagnostics',typeof diagnosticsV126==='function');
+          console.log(JSON.stringify({ok:tests.every(x=>x.ok),tests,tools:Object.keys(TOOL_SPECS).length,snapshot_tables:SNAPSHOT_TABLES.length}));
+          NODE
+          node /tmp/sanad126.mjs | tail -1 | tee /tmp/pure126.json
+          node - <<'NODE'
+          const x=require('/tmp/pure126.json');if(!x.ok){console.error(x.tests.filter(t=>!t.ok));process.exit(1)}
+          if(x.tools<74||x.snapshot_tables<20)throw Error(JSON.stringify(x));
+          NODE
+
+      - name: Deploy isolated V12.6 staging
+        id: deploy
+        run: |
+          npm install --no-save wrangler@latest >/dev/null
+          cat > "$WRANGLER_CONFIG" <<'JSON'
+          {"name":"sanad-v12-6-staging","main":"Sanad_V12_6_ULTIMATE_PARITY.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          JSON
+          npx wrangler deploy --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Configure staging secrets
+        id: secrets
+        run: |
+          WEBHOOK_SECRET="$(openssl rand -hex 32)"
+          SETUP_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::$WEBHOOK_SECRET"; echo "::add-mask::$SETUP_KEY"
+          echo "WEBHOOK_SECRET=$WEBHOOK_SECRET" >> "$GITHUB_ENV"
+          echo "SETUP_KEY=$SETUP_KEY" >> "$GITHUB_ENV"
+          printf '%s' "$STAGING_TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_OMNIAI_API_KEY" | npx wrangler secret put OMNIAI_API_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$SETUP_KEY" | npx wrangler secret put SETUP_KEY --config "$WRANGLER_CONFIG" >/dev/null
+          printf '%s' "$STAGING_ADMIN_CHAT_ID" | npx wrangler secret put ADMIN_CHAT_ID --config "$WRANGLER_CONFIG" >/dev/null
+
+      - name: Endpoint deep D1 and diagnostics gates
+        id: deep
+        run: |
+          retry(){ name=$1; shift; for i in 1 2 3 4 5 6 7 8 9 10; do code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "$@" || true); echo "$name attempt=$i http=$code"; [ "$code" = 200 ] && return 0; sleep 3; done; cat "/tmp/$name.json" || true; return 1; }
+          retry setup -X POST -H "X-Sanad-Key: $SETUP_KEY" "$URL/setup"
+          retry health "$URL/health"
+          retry ready -H "X-Sanad-Key: $SETUP_KEY" "$URL/ready"
+          retry selftest -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest"
+          retry deep -H "X-Sanad-Key: $SETUP_KEY" "$URL/selftest?deep=1"
+          retry diagnostics -H "X-Sanad-Key: $SETUP_KEY" "$URL/diagnostics"
+          node - <<'NODE'
+          const s=require('/tmp/setup.json'),h=require('/tmp/health.json'),r=require('/tmp/ready.json'),t=require('/tmp/selftest.json'),d=require('/tmp/deep.json'),x=require('/tmp/diagnostics.json');
+          if(!s.ok||s.version!=='12.6.0'||Number(s.tools)<74)throw Error('setup '+JSON.stringify(s));
+          if(!h.ok||h.version!=='12.6.0'||!h.db||!h.ultimate_parity)throw Error('health '+JSON.stringify(h));
+          if(!r.ok||r.version!=='12.6.0')throw Error('ready '+JSON.stringify(r));
+          if(!t.ok||!t.tests?.every(z=>z.ok))throw Error('selftest '+JSON.stringify(t));
+          if(!d.ok||!d.tests?.every(z=>z.ok))throw Error('deep '+JSON.stringify(d));
+          if(!x.ok||x.version!=='12.6.0'||Number(x.tools)<74||Number(x.snapshot_tables)<20)throw Error('diagnostics '+JSON.stringify(x));
+          NODE
+
+      - name: Live V12.6 Egyptian parity matrix
+        id: live
+        run: node tools/live_sanad_v12_6.mjs
+
+      - name: Build V12.6 certification
+        id: cert
+        run: |
+          SHA=$(sha256sum Sanad_V12_6_ULTIMATE_PARITY.js | awk '{print $1}'); export SHA
+          node - <<'NODE'
+          const fs=require('fs'),live=require('./SANAD_V12_6_LIVE_REPORT.json'),pure=require('/tmp/pure126.json'),src=fs.readFileSync('Sanad_V12_6_ULTIMATE_PARITY.js','utf8');
+          const cert={ok:true,version:'12.6.0',name:'Sanad — سند V12.6 Ultimate Parity',sha256:process.env.SHA,bytes:Buffer.byteLength(src),lines:src.split('\n').length,syntax_errors:0,typescript_errors:0,architecture:'single-brain-ultimate-parity-agent',tools:pure.tools,snapshot_tables:pure.snapshot_tables,models:3,live_ok:!!live.ok,live_scenarios:Number(live.scenario_count||0),parity_closures:['full atomic user-state snapshot','shopping four states','life inbox','recurrence pause-until and shift','dependency after_start/after_end/before_start and cycle guard','lossless legacy id mapping','Hijri and Islamic occasions','Arabic holiday labels','Telegram callback parity','diagnostics/model telemetry','voice budgets','external API timeouts/stale fallback','tomorrow/list aliases','fast casual fallback'],known_parity_gaps:[],known_critical_code_failures:[],limitations:['External model, Telegram and public API availability/quota remain dependencies; passing certification proves the tested matrix, not every possible future input.']};
+          fs.writeFileSync('SANAD_V12_6_CERTIFICATION.json',JSON.stringify(cert,null,2));
+          NODE
+
+      - name: Commit certified V12.6 artifacts
+        id: commitcert
+        run: |
+          git config user.name github-actions-bot
+          git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add -f Sanad_V12_6_ULTIMATE_PARITY.js SANAD_V12_6_LIVE_REPORT.json SANAD_V12_6_CERTIFICATION.json
+          git commit -m "Live-certify Sanad V12.6 Ultimate Parity" || exit 0
+          git push origin HEAD:sanad-v12-6-ultimate-parity
+
+      - name: Publish V12.6 CI status
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SYNTAX_OUTCOME: ${{ steps.syntax.outcome }}
+          PURE_OUTCOME: ${{ steps.pure.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          SECRETS_OUTCOME: ${{ steps.secrets.outcome }}
+          DEEP_OUTCOME: ${{ steps.deep.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
+          CERT_OUTCOME: ${{ steps.cert.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commitcert.outcome }}
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');const names=['build','syntax','pure','deploy','secrets','deep','live','cert','commit'],keys=['BUILD_OUTCOME','SYNTAX_OUTCOME','PURE_OUTCOME','DEPLOY_OUTCOME','SECRETS_OUTCOME','DEEP_OUTCOME','LIVE_OUTCOME','CERT_OUTCOME','COMMIT_OUTCOME'];const stages=Object.fromEntries(names.map((n,i)=>[n,process.env[keys[i]]||'unknown']));const failed=Object.entries(stages).filter(([,v])=>v==='failure').map(([k])=>k);fs.writeFileSync('SANAD_V12_6_CI_STATUS.json',JSON.stringify({ok:failed.length===0&&stages.live==='success'&&stages.cert==='success',version:'12.6.0',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,head_sha:process.env.GITHUB_SHA,stages,failed,updated_at:new Date().toISOString()},null,2));
+          NODE
+          git config user.name github-actions-bot; git config user.email 41898282+github-actions-bot@users.noreply.github.com
+          git add SANAD_V12_6_CI_STATUS.json
+          git commit -m "Record Sanad V12.6 CI status" || exit 0
+          git push origin HEAD:sanad-v12-6-ultimate-parity
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Sanad-V12.6-Ultimate-Parity
+          path: |
+            Sanad_V12_6_ULTIMATE_PARITY.js
+            SANAD_V12_6_CERTIFICATION.json
+            SANAD_V12_6_LIVE_REPORT.json
+            SANAD_V12_6_CI_STATUS.json
+            V11_TO_V12_5_CAPABILITY_AUDIT.md
