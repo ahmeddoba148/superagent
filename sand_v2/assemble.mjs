@@ -9,7 +9,7 @@ const source = Buffer.from(parts.map((name) =>
   readFileSync(new URL(`./source_parts/${name}`, import.meta.url), 'utf8')
 ).join(''), 'utf8');
 const sha = createHash('sha256').update(source).digest('hex');
-const expected = '4fa4fd390f2ee0de827481aec0e61d72e5b3c190254e8ffe8df6fc45999f298b';
+const expected = '032f98dd029bf359d2c55215c154eaebe6121b48d33a58d2b3c26aef7cfa3cb2';
 if (sha !== expected) throw new Error(`SAND Core V2 source SHA mismatch: ${sha}`);
 writeFileSync('SAND_CORE_V2.js', source);
 console.log(`SAND_CORE_V2_SOURCE_OK ${sha} ${source.length} bytes`);
