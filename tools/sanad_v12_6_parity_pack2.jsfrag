@@ -1,0 +1,9 @@
+async function toolReminderUpdate(env,chatId,args){
+  const r=await toolReminderUpdateV125Base(env,chatId,args);
+  if(r?.ok&&r?.verified&&Number(args?.id))await propagateDependenciesV125(env,chatId,'reminder',Number(args.id),0);
+  return r;
+}
+
+async function showMenuV125(env,chatId){
+  return sendText(env,chatId,`🤝 سند V12.6 Ultimate Parity\n\n📅 /today النهاردة · /tomorrow بكرة · /week الأسبوع · /month الشهر · /list كل القادم\n🔁 /recurring التكرارات · 🛒 /shopping المشتريات\n🎯 /projects المشاريع · ⏳ /waiting المتابعات · 📥 /inbox صندوق الوارد\n🧠 /memory الذاكرة · 🕌 /prayer الصلاة · 🛰️ /live الواقع الحالي\n📍 /where الموقع · ⚙️ /settings الإعدادات · 🧾 /audit السجل · ↩️ /undo تراجع\n\nأو سيب الأوامر خالص واتكلم معايا بطبيعتك.`);
+}
