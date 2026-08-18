@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 execFileSync(process.execPath,['tools/build_sanad_v12_6_final.mjs'],{stdio:'inherit'});
 const input=new URL('../Sanad_V12_6_ULTIMATE_PARITY.js',import.meta.url);
 const layer=new URL('./sanad_v12_7_hardening.jsfrag',import.meta.url);
+const dedupeLayer=new URL('./sanad_v12_7_operation_dedupe.jsfrag',import.meta.url);
 const selftestLayer=new URL('./sanad_v12_7_selftest.jsfrag',import.meta.url);
 const output=new URL('../Sanad_V12_7_HARDENED.js',import.meta.url);
 let src=fs.readFileSync(input,'utf8');
@@ -70,6 +71,10 @@ replaceRequired('base migration terminal catch','  }catch(e){console.warn("Sanad
 replaceRequired('voice fallback catch',"if(rr.ok&&text)return text;}catch{}finally{clearTimeout(timer)}}if(env.GROQ_API_KEY", "if(rr.ok&&text)return text;}catch(e){await reportFailure(env,null,'voice_omniai_fallback',e,{file_id:fileId});}finally{clearTimeout(timer)}}if(env.GROQ_API_KEY");
 replaceRequired('selftest verified change', 'fallbackCompose([{tool:"shopping.add",ok:true,verified:true}]).includes("✅")','fallbackCompose([{tool:"shopping.add",ok:true,verified:true,changed:1}]).includes("✅")');
 
-src+='\n\n'+fs.readFileSync(layer,'utf8').trim()+'\n\n'+fs.readFileSync(selftestLayer,'utf8').trim()+'\n';
+src+='\n\n'+fs.readFileSync(layer,'utf8').trim()+'\n';
+// The hardening layer defines the verified executor. Wrap it with a per-operation fingerprint guard so planner/completion duplicates cannot execute the same mutation twice.
+if(!src.includes('async function executeTool(env,{chatId,operationId,stepKey,tool,args,user})'))throw new Error('V12.7 hardened executeTool marker missing');
+src=src.replace('async function executeTool(env,{chatId,operationId,stepKey,tool,args,user})','async function executeToolV127BeforeOperationDedupe(env,{chatId,operationId,stepKey,tool,args,user})');
+src+='\n\n'+fs.readFileSync(dedupeLayer,'utf8').trim()+'\n\n'+fs.readFileSync(selftestLayer,'utf8').trim()+'\n';
 const buf=Buffer.from(src,'utf8');fs.writeFileSync(output,buf);
 console.log(JSON.stringify({ok:true,version:'12.7.0',bytes:buf.length,lines:src.split('\n').length,sha256:crypto.createHash('sha256').update(buf).digest('hex')}));
