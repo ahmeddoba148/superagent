@@ -1,0 +1,299 @@
+/* ================= SANAD V12.7 CORRECTNESS HARDENING ================= */
+const V127_SNAPSHOT_MAX_ROWS_PER_TABLE=2500;
+const V127_SNAPSHOT_MAX_BYTES=1500000;
+const V127_USER_PAGE_SIZE=200;
+const V127_USER_PAGES_PER_RUN=20;
+const V127_RECOVERY_PAGE_SIZE=50;
+const V127_RECOVERY_ROUNDS=12;
+const V127_WATCH_PAGE_SIZE=25;
+const V127_WATCH_PAGES_PER_RUN=10;
+const V127_TRUSTED_WORLD_CONFIDENCE=0.75;
+
+TOOL_SPECS['dependency.create'].args={source_type:'reminder',source_id:'number',target_type:'reminder',target_id:'number',relation:'after_start|after_end|before_start',offset_minutes:'number?',realign:'boolean?'};
+
+function uniqueIdsV127(args){return [...new Set((Array.isArray(args?.ids)?args.ids:(args?.id!=null?[args.id]:[])).map(Number).filter(n=>Number.isInteger(n)&&n>0))];}
+async function existingIdsV127(env,table,chatId,ids,extra='1=1'){
+  if(!ids.length)return[];const qs=ids.map(()=>'?').join(',');
+  return (await env.DB.prepare(`SELECT id FROM ${table} WHERE chat_id=? AND id IN (${qs}) AND (${extra})`).bind(String(chatId),...ids).all())?.results?.map(x=>Number(x.id))||[];
+}
+const V127_PREFLIGHT_ID_TABLES={
+  'shopping.remove':['sanad_shopping','1=1'],'reminders.cancel':['sanad_reminders',"status='active'"],
+  'recurrence.pause':['sanad_recurrences','1=1'],'recurrence.resume':['sanad_recurrences','1=1'],'recurrence.cancel':['sanad_recurrences','1=1'],
+  'dependency.remove':['sanad_dependencies','active=1'],'memory.forget':['sanad_memories','1=1'],'world.forget':['sanad_entities','1=1'],
+  'waiting.close':['sanad_waiting',"status='waiting'"],'prayer.rules.cancel':['sanad_prayer_rules','1=1'],
+  'prayer.rules.pause':['sanad_prayer_rules','1=1'],'prayer.rules.resume':['sanad_prayer_rules','1=1'],
+  'live.watch.stop':['sanad_live_watches','1=1'],'inbox.close':['sanad_life_inbox','1=1']
+};
+async function preflightMutationIdsV127(env,chatId,tool,args){
+  const spec=V127_PREFLIGHT_ID_TABLES[tool];if(!spec)return null;
+  const ids=uniqueIdsV127(args);if(!ids.length)return{ok:false,changed:0,verified:false,error:'missing_ids'};
+  const found=await existingIdsV127(env,spec[0],chatId,ids,spec[1]);const set=new Set(found),missing=ids.filter(x=>!set.has(x));
+  return missing.length?{ok:false,changed:0,verified:false,error:'ids_not_found',missing,requested:ids}:null;
+}
+
+function validTimezoneV127(v){try{new Intl.DateTimeFormat('en-US',{timeZone:String(v)}).format(new Date());return true}catch{return false}}
+function bool01V127(v){if(v===true||v===1||v==='1')return 1;if(v===false||v===0||v==='0')return 0;return null}
+function sanitizeProfilePatchV127(args){
+  const out={};
+  if(args?.timezone!==undefined){const v=String(args.timezone);if(!validTimezoneV127(v))return{ok:false,error:'invalid_timezone'};out.timezone=v;}
+  if(args?.latitude!==undefined){const v=Number(args.latitude);if(!Number.isFinite(v)||v< -90||v>90)return{ok:false,error:'invalid_latitude'};out.latitude=v;}
+  if(args?.longitude!==undefined){const v=Number(args.longitude);if(!Number.isFinite(v)||v< -180||v>180)return{ok:false,error:'invalid_longitude'};out.longitude=v;}
+  for(const k of ['morning_brief_time','evening_brief_time'])if(args?.[k]!==undefined){const v=String(args[k]);if(!validTimeV125(v))return{ok:false,error:`invalid_${k}`};out[k]=v;}
+  for(const k of ['proactive_enabled','morning_brief_enabled','evening_brief_enabled','ask_before_delete'])if(args?.[k]!==undefined){const v=bool01V127(args[k]);if(v===null)return{ok:false,error:`invalid_${k}`};out[k]=v;}
+  if(args?.deep_reasoning_mode!==undefined){const v=String(args.deep_reasoning_mode);if(!['auto','on','off'].includes(v))return{ok:false,error:'invalid_deep_reasoning_mode'};out.deep_reasoning_mode=v;}
+  if(args?.autonomy_mode!==undefined){const v=String(args.autonomy_mode);if(!['full_safe','safe_auto','ask','manual'].includes(v))return{ok:false,error:'invalid_autonomy_mode'};out.autonomy_mode=v;}
+  if(args?.country_code!==undefined){const v=String(args.country_code).toUpperCase();if(!/^[A-Z]{2}$/.test(v))return{ok:false,error:'invalid_country_code'};out.country_code=v;}
+  if(args?.locale!==undefined){const v=String(args.locale);if(!/^[a-z]{2}(?:-[A-Z]{2})?$/.test(v))return{ok:false,error:'invalid_locale'};out.locale=v;}
+  for(const k of ['city','country','display_name'])if(args?.[k]!==undefined){const v=normalizeText(args[k]);if(!v||v.length>160)return{ok:false,error:`invalid_${k}`};out[k]=v;}
+  return{ok:true,patch:out};
+}
+async function toolProfileUpdateV125(env,chatId,args){
+  const s=sanitizeProfilePatchV127(args);if(!s.ok)return{ok:false,changed:0,verified:false,error:s.error};
+  const patch=s.patch,keys=Object.keys(patch);if(!keys.length)return{ok:false,changed:0,verified:false,error:'nothing_to_update'};
+  const before=await ensureUser(env,chatId),sets=keys.map(k=>`${k}=?`),vals=keys.map(k=>patch[k]);sets.push('updated_at=?');vals.push(nowIso(),chatId);
+  await env.DB.prepare(`UPDATE sanad_users SET ${sets.join(',')} WHERE chat_id=?`).bind(...vals).run();
+  const after=await env.DB.prepare(`SELECT * FROM sanad_users WHERE chat_id=?`).bind(chatId).first();
+  const verified=!!after&&keys.every(k=>String(after[k]??'')===String(patch[k]??''));
+  const changed=verified&&keys.some(k=>String(before?.[k]??'')!==String(after?.[k]??''))?1:0;
+  return{ok:verified,changed,verified,before,after,applied:patch};
+}
+async function toolSettingsUpdateV125(env,chatId,args){return toolProfileUpdateV125(env,chatId,args)}
+async function updateLocationV125(env,chatId,loc){
+  const lat=Number(loc?.latitude),lon=Number(loc?.longitude);if(!Number.isFinite(lat)||lat< -90||lat>90||!Number.isFinite(lon)||lon< -180||lon>180)throw new Error('invalid_location');
+  const r=await toolProfileUpdateV125(env,chatId,{latitude:lat,longitude:lon});if(!r.ok)throw new Error(r.error||'location_update_failed');return{lat,lon};
+}
+
+function snapshotTablesForStepsV127(steps){
+  const out=new Set();const add=(...xs)=>xs.forEach(x=>out.add(x));
+  for(const s of Array.isArray(steps)?steps:[]){const t=String(s?.tool||'');
+    if(t.startsWith('shopping.'))add('sanad_shopping','sanad_shopping_sessions');
+    else if(t.startsWith('reminders.')||t.startsWith('schedule.'))add('sanad_reminders','sanad_reminder_fires','sanad_dependencies');
+    else if(t.startsWith('recurrence.'))add('sanad_recurrences','sanad_recurrence_fires','sanad_dependencies');
+    else if(t.startsWith('dependency.'))add('sanad_dependencies','sanad_reminders');
+    else if(t.startsWith('memory.'))add('sanad_memories');
+    else if(t.startsWith('world.'))add('sanad_entities','sanad_edges');
+    else if(t.startsWith('projects.')||t.startsWith('project_tasks.'))add('sanad_projects','sanad_project_tasks');
+    else if(t.startsWith('waiting.'))add('sanad_waiting');
+    else if(t.startsWith('profile.')||t.startsWith('settings.'))add('sanad_users');
+    else if(t.startsWith('prayer.rules.'))add('sanad_prayer_rules','sanad_prayer_fires');
+    else if(t.startsWith('live.watch.'))add('sanad_live_watches');
+    else if(t.startsWith('inbox.'))add('sanad_life_inbox');
+    else if(t==='system.clear_all'||t==='audit.undo')SNAPSHOT_TABLES.forEach(x=>out.add(x));
+  }
+  return [...out];
+}
+function canonicalValueV127(v){if(Array.isArray(v))return v.map(canonicalValueV127);if(v&&typeof v==='object'){const o={};for(const k of Object.keys(v).sort())o[k]=canonicalValueV127(v[k]);return o;}return v;}
+function canonicalRowsV127(rows){return (Array.isArray(rows)?rows:[]).map(x=>JSON.stringify(canonicalValueV127(x))).sort();}
+async function snapshotUserStateV125(env,chatId,steps=null){
+  const tables=Array.isArray(steps)&&steps.length?snapshotTablesForStepsV127(steps):[...SNAPSHOT_TABLES];const data={};let totalBytes=2;
+  for(const table of tables){if(!(await tableExistsV125(env,table)))continue;const cols=await columnsV125(env,table);if(!cols.some(x=>String(x.name)==='chat_id'))continue;
+    const count=Number((await env.DB.prepare(`SELECT COUNT(*) c FROM ${table} WHERE chat_id=?`).bind(String(chatId)).first())?.c||0);if(count>V127_SNAPSHOT_MAX_ROWS_PER_TABLE)throw new Error(`snapshot_row_limit:${table}:${count}`);
+    const rows=(await env.DB.prepare(`SELECT * FROM ${table} WHERE chat_id=?`).bind(String(chatId)).all())?.results||[];data[table]=rows;totalBytes+=JSON.stringify(rows).length;if(totalBytes>V127_SNAPSHOT_MAX_BYTES)throw new Error(`snapshot_byte_limit:${totalBytes}`);
+  }
+  return data;
+}
+async function restoreUserStateV125(env,chatId,snap){
+  for(const table of Object.keys(snap||{})){if(!(await tableExistsV125(env,table)))continue;const cols=await columnsV125(env,table);if(!cols.some(x=>String(x.name)==='chat_id'))continue;
+    await env.DB.prepare(`DELETE FROM ${table} WHERE chat_id=?`).bind(String(chatId)).run();const rows=Array.isArray(snap?.[table])?snap[table]:[];
+    for(const row of rows){const names=Object.keys(row);if(!names.length)continue;const sql=`INSERT INTO ${table}(${names.map(sqlQuoteNameV125).join(',')}) VALUES(${names.map(()=>'?').join(',')})`;await env.DB.prepare(sql).bind(...names.map(k=>row[k])).run();}
+  }
+  return restoreUserStateVerifiedV127(env,chatId,snap,false);
+}
+async function restoreUserStateVerifiedV127(env,chatId,snap,performRestore=true){
+  if(performRestore)await restoreUserStateV125(env,chatId,snap);
+  const failures=[];for(const [table,expected] of Object.entries(snap||{})){if(!(await tableExistsV125(env,table))){failures.push(`${table}:missing_table`);continue;}const actual=(await env.DB.prepare(`SELECT * FROM ${table} WHERE chat_id=?`).bind(String(chatId)).all())?.results||[];if(JSON.stringify(canonicalRowsV127(actual))!==JSON.stringify(canonicalRowsV127(expected)))failures.push(`${table}:mismatch`);}
+  return{ok:failures.length===0,verified:failures.length===0,failures};
+}
+
+async function toolAuditUndoV125(env,chatId){
+  const row=await env.DB.prepare(`SELECT * FROM sanad_operation_snapshots WHERE chat_id=? AND committed=1 AND undone_at IS NULL ORDER BY id DESC LIMIT 1`).bind(chatId).first();if(!row)return{ok:false,changed:0,verified:false,error:'nothing_to_undo'};
+  const snap=parseJsonV125(row.snapshot_json,null);if(!snap)return{ok:false,changed:0,verified:false,error:'invalid_snapshot'};
+  let restored;try{restored=await restoreUserStateVerifiedV127(env,chatId,snap,true)}catch(e){const incident=await reportFailure(env,chatId,'undo_restore',e,{operation_id:row.operation_id});return{ok:false,changed:0,verified:false,error:'undo_restore_failed',incident};}
+  if(!restored.verified){const incident=await reportFailure(env,chatId,'undo_restore_verify',new Error(restored.failures.join('|')),{operation_id:row.operation_id});return{ok:false,changed:0,verified:false,error:'undo_restore_verification_failed',incident,failures:restored.failures};}
+  await env.DB.prepare(`UPDATE sanad_operation_snapshots SET undone_at=? WHERE id=?`).bind(nowIso(),Number(row.id)).run();const chk=await env.DB.prepare(`SELECT undone_at FROM sanad_operation_snapshots WHERE id=?`).bind(Number(row.id)).first();
+  return{ok:!!chk?.undone_at,changed:chk?.undone_at?1:0,verified:!!chk?.undone_at,operation_id:row.operation_id,summary:row.summary};
+}
+
+async function validateReminderDraftV127(env,chatId,draft,user,excludeId=0){
+  const title=normalizeText(draft?.title),date=String(draft?.local_date||''),time=String(draft?.local_time||''),tz=String(user?.timezone||draft?.timezone||TZ);
+  if(!title||title.length>300||!validDateV125(date)||!validTimeV125(time)||!validTimezoneV127(tz))return{ok:false,error:'invalid_reminder_fields'};
+  const kind=['reminder','appointment'].includes(String(draft?.kind))?String(draft.kind):(Number(draft?.duration_minutes||0)>0?'appointment':'reminder');
+  const duration=Math.trunc(Number(draft?.duration_minutes??(kind==='appointment'?DEFAULT_EVENT_DURATION:0)));if(!Number.isFinite(duration)||duration<0||duration>10080)return{ok:false,error:'invalid_duration'};
+  const ln=localNow(tz);if(!draft?.allow_past&&`${date} ${time}`<`${ln.date} ${ln.time}`)return{ok:false,error:'time_is_in_the_past'};
+  const rawAdv=(Array.isArray(draft?.advance_minutes)?draft.advance_minutes:[draft?.advance_minutes]).filter(x=>x!=null).map(Number);if(rawAdv.some(x=>!Number.isFinite(x)||x<0||x>MAX_ADVANCE_MINUTES))return{ok:false,error:'invalid_advance'};const advances=[...new Set(rawAdv.map(Math.trunc))];
+  if((kind==='appointment'||duration>0)&&!draft?.allow_conflict){const occ=await getScheduleOccurrencesV125(env,chatId,date,date),start=hmMinutesV125(time),conf=occ.filter(x=>!(x.source_type==='reminder'&&Number(x.source_id)===Number(excludeId))&&start<hmMinutesV125(x.time)+Math.max(1,Number(x.duration_minutes||DEFAULT_EVENT_DURATION))&&hmMinutesV125(x.time)<start+Math.max(1,duration));if(conf.length)return{ok:false,error:'schedule_conflict',conflicts:conf.slice(0,10)};}
+  return{ok:true,draft:{...draft,title,local_date:date,local_time:time,timezone:tz,kind,duration_minutes:duration,advance_minutes:advances}};
+}
+async function toolReminderCreate(env,chatId,args,user){
+  const v=await validateReminderDraftV127(env,chatId,args,user,0);if(!v.ok){if(v.error==='schedule_conflict'){const now=nowIso(),exp=new Date(Date.now()+CONFIRM_TTL_MINUTES*60000).toISOString();await env.DB.prepare(`INSERT INTO sanad_pending_conflicts(chat_id,tool,args_json,conflicts_json,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET tool=excluded.tool,args_json=excluded.args_json,conflicts_json=excluded.conflicts_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`).bind(chatId,'reminders.create',JSON.stringify(args),JSON.stringify(v.conflicts||[]),exp,now,now).run();}return{ok:false,changed:0,verified:false,error:v.error,conflicts:v.conflicts||[]};}
+  const d=v.draft,now=nowIso(),r=await env.DB.prepare(`INSERT INTO sanad_reminders(chat_id,title,kind,local_date,local_time,timezone,duration_minutes,advance_minutes,advance_json,status,sent,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'active',0,?,?)`).bind(chatId,d.title,d.kind,d.local_date,d.local_time,d.timezone,d.duration_minutes,Number(d.advance_minutes[0]||0),JSON.stringify(d.advance_minutes),now,now).run();
+  const id=Number(r?.meta?.last_row_id||0),after=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=?`).bind(chatId,id).first();const verified=!!after&&after.title===d.title&&after.local_date===d.local_date&&after.local_time===d.local_time&&String(after.kind)===d.kind&&Number(after.duration_minutes)===d.duration_minutes;
+  if(verified)await env.DB.prepare(`DELETE FROM sanad_pending_conflicts WHERE chat_id=?`).bind(chatId).run();return{ok:verified,changed:verified?1:0,verified,id,after};
+}
+async function toolReminderUpdate(env,chatId,args){
+  const id=Number(args?.id);if(!id)return{ok:false,changed:0,verified:false,error:'missing_id'};const before=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();if(!before)return{ok:false,changed:0,verified:false,error:'not_found'};
+  const user=await ensureUser(env,chatId),merged={...before,...args,title:args?.title!==undefined?args.title:before.title,local_date:args?.local_date!==undefined?args.local_date:before.local_date,local_time:args?.local_time!==undefined?args.local_time:before.local_time,duration_minutes:args?.duration_minutes!==undefined?args.duration_minutes:before.duration_minutes,kind:args?.kind!==undefined?args.kind:before.kind,advance_minutes:args?.advance_minutes!==undefined?args.advance_minutes:parseJsonV125(before.advance_json,[])};
+  const v=await validateReminderDraftV127(env,chatId,merged,user,id);if(!v.ok)return{ok:false,changed:0,verified:false,error:v.error,conflicts:v.conflicts||[]};const d=v.draft;
+  await env.DB.prepare(`UPDATE sanad_reminders SET title=?,kind=?,local_date=?,local_time=?,timezone=?,duration_minutes=?,advance_minutes=?,advance_json=?,sent=0,updated_at=? WHERE chat_id=? AND id=?`).bind(d.title,d.kind,d.local_date,d.local_time,d.timezone,d.duration_minutes,Number(d.advance_minutes[0]||0),JSON.stringify(d.advance_minutes),nowIso(),chatId,id).run();
+  const after=await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND id=? AND status='active'`).bind(chatId,id).first();const verified=!!after&&after.title===d.title&&after.local_date===d.local_date&&after.local_time===d.local_time&&Number(after.duration_minutes)===d.duration_minutes&&String(after.kind)===d.kind;if(!verified)return{ok:false,changed:0,verified:false,error:'update_verification_failed',before,after};
+  const changed=['title','kind','local_date','local_time','duration_minutes','advance_json'].some(k=>String(before[k]??'')!==String(after[k]??''));let dependencyChanges=0;
+  const temporalChanged=String(before.local_date)!==String(after.local_date)||String(before.local_time)!==String(after.local_time)||Number(before.duration_minutes||0)!==Number(after.duration_minutes||0);if(temporalChanged){const oldMs=zonedLocalToEpochV125(before.local_date,before.local_time,before.timezone||TZ),newMs=zonedLocalToEpochV125(after.local_date,after.local_time,after.timezone||TZ),delta=Math.round((newMs-oldMs)/60000),p=await propagateDependenciesV125(env,chatId,'reminder',id,delta);dependencyChanges=Number(p?.changed||0);}
+  return{ok:true,changed:(changed?1:0)+dependencyChanges,verified:true,before,after,dependencies_verified:true,dependency_changes:dependencyChanges};
+}
+async function toolReminderCancel(env,chatId,args){
+  const ids=uniqueIdsV127(args);if(!ids.length)return{ok:false,changed:0,verified:false,error:'missing_ids'};const found=await existingIdsV127(env,'sanad_reminders',chatId,ids,"status='active'"),missing=ids.filter(x=>!new Set(found).has(x));if(missing.length)return{ok:false,changed:0,verified:false,error:'ids_not_found',missing};
+  const qs=ids.map(()=>'?').join(',');await env.DB.prepare(`UPDATE sanad_reminders SET status='cancelled',updated_at=? WHERE chat_id=? AND id IN (${qs})`).bind(nowIso(),chatId,...ids).run();const rows=(await env.DB.prepare(`SELECT id,status FROM sanad_reminders WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];const verified=rows.length===ids.length&&rows.every(x=>x.status==='cancelled');return{ok:verified,changed:verified?ids.length:0,verified,items:rows};
+}
+async function toolMemoryForget(env,chatId,args){
+  const ids=uniqueIdsV127(args);if(!ids.length)return{ok:false,changed:0,verified:false,error:'missing_ids'};const found=await existingIdsV127(env,'sanad_memories',chatId,ids),missing=ids.filter(x=>!new Set(found).has(x));if(missing.length)return{ok:false,changed:0,verified:false,error:'ids_not_found',missing};
+  const qs=ids.map(()=>'?').join(',');await env.DB.prepare(`DELETE FROM sanad_memories WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).run();const left=(await env.DB.prepare(`SELECT id FROM sanad_memories WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return{ok:left.length===0,changed:left.length===0?ids.length:0,verified:left.length===0};
+}
+
+async function toolDependencyCreateV125(env,chatId,args){
+  const st=String(args?.source_type||'reminder'),tt=String(args?.target_type||'reminder');if(st!=='reminder'||tt!=='reminder')return{ok:false,changed:0,verified:false,error:'unsupported_dependency_type',supported:'reminder->reminder'};
+  return toolDependencyCreateV127Core(env,chatId,{...args,source_type:'reminder',target_type:'reminder'});
+}
+async function toolDependencyCreateV127Core(env,chatId,args){
+  const sid=Number(args?.source_id),tid=Number(args?.target_id),rel=String(args?.relation||'after_start')==='after'?'after_start':String(args?.relation||'after_start');if(!sid||!tid||!['after_start','after_end','before_start'].includes(rel))return{ok:false,changed:0,verified:false,error:'invalid_dependency'};if(sid===tid)return{ok:false,changed:0,verified:false,error:'self_dependency'};
+  const [s,t]=await Promise.all([reminderNodeV126(env,chatId,sid),reminderNodeV126(env,chatId,tid)]);if(!s||!t)return{ok:false,changed:0,verified:false,error:'dependency_node_not_found'};
+  const current=(await env.DB.prepare(`SELECT * FROM sanad_dependencies WHERE chat_id=? AND active=1`).bind(chatId).all())?.results||[],candidate={source_type:'reminder',source_id:sid,target_type:'reminder',target_id:tid,relation:rel};if(dependencyCycleV126(current,candidate))return{ok:false,changed:0,verified:false,error:'dependency_cycle'};
+  let off=Number(args?.offset_minutes),explicit=Number.isFinite(off);if(!explicit){const ss=zonedLocalToEpochV125(s.local_date,s.local_time,s.timezone||TZ),ts=zonedLocalToEpochV125(t.local_date,t.local_time,t.timezone||TZ);off=rel==='after_end'?Math.round((ts-(ss+Number(s.duration_minutes||0)*60000))/60000):rel==='before_start'?Math.round((ss-ts)/60000):Math.round((ts-ss)/60000);}if(!Number.isFinite(off))off=0;
+  await env.DB.prepare(`UPDATE sanad_dependencies SET active=0,updated_at=? WHERE chat_id=? AND source_type='reminder' AND source_id=? AND target_type='reminder' AND target_id=?`).bind(nowIso(),chatId,sid,tid).run();const now=nowIso(),x=await env.DB.prepare(`INSERT INTO sanad_dependencies(chat_id,source_type,source_id,target_type,target_id,relation,offset_minutes,condition_json,active,created_at,updated_at) VALUES(?,'reminder',?,'reminder',?,?,?,?,1,?,?)`).bind(chatId,sid,tid,rel,Math.trunc(off),JSON.stringify(args?.condition||{}),now,now).run(),id=Number(x?.meta?.last_row_id||0),after=await env.DB.prepare(`SELECT * FROM sanad_dependencies WHERE chat_id=? AND id=?`).bind(chatId,id).first();let aligned=true;if(after&&explicit&&args?.realign!==false)aligned=await realignDependencyV126(env,chatId,after);return{ok:!!after&&aligned,changed:after?1:0,verified:!!after&&aligned,id,after,derived_offset:!explicit};
+}
+
+async function toolWorldUpsertV125(env,chatId,args){
+  const source=String(args?.source||'agent_inferred'),confidence=args?.confidence==null?(source==='user_explicit'?1:0.5):clampV125(args.confidence,0,1),next={...args,source,confidence};
+  const r=await toolWorldUpsertV125Base(env,chatId,next);if(!r.ok)return r;const verified=String(r.after?.source||'')===source&&Math.abs(Number(r.after?.confidence)-confidence)<1e-9;return{...r,ok:verified,verified,changed:verified?Number(r.changed||1):0};
+}
+async function toolWorldLinkV125(env,chatId,args){
+  const source=String(args?.source||'agent_inferred'),confidence=args?.confidence==null?(source==='user_explicit'?1:0.5):clampV125(args.confidence,0,1),next={...args,source,confidence};
+  const r=await toolWorldLinkV125Base(env,chatId,next);if(!r.ok)return r;const verified=String(r.after?.source||'')===source&&Math.abs(Number(r.after?.confidence)-confidence)<1e-9;return{...r,ok:verified,verified,changed:verified?Number(r.changed||1):0};
+}
+
+async function toolProjectTaskUpdateV125(env,chatId,args){
+  const id=Number(args?.id);if(!id)return{ok:false,changed:0,verified:false,error:'missing_id'};const b=await env.DB.prepare(`SELECT * FROM sanad_project_tasks WHERE chat_id=? AND id=?`).bind(chatId,id).first();if(!b)return{ok:false,changed:0,verified:false,error:'not_found'};
+  const title=args?.title!=null?normalizeText(args.title):b.title,status=args?.status!=null?String(args.status):b.status,due=args?.due_at!==undefined?args.due_at:b.due_at,priority=args?.priority!=null?String(args.priority):b.priority;if(!title||!['pending','done','cancelled'].includes(String(status))||!['low','normal','high'].includes(String(priority)))return{ok:false,changed:0,verified:false,error:'invalid_task_fields'};
+  await env.DB.prepare(`UPDATE sanad_project_tasks SET title=?,status=?,due_at=?,priority=?,updated_at=? WHERE chat_id=? AND id=?`).bind(title,status,due,priority,nowIso(),chatId,id).run();const a=await env.DB.prepare(`SELECT * FROM sanad_project_tasks WHERE chat_id=? AND id=?`).bind(chatId,id).first();const verified=!!a&&String(a.title)===String(title)&&String(a.status)===String(status)&&String(a.due_at??'')===String(due??'')&&String(a.priority)===String(priority),changed=verified&&(['title','status','due_at','priority'].some(k=>String(b[k]??'')!==String(a[k]??'')))?1:0;return{ok:verified,changed,verified,before:b,after:a};
+}
+
+function fallbackCompose(obs){
+  const muts=(Array.isArray(obs)?obs:[]).filter(x=>TOOL_SPECS[x.tool]?.mutation),failed=muts.filter(x=>x.ok!==true||x.verified!==true),changed=muts.filter(x=>x.ok===true&&x.verified===true&&Number(x.changed)>0),noops=muts.filter(x=>x.ok===true&&x.verified===true&&Number(x.changed||0)===0),reads=(Array.isArray(obs)?obs:[]).filter(x=>!TOOL_SPECS[x.tool]?.mutation&&x.ok===true);
+  if(failed.length)return `⚠️ التنفيذ ما اكتملش بشكل مؤكد، ومش هعتبر العملية تمت.`;
+  if(changed.length)return `✅ تم تنفيذ ${changed.length} تغيير واتأكدت من الحالة الفعلية بعد التنفيذ.`;
+  if(noops.length)return `تمام، راجعت الحالة وكانت بالفعل بالشكل المطلوب؛ مفيش تغيير جديد اتعمل.`;
+  if(reads.length)return `تمام، راجعت الحالة الحالية.`;return 'تمام.';
+}
+
+async function mutationRowV127(env,table,chatId,id){if(!Number(id))return null;return env.DB.prepare(`SELECT * FROM ${table} WHERE chat_id=? AND id=?`).bind(String(chatId),Number(id)).first()}
+function fieldsMatchV127(row,args,keys){return !!row&&keys.filter(k=>args?.[k]!==undefined).every(k=>String(row[k]??'')===String(args[k]??''))}
+async function verifyMutationPostconditionV127(env,chatId,tool,args,result){
+  if(result?.ok!==true||result?.verified!==true)return false;if(Number(result?.changed||0)===0)return true;
+  const ids=uniqueIdsV127(args);
+  switch(tool){
+    case'shopping.add':{const got=await existingIdsV127(env,'sanad_shopping',chatId,(result.ids||[]).map(Number));return got.length>0&&got.length===(result.ids||[]).length;}
+    case'shopping.update':case'shopping.mark':{const id=Number(args?.id||result?.after?.id);const r=await mutationRowV127(env,'sanad_shopping',chatId,id);return fieldsMatchV127(r,args,['title','quantity','status'])||tool==='shopping.mark'&&!!r&&String(r.status)===String(args?.status);}
+    case'shopping.remove':return (await existingIdsV127(env,'sanad_shopping',chatId,ids)).length===0;
+    case'shopping.clear':return Number((await env.DB.prepare(`SELECT COUNT(*) c FROM sanad_shopping WHERE chat_id=?`).bind(chatId).first())?.c||0)===0;
+    case'shopping.session.start':return !!(await mutationRowV127(env,'sanad_shopping_sessions',chatId,result.id));
+    case'shopping.session.finish':return !!result?.session?.ended_at;
+    case'reminders.create':{const r=await mutationRowV127(env,'sanad_reminders',chatId,result.id);return !!r&&r.status==='active'&&r.title===result.after?.title&&r.local_date===result.after?.local_date&&r.local_time===result.after?.local_time;}
+    case'reminders.update':case'reminders.snooze':{const r=await mutationRowV127(env,'sanad_reminders',chatId,args?.id);return !!r&&r.status==='active'&&(tool==='reminders.snooze'?String(r.local_date)===String(result.after?.local_date)&&String(r.local_time)===String(result.after?.local_time):fieldsMatchV127(r,args,['title','local_date','local_time','duration_minutes','kind']));}
+    case'reminders.cancel':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,status FROM sanad_reminders WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>x.status==='cancelled');}
+    case'recurrence.create':return !!(await mutationRowV127(env,'sanad_recurrences',chatId,result.id));
+    case'recurrence.update':{const r=await mutationRowV127(env,'sanad_recurrences',chatId,args.id);return !!r&&fieldsMatchV127(r,args,['title','start_date','end_date','max_occurrences','duration_minutes','kind','active','paused_until']);}
+    case'recurrence.pause':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,paused_until FROM sanad_recurrences WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>!!x.paused_until);}
+    case'recurrence.resume':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active,paused_until FROM sanad_recurrences WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===1&&!x.paused_until);}
+    case'recurrence.cancel':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active FROM sanad_recurrences WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===0);}
+    case'recurrence.skip':{const r=await mutationRowV127(env,'sanad_recurrences',chatId,args.id);return !!r&&parseJsonV125(r.exceptions_json,[]).includes(result.key||args.date);}
+    case'schedule.shift':case'schedule.bulk_shift':return result?.dependencies_verified!==false&&!!(result.after||result.changed);
+    case'dependency.create':case'dependency.link_by_title':return !!(await mutationRowV127(env,'sanad_dependencies',chatId,result.id));
+    case'dependency.remove':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active FROM sanad_dependencies WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===0);}
+    case'memory.remember':return !!(await mutationRowV127(env,'sanad_memories',chatId,result.id));
+    case'memory.forget':return (await existingIdsV127(env,'sanad_memories',chatId,ids)).length===0;
+    case'world.upsert':return !!(await mutationRowV127(env,'sanad_entities',chatId,result.id));
+    case'world.link':return !!(await mutationRowV127(env,'sanad_edges',chatId,result.id));
+    case'world.forget':return (await existingIdsV127(env,'sanad_entities',chatId,ids)).length===0;
+    case'projects.create':return !!(await mutationRowV127(env,'sanad_projects',chatId,result.id));
+    case'projects.update':{const r=await mutationRowV127(env,'sanad_projects',chatId,args.id);return fieldsMatchV127(r,args,['status','progress','priority','deadline']);}
+    case'project_tasks.create':return !!(await mutationRowV127(env,'sanad_project_tasks',chatId,result.id));
+    case'project_tasks.update':{const r=await mutationRowV127(env,'sanad_project_tasks',chatId,args.id);return fieldsMatchV127(r,args,['title','status','due_at','priority']);}
+    case'waiting.create':return !!(await mutationRowV127(env,'sanad_waiting',chatId,result.id));
+    case'waiting.close':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,status FROM sanad_waiting WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>x.status==='done');}
+    case'profile.update':case'settings.update':{const r=await env.DB.prepare(`SELECT * FROM sanad_users WHERE chat_id=?`).bind(chatId).first();const s=sanitizeProfilePatchV127(args);return s.ok&&fieldsMatchV127(r,s.patch,Object.keys(s.patch));}
+    case'prayer.rules.create':return !!(await mutationRowV127(env,'sanad_prayer_rules',chatId,result.id));
+    case'prayer.rules.update':{const r=await mutationRowV127(env,'sanad_prayer_rules',chatId,args.id);return fieldsMatchV127(r,args,['title','offset_minutes','end_date']);}
+    case'prayer.rules.cancel':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active FROM sanad_prayer_rules WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===0);}
+    case'prayer.rules.pause':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,paused_until FROM sanad_prayer_rules WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>!!x.paused_until);}
+    case'prayer.rules.resume':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active,paused_until FROM sanad_prayer_rules WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===1&&!x.paused_until);}
+    case'prayer.rules.skip':{const r=await mutationRowV127(env,'sanad_prayer_rules',chatId,args.id);return !!r&&parseJsonV125(r.exceptions_json,[]).includes(args.date);}
+    case'live.watch.create':return !!(await mutationRowV127(env,'sanad_live_watches',chatId,result.id));
+    case'live.watch.stop':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,active FROM sanad_live_watches WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>Number(x.active)===0);}
+    case'inbox.add':return !!(await mutationRowV127(env,'sanad_life_inbox',chatId,result.id));
+    case'inbox.close':{const qs=ids.map(()=>'?').join(',');const rows=(await env.DB.prepare(`SELECT id,status FROM sanad_life_inbox WHERE chat_id=? AND id IN (${qs})`).bind(chatId,...ids).all())?.results||[];return rows.length===ids.length&&rows.every(x=>x.status==='closed');}
+    case'inbox.classify':{const r=await mutationRowV127(env,'sanad_life_inbox',chatId,args.id);return !!r&&String(r.classified_as)===String(args.classified_as);}
+    case'audit.undo':return result.verified===true;
+    case'system.clear_all':return result.verified===true&&Number(result.remaining||0)===0;
+    default:return false;
+  }
+}
+async function executeTool(env,{chatId,operationId,stepKey,tool,args,user}){
+  const spec=TOOL_SPECS[tool],prior=await env.DB.prepare(`SELECT result_json FROM sanad_receipts WHERE operation_id=? AND step_key=?`).bind(operationId,stepKey).first();
+  if(prior){try{const saved=JSON.parse(prior.result_json);if(!spec?.mutation||await verifyMutationPostconditionV127(env,chatId,tool,args,saved))return saved;}catch(e){await reportFailure(env,chatId,'receipt_reverify',e,{operationId,stepKey,tool});}}
+  if(spec?.mutation){const pre=await preflightMutationIdsV127(env,chatId,tool,args);if(pre){await env.DB.prepare(`INSERT OR REPLACE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,stepKey,chatId,tool,JSON.stringify(pre),nowIso()).run();return pre;}}
+  let result;try{result=await dispatchTool(env,chatId,tool,args,user)}catch(e){result={ok:false,changed:0,verified:false,error:safeError(e),retryable:true};}
+  if(spec?.mutation&&result?.ok===true){let verified=false;try{verified=await verifyMutationPostconditionV127(env,chatId,tool,args,result)}catch(e){await reportFailure(env,chatId,'mutation_verify',e,{tool,args});}if(!verified)result={...result,ok:false,verified:false,error:'mutation_postcondition_failed'};else result={...result,verified:true};}
+  await env.DB.prepare(`INSERT OR REPLACE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,stepKey,chatId,tool,JSON.stringify(result).slice(0,15000),nowIso()).run();
+  await env.DB.prepare(`INSERT INTO sanad_audit(operation_id,chat_id,tool,args_json,result_json,verified,created_at) VALUES(?,?,?,?,?,?,?)`).bind(operationId,chatId,tool,JSON.stringify(args).slice(0,8000),JSON.stringify(result).slice(0,15000),result?.verified?1:0,nowIso()).run();return result;
+}
+
+function contextDomainsV127(text){const t=normItem(text),s=new Set();const hit=(d,re)=>{if(re.test(t))s.add(d)};hit('shopping',/(مشتريات|تسوق|سوبر ماركت|سوبرماركت|اشتري|اشترى|هجيب|لبن|عيش)/u);hit('schedule',/(موعد|فكرني|ذكرني|تذكير|النهارده|بكره|بكرة|الأسبوع|الاسبوع|فاضي|جدول|اجتماع)/u);hit('projects',/(مشروع|مهمه|مهمة|تاسك)/u);hit('waiting',/(مستني|متابعة|متابعه|الانبوكس|الإنبوكس|inbox)/u);hit('prayer',/(صلاة|الصلاة|الفجر|الظهر|العصر|المغرب|العشاء)/u);hit('live',/(طقس|جو|أخبار|اخبار|عطلة|اجازة|إجازة|هجري|مباشر)/u);hit('memory',/(فاكر|ذاكرة|الذاكرة|افتكر|انس|انسى|تفضيل)/u);hit('world',/(مين|مراتي|زوجتي|صاحبي|شخص|مكان|علاقة|علاقه)/u);hit('profile',/(موقعي|مكاني|مدينتي|تايم زون|توقيت|اعدادات|إعدادات)/u);if(!s.size){s.add('memory');s.add('world');}return s;}
+async function relevantConversationV127(env,chatId,text){const rows=(await env.DB.prepare(`SELECT role,content,created_at FROM sanad_conversation WHERE chat_id=? ORDER BY id DESC LIMIT 30`).bind(chatId).all())?.results||[],q=new Set(normItem(text).split(/\s+/).filter(x=>x.length>2));const chosen=[];for(let i=0;i<rows.length;i++){const r=rows[i],tokens=normItem(r.content).split(/\s+/);if(i<6||tokens.some(x=>q.has(x)))chosen.push(r);if(chosen.length>=12)break;}return chosen.reverse();}
+async function buildContext(env,chatId,user,userText){
+  const domains=contextDomainsV127(userText),state={shopping:[],reminders:[],recurrences:[],memories:[],entities:[],projects:[],tasks:[],waiting:[],dependencies:[],prayer_rules:[],live_watches:[],inbox:[],shopping_session:null,loaded_domains:[...domains]};
+  const jobs=[];
+  if(domains.has('shopping'))jobs.push((async()=>{state.shopping=(await toolShoppingRead(env,chatId)).items;state.shopping_session=await env.DB.prepare(`SELECT id,place_name,started_at FROM sanad_shopping_sessions WHERE chat_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`).bind(chatId).first();})());
+  if(domains.has('schedule'))jobs.push((async()=>{state.reminders=(await env.DB.prepare(`SELECT id,title,kind,local_date,local_time,duration_minutes,status FROM sanad_reminders WHERE chat_id=? AND status='active' ORDER BY local_date,local_time LIMIT 80`).bind(chatId).all())?.results||[];state.recurrences=(await env.DB.prepare(`SELECT id,title,kind,rule_json,start_date,end_date,active,fired_count FROM sanad_recurrences WHERE chat_id=? AND active=1 ORDER BY id DESC LIMIT 50`).bind(chatId).all())?.results||[];state.dependencies=(await env.DB.prepare(`SELECT * FROM sanad_dependencies WHERE chat_id=? AND active=1 ORDER BY id DESC LIMIT 60`).bind(chatId).all())?.results||[];})());
+  if(domains.has('projects'))jobs.push((async()=>{state.projects=(await env.DB.prepare(`SELECT id,title,status,priority,deadline,progress FROM sanad_projects WHERE chat_id=? AND status!='done' ORDER BY id DESC LIMIT 40`).bind(chatId).all())?.results||[];state.tasks=(await env.DB.prepare(`SELECT id,project_id,title,status,due_at,priority FROM sanad_project_tasks WHERE chat_id=? AND status!='done' ORDER BY id DESC LIMIT 60`).bind(chatId).all())?.results||[];})());
+  if(domains.has('waiting'))jobs.push((async()=>{state.waiting=(await env.DB.prepare(`SELECT * FROM sanad_waiting WHERE chat_id=? AND status='waiting' ORDER BY id DESC LIMIT 40`).bind(chatId).all())?.results||[];state.inbox=(await toolLifeInboxReadV126(env,chatId,{status:'open'})).items;})());
+  if(domains.has('prayer'))jobs.push((async()=>{state.prayer_rules=(await env.DB.prepare(`SELECT * FROM sanad_prayer_rules WHERE chat_id=? AND active=1 ORDER BY id DESC LIMIT 30`).bind(chatId).all())?.results||[];})());
+  if(domains.has('live'))jobs.push((async()=>{state.live_watches=(await env.DB.prepare(`SELECT id,query,last_url FROM sanad_live_watches WHERE chat_id=? AND active=1 ORDER BY id DESC LIMIT 30`).bind(chatId).all())?.results||[];})());
+  if(domains.has('memory')||domains.size<=2)jobs.push((async()=>{state.memories=(await env.DB.prepare(`SELECT id,memory_type,content,importance FROM sanad_memories WHERE chat_id=? ORDER BY importance DESC,id DESC LIMIT 25`).bind(chatId).all())?.results||[];})());
+  if(domains.has('world')||domains.size<=2)jobs.push((async()=>{state.entities=(await env.DB.prepare(`SELECT id,entity_type,name,data_json,confidence,source FROM sanad_entities WHERE chat_id=? AND (source='user_explicit' OR confidence>=?) ORDER BY confidence DESC,id DESC LIMIT 25`).bind(chatId,V127_TRUSTED_WORLD_CONFIDENCE).all())?.results||[];})());
+  await Promise.all(jobs);const conversation=await relevantConversationV127(env,chatId,userText);return{now:localNow(user?.timezone||TZ),profile:{display_name:user?.display_name||'',timezone:user?.timezone||TZ,city:user?.city||DEFAULT_CITY,country:user?.country||DEFAULT_COUNTRY,country_code:user?.country_code||'EG',latitude:user?.latitude??null,longitude:user?.longitude??null,autonomy_mode:user?.autonomy_mode||'full_safe',proactive_enabled:Number(user?.proactive_enabled??1),deep_reasoning_mode:user?.deep_reasoning_mode||'auto'},user_text:userText,conversation,state};
+}
+
+async function recordModelAttemptV126(env,id,{ok,latency,error}){try{await env.DB.prepare(`INSERT INTO sanad_model_stats(model_id,attempts,successes,failures,total_latency_ms,last_latency_ms,last_error,updated_at) VALUES(?,1,?,?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET attempts=attempts+1,successes=successes+excluded.successes,failures=failures+excluded.failures,total_latency_ms=total_latency_ms+excluded.total_latency_ms,last_latency_ms=excluded.last_latency_ms,last_error=excluded.last_error,updated_at=excluded.updated_at`).bind(id,ok?1:0,ok?0:1,Number(latency||0),Number(latency||0),error?String(error).slice(0,500):null,nowIso()).run();}catch(e){console.error('model_stats',e);try{await reportFailure(env,null,'model_stats',e,{model_id:id})}catch(inner){console.error('model_stats_failure_log',inner)}}}
+
+async function sendOnceV125(env,chatId,key,text){
+  let kb=null;const m=String(key).match(/^rem:(\d+):/);if(m)kb={inline_keyboard:[[{text:'✅ تم',callback_data:`s126:rem:done:${m[1]}`},{text:'⏰ +10 د',callback_data:`s126:rem:snooze:${m[1]}:10`},{text:'🕐 +1 س',callback_data:`s126:rem:snooze:${m[1]}:60`}]]};
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO sanad_proactive_fires(chat_id,fire_key,sent_at) VALUES(?,?,?)`).bind(String(chatId),String(key),nowIso()).run();if(Number(claim?.meta?.changes||0)===0)return false;
+  try{await sendText(env,String(chatId),text,kb);await env.DB.prepare(`UPDATE sanad_proactive_fires SET sent_at=? WHERE chat_id=? AND fire_key=?`).bind(nowIso(),String(chatId),String(key)).run();return true}catch(e){await env.DB.prepare(`DELETE FROM sanad_proactive_fires WHERE chat_id=? AND fire_key=?`).bind(String(chatId),String(key)).run();throw e;}
+}
+
+function localAtMsV127(ms,tz){return epochToLocalV126(Number(ms),tz||TZ)}
+async function claimRecurrenceFireV127(env,r,o,off,chatId,text){const ins=await env.DB.prepare(`INSERT OR IGNORE INTO sanad_recurrence_fires(rule_id,occurrence_key,alert_offset,chat_id,sent_at) VALUES(?,?,?,?,?)`).bind(Number(r.id),o.key,off,chatId,nowIso()).run();if(Number(ins?.meta?.changes||0)===0)return false;try{await sendText(env,chatId,text);return true}catch(e){await env.DB.prepare(`DELETE FROM sanad_recurrence_fires WHERE rule_id=? AND occurrence_key=? AND alert_offset=?`).bind(Number(r.id),o.key,off).run();throw e}}
+async function claimPrayerFireV127(env,r,date,chatId,text){const ins=await env.DB.prepare(`INSERT OR IGNORE INTO sanad_prayer_fires(rule_id,occurrence_date,chat_id,sent_at) VALUES(?,?,?,?)`).bind(Number(r.id),date,chatId,nowIso()).run();if(Number(ins?.meta?.changes||0)===0)return false;try{await sendText(env,chatId,text);return true}catch(e){await env.DB.prepare(`DELETE FROM sanad_prayer_fires WHERE rule_id=? AND occurrence_date=?`).bind(Number(r.id),date).run();throw e}}
+async function deliverUserScheduleV125(env,u,lastMs,nowMs){
+  const chatId=String(u.chat_id),ln=localAtMsV127(nowMs,u.timezone||TZ),from=addDaysV125(ln.date,-1),to=addDaysV125(ln.date,1),one=(await env.DB.prepare(`SELECT * FROM sanad_reminders WHERE chat_id=? AND status='active' AND sent=0 AND local_date BETWEEN ? AND ?`).bind(chatId,from,to).all())?.results||[];
+  for(const r of one){const main=zonedLocalToEpochV125(r.local_date,r.local_time,u.timezone||TZ),offsets=[0,...parseJsonV125(r.advance_json,[]),Number(r.advance_minutes||0)].map(Number).filter((v,i,a)=>v>=0&&a.indexOf(v)===i);for(const off of offsets){const fire=main-off*60000;if(fire<=lastMs||fire>nowMs)continue;const key=`rem:${r.id}:${r.local_date}:${r.local_time}:${off}`,label=off?`⏰ تذكير مسبق (${off} دقيقة): ${r.title}`:`⏰ ${r.title}`;let delivered=await sendOnceV125(env,chatId,key,label);const claimExists=delivered||!!(await env.DB.prepare(`SELECT 1 x FROM sanad_proactive_fires WHERE chat_id=? AND fire_key=?`).bind(chatId,key).first());if(claimExists){await env.DB.prepare(`INSERT OR IGNORE INTO sanad_reminder_fires(reminder_id,fire_key,chat_id,sent_at) VALUES(?,?,?,?)`).bind(Number(r.id),key,chatId,nowIso()).run();if(off===0)await env.DB.prepare(`UPDATE sanad_reminders SET sent=1,updated_at=? WHERE chat_id=? AND id=?`).bind(nowIso(),chatId,Number(r.id)).run();}}}
+  const rules=(await env.DB.prepare(`SELECT * FROM sanad_recurrences WHERE chat_id=? AND active=1 AND start_date<=? AND (end_date IS NULL OR end_date>=?)`).bind(chatId,to,from).all())?.results||[];for(const r of rules){if(r.paused_until&&Date.parse(String(r.paused_until))>nowMs)continue;for(const o of generateRecurrenceOccurrencesV125(r,from,to,100)){const main=zonedLocalToEpochV125(o.date,o.time,u.timezone||TZ),offsets=[0,...parseJsonV125(r.advance_json,[])].map(Number).filter((v,i,a)=>v>=0&&a.indexOf(v)===i);for(const off of offsets){const fire=main-off*60000;if(fire<=lastMs||fire>nowMs)continue;const sent=await claimRecurrenceFireV127(env,r,o,off,chatId,off?`⏰ تذكير مسبق (${off} دقيقة): ${r.title}`:`🔁 ${r.title}`);if(sent&&off===0)await env.DB.prepare(`UPDATE sanad_recurrences SET fired_count=fired_count+1,updated_at=? WHERE chat_id=? AND id=?`).bind(nowIso(),chatId,Number(r.id)).run();}}}
+}
+async function deliverPrayerRulesV125(env,u,lastMs,nowMs){const chatId=String(u.chat_id),ln=localAtMsV127(nowMs,u.timezone||TZ),rules=(await env.DB.prepare(`SELECT * FROM sanad_prayer_rules WHERE chat_id=? AND active=1 AND start_date<=? AND (end_date IS NULL OR end_date>=?)`).bind(chatId,ln.date,ln.date).all())?.results||[];if(!rules.length)return;const data=await fetchPrayerTimesV125(env,u,ln.date);for(const r of rules){if(r.paused_until&&Date.parse(String(r.paused_until))>nowMs)continue;if(parseJsonV125(r.exceptions_json,[]).includes(ln.date))continue;const days=parseJsonV125(r.weekdays_json,[]).map(Number);if(days.length&&!days.includes(isoWeekdayV125(ln.date)))continue;const base=data.times[r.prayer];if(!base)continue;const shifted=addMinutesLocal(ln.date,base,Number(r.offset_minutes||0)),fire=zonedLocalToEpochV125(shifted.date,shifted.time,u.timezone||TZ);if(fire<=lastMs||fire>nowMs)continue;const sent=await claimPrayerFireV127(env,r,ln.date,chatId,`🕌 ${r.title}`);if(sent)await env.DB.prepare(`UPDATE sanad_prayer_rules SET fired_count=fired_count+1,updated_at=? WHERE chat_id=? AND id=?`).bind(nowIso(),chatId,Number(r.id)).run();}}
+async function deliverDailyBriefsV125(env,u,lastMs=Date.now()-60000,nowMs=Date.now()){const chatId=String(u.chat_id),tz=u.timezone||TZ,start=localAtMsV127(lastMs,tz).date,end=localAtMsV127(nowMs,tz).date;for(const type of ['morning','evening']){const enabled=Number(u[`${type}_brief_enabled`]||0),time=String(u[`${type}_brief_time`]||(type==='morning'?'08:00':'20:00'));if(!enabled||!validTimeV125(time))continue;for(let date=start,guard=0;date<=end&&guard++<4;date=addDaysV125(date,1)){const fire=zonedLocalToEpochV125(date,time,tz);if(fire<=lastMs||fire>nowMs)continue;const claim=await env.DB.prepare(`INSERT OR IGNORE INTO sanad_daily_brief_fires(chat_id,brief_date,brief_type,sent_at) VALUES(?,?,?,?)`).bind(chatId,date,type,nowIso()).run();if(Number(claim?.meta?.changes||0)===0)continue;try{await sendText(env,chatId,await buildBriefV125(env,{...u},type));await env.DB.prepare(`UPDATE sanad_daily_brief_fires SET sent_at=? WHERE chat_id=? AND brief_date=? AND brief_type=?`).bind(nowIso(),chatId,date,type).run();}catch(e){await env.DB.prepare(`DELETE FROM sanad_daily_brief_fires WHERE chat_id=? AND brief_date=? AND brief_type=?`).bind(chatId,date,type).run();throw e;}}}}
+async function checkLiveWatchesV125(env){let cursor=Number((await env.DB.prepare(`SELECT value FROM sanad_scheduler_state WHERE key='live_watch_cursor'`).first())?.value||0),processed=0,ok=true;for(let page=0;page<V127_WATCH_PAGES_PER_RUN;page++){const rows=(await env.DB.prepare(`SELECT * FROM sanad_live_watches WHERE active=1 AND id>? ORDER BY id LIMIT ?`).bind(cursor,V127_WATCH_PAGE_SIZE).all())?.results||[];if(!rows.length){cursor=0;await env.DB.prepare(`INSERT INTO sanad_scheduler_state(key,value,updated_at) VALUES('live_watch_cursor','0',?) ON CONFLICT(key) DO UPDATE SET value='0',updated_at=excluded.updated_at`).bind(nowIso()).run();break;}for(const w of rows){cursor=Number(w.id);processed++;try{const news=await fetchNewsV125(w.query,3),top=news[0];if(top?.url&&top.url!==w.last_url){if(w.last_url)await sendText(env,String(w.chat_id),`🛰️ جديد في متابعة "${w.query}":\n${top.title}\n${top.url}`);await env.DB.prepare(`UPDATE sanad_live_watches SET last_url=?,updated_at=? WHERE id=?`).bind(top.url,nowIso(),Number(w.id)).run();}}catch(e){ok=false;await reportFailure(env,String(w.chat_id),'live_watch',e,{watch_id:w.id});}}if(rows.length<V127_WATCH_PAGE_SIZE){cursor=0;break;}}
+  await env.DB.prepare(`INSERT INTO sanad_scheduler_state(key,value,updated_at) VALUES('live_watch_cursor',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(String(cursor),nowIso()).run();return{ok,processed,cursor};}
+async function runSanadScheduler(env,scheduledTime){
+  const nowMs=Number(scheduledTime||Date.now()),lastRow=await env.DB.prepare(`SELECT value FROM sanad_scheduler_state WHERE key='last_run_ms'`).first(),last=Math.max(nowMs-SCHEDULER_CATCHUP_MINUTES*60000,Number(lastRow?.value||nowMs-60000));let cursor=String((await env.DB.prepare(`SELECT value FROM sanad_scheduler_state WHERE key='scheduler_user_cursor'`).first())?.value||''),roundOk=true,complete=false;
+  for(let page=0;page<V127_USER_PAGES_PER_RUN;page++){const rows=(await env.DB.prepare(`SELECT * FROM sanad_users WHERE chat_id>? ORDER BY chat_id LIMIT ?`).bind(cursor,V127_USER_PAGE_SIZE).all())?.results||[];if(!rows.length){complete=true;cursor='';break;}for(const u of rows){cursor=String(u.chat_id);try{await deliverUserScheduleV125(env,u,last,nowMs);await deliverPrayerRulesV125(env,u,last,nowMs);await deliverDailyBriefsV125(env,u,last,nowMs);if(Number(u.proactive_enabled??1))await proactiveUserV125(env,u);}catch(e){roundOk=false;await reportFailure(env,String(u.chat_id),'scheduler_user',e,{window_start:last,window_end:nowMs});}}if(rows.length<V127_USER_PAGE_SIZE){complete=true;cursor='';break;}}
+  await env.DB.prepare(`INSERT INTO sanad_scheduler_state(key,value,updated_at) VALUES('scheduler_user_cursor',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(cursor,nowIso()).run();const watches=await checkLiveWatchesV125(env);if(!watches.ok)roundOk=false;
+  if(complete&&roundOk)await env.DB.prepare(`INSERT INTO sanad_scheduler_state(key,value,updated_at) VALUES('last_run_ms',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(String(nowMs),nowIso()).run();return{ok:complete&&roundOk,complete,roundOk,last,nowMs,cursor};
+}
+
+async function drainInbox(env,chatId,origin=''){
+  const owner=`lease-${crypto.randomUUID()}`;let acquired=false;for(let i=0;i<16;i++){if(await acquireLease(env,chatId,owner)){acquired=true;break}await sleep(550+Math.floor(Math.random()*100));}if(!acquired){if(origin)await triggerDrain(env,chatId,origin);return;}
+  let needsNext=false;try{const row=await nextInbox(env,chatId);if(!row)return;const now=nowIso(),until=new Date(Date.now()+Math.max(INBOX_LEASE_MS,AI_TOTAL_BUDGET_MS+20000)).toISOString(),claimed=await env.DB.prepare(`UPDATE sanad_inbox SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? WHERE update_id=? AND chat_id=? AND (status='pending' OR lease_until IS NULL OR lease_until<=?) RETURNING attempts`).bind(until,now,String(row.update_id),String(chatId),now).first();if(!claimed)return;const attempts=Number(claimed.attempts||1);if(attempts>1)await env.DB.prepare(`DELETE FROM sanad_updates WHERE update_id=? AND status!='done'`).bind(String(row.update_id)).run();try{await processTelegramUpdate(env,JSON.parse(String(row.payload_json||'{}')));await env.DB.prepare(`UPDATE sanad_inbox SET status='done',lease_until=NULL,last_error=NULL,updated_at=? WHERE update_id=?`).bind(nowIso(),String(row.update_id)).run();}catch(e){const terminal=attempts>=INBOX_MAX_ATTEMPTS;await env.DB.prepare(`UPDATE sanad_inbox SET status=?,lease_until=NULL,last_error=?,updated_at=? WHERE update_id=?`).bind(terminal?'failed':'pending',safeError(e),nowIso(),String(row.update_id)).run();await reportFailure(env,chatId,'inbox',e,{update_id:row.update_id,attempts,terminal});}finally{needsNext=!!(await nextInbox(env,chatId));}}finally{await releaseLease(env,chatId,owner).catch(e=>console.error('releaseLease',e));}
+  if(needsNext&&origin)await triggerDrain(env,chatId,origin);
+}
+async function recoverPendingInbox(env){for(let round=0;round<V127_RECOVERY_ROUNDS;round++){const rows=(await env.DB.prepare(`SELECT chat_id,MIN(created_at) first_at FROM sanad_inbox WHERE status='pending' OR (status='processing' AND (lease_until IS NULL OR lease_until<=?)) GROUP BY chat_id ORDER BY first_at,chat_id LIMIT ?`).bind(nowIso(),V127_RECOVERY_PAGE_SIZE).all())?.results||[];if(!rows.length)break;for(const r of rows)await drainInbox(env,String(r.chat_id));if(rows.length<V127_RECOVERY_PAGE_SIZE)break;}}
+
+async function toolSystemClearAllV125(env,chatId){let changed=0;for(const t of CLEAR_USER_TABLES_V126){if(!(await tableExistsV125(env,t)))continue;const cols=await columnsV125(env,t);if(!cols.some(x=>String(x.name)==='chat_id'))continue;const r=await env.DB.prepare(`DELETE FROM ${t} WHERE chat_id=?`).bind(String(chatId)).run();changed+=Number(r?.meta?.changes||0);}for(const t of LEGACY_CLEAR_TABLES_V126){if(!(await tableExistsV125(env,t)))continue;const cols=await columnsV125(env,t);if(!cols.some(x=>String(x.name)==='chat_id'))continue;await env.DB.prepare(`DELETE FROM ${t} WHERE chat_id=?`).bind(String(chatId)).run();}let left=0;for(const t of SNAPSHOT_TABLES_V126){if(!(await tableExistsV125(env,t)))continue;const cols=await columnsV125(env,t);if(!cols.some(x=>String(x.name)==='chat_id'))continue;left+=Number((await env.DB.prepare(`SELECT COUNT(*) c FROM ${t} WHERE chat_id=?`).bind(String(chatId)).first())?.c||0);}return{ok:left===0,changed,verified:left===0,remaining:left,preserved_execution_ledgers:['sanad_inbox','sanad_updates','sanad_receipts','sanad_operation_snapshots']};}
