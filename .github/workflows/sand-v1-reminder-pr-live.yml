@@ -34,7 +34,7 @@ jobs:
           base64 -d sand_reminder_live/source.js.gz.b64 | gzip -d > SAND.js
           ACTUAL="$(sha256sum SAND.js | awk '{print $1}')"
           echo "source_sha=$ACTUAL"
-          test "$ACTUAL" = "2ed62904068b78c5603f3becef43a2e85e506776465182d2ffdc2c54e1e43a38"
+          test "$ACTUAL" = "2918c2f64fb7b58fb9945e3d04e5f8fd344f38cbce3a5a90fbbfaca14eca2a78"
           node --check SAND.js
           ! grep -q 'text\.includes(' SAND.js
           ! grep -q 'Math\.random' SAND.js
