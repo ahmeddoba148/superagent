@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: sand-prime-semantic-live
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   semantic:
     runs-on: ubuntu-latest
