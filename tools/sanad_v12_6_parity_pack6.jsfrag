@@ -79,17 +79,17 @@ async function showDataPanelV126(env,chatId,messageId=null){
     countRowsV126(env,'sanad_entities',chatId),countRowsV126(env,'sanad_edges',chatId),countRowsV126(env,'sanad_reminders',chatId),
     countRowsV126(env,'sanad_recurrences',chatId),countRowsV126(env,'sanad_prayer_rules',chatId)
   ]);
-  const text=`🛡️ إدارة البيانات الحساسة\n\nالمسح الكبير موجود هنا بس عشان القوائم تفضل نضيفة ومايحصلش حذف بالغلط.\n\n🛒 المشتريات: ${shop}\n🧹 رسائل السياق: ${context}\n🧠 الذاكرة الطويلة: ${memory}\n🌐 نموذج العالم: ${entities} كيان · ${edges} علاقة\n📅 الجدول: ${reminders} موعد · ${recurrences} تكرار · ${prayers} قاعدة صلاة\n\nكل اختيار هيطلب تأكيد قبل التنفيذ.`;
+  const text=`🛡️ إدارة البيانات الحساسة\n\nالمسح الكبير موجود هنا بس عشان القوائم تفضل نضيفة ومايحصلش حذف بالغلط.\n\n🛒 المشتريات: ${shop}\n🧹 رسائل السياق: ${context}\n🧠 الذاكرة الطويلة: ${memory}\n🌐 نموذج العالم: ${entities} كيان · ${edges} علاقة\n📅 الجدول: ${reminders} موعد · ${recurrences} تكرار · ${prayers} قاعدة صلاة\n\nكل اختيار هيطلب تأكيد قبل التنفيذ. كل المسح الجزئي قابل لـ /undo؛ مسح كل البيانات نهائي.`;
   return panelEditOrSendV126(env,chatId,messageId,text,dataPanelKeyboardV126());
 }
 function dataConfirmCopyV126(action){
   const map={
-    shopping:['🛒 مسح المشتريات','هتمسح كل عناصر قائمة المشتريات وأي جلسة تسوق مفتوحة. باقي بياناتك هتفضل زي ما هي.'],
-    context:['🧹 مسح سياق المحادثة','هتمسح رسائل المحادثة والسياق المؤقت فقط. الذاكرة الطويلة والمواعيد والمشتريات مش هيتأثروا.'],
-    memory:['🧠 مسح الذاكرة الطويلة','هتمسح كل الذكريات المحفوظة في ذاكرة سند الطويلة. سياق المحادثة والمواعيد مش هيتأثروا.'],
-    world:['🌐 مسح نموذج العالم','هتمسح الكيانات والعلاقات اللي سند حافظها عن الأشخاص والأماكن والأشياء والعلاقات في عالمك.'],
-    schedule:['🗑️ مسح المواعيد والتكرارات','هتمسح المواعيد والتكرارات وقواعد الصلاة والروابط الزمنية بينها. المشتريات والذاكرة هيفضلوا.'],
-    all:['🔥 مسح كل بياناتي','تحذير نهائي: هتمسح بياناتك الشخصية داخل سند: المواعيد والتكرارات والمشتريات والسياق والذاكرة والمشاريع والمتابعات والموقع والإعدادات ونموذج العالم وسجل التراجع. هنحتفظ فقط بسجلات تشغيل تقنية لازمة لمنع تكرار نفس تحديث تيليجرام.']
+    shopping:['🛒 مسح المشتريات','هتمسح كل عناصر قائمة المشتريات وأي جلسة تسوق مفتوحة. باقي بياناتك هتفضل زي ما هي، وتقدر ترجع آخر مسح بـ /undo.'],
+    context:['🧹 مسح سياق المحادثة','هتمسح رسائل المحادثة والسياق المؤقت فقط. الذاكرة الطويلة والمواعيد والمشتريات مش هيتأثروا، وتقدر تتراجع بـ /undo.'],
+    memory:['🧠 مسح الذاكرة الطويلة','هتمسح كل الذكريات المحفوظة في ذاكرة سند الطويلة. سياق المحادثة والمواعيد مش هيتأثروا، وتقدر تتراجع بـ /undo.'],
+    world:['🌐 مسح نموذج العالم','هتمسح الكيانات والعلاقات اللي سند حافظها عن الأشخاص والأماكن والأشياء والعلاقات في عالمك، وتقدر تتراجع بـ /undo.'],
+    schedule:['🗑️ مسح المواعيد والتكرارات','هتمسح المواعيد والتكرارات وقواعد الصلاة والروابط الزمنية بينها. المشتريات والذاكرة هيفضلوا، وتقدر تتراجع بـ /undo.'],
+    all:['🔥 مسح كل بياناتي','تحذير نهائي: هتمسح بياناتك الشخصية داخل سند: المواعيد والتكرارات والمشتريات والسياق والذاكرة والمشاريع والمتابعات والموقع والإعدادات ونموذج العالم وسجل التراجع. العملية دي نهائية. هنحتفظ فقط بسجلات تشغيل تقنية لازمة لمنع تكرار نفس تحديث تيليجرام.']
   };
   return map[action]||['⚠️ تأكيد المسح','هل أنت متأكد؟'];
 }
@@ -132,6 +132,22 @@ function clearSuccessCopyV126(action,r){
   const map={shopping:`✅ تم مسح المشتريات بالكامل واتأكدت إن القائمة فاضية. (${n} سجل)`,context:`✅ تم مسح سياق المحادثة. الذاكرة الطويلة وباقي بياناتك زي ما هي. (${n} سجل)`,memory:`✅ تم مسح الذاكرة الطويلة بالكامل. (${n} سجل)`,world:`✅ تم مسح نموذج العالم والكيانات والعلاقات. (${n} سجل)`,schedule:`✅ تم مسح المواعيد والتكرارات وقواعد الصلاة والروابط الزمنية. (${n} سجل)`,all:`✅ تم مسح بياناتك الشخصية بالكامل من سند واتأكدت من النتيجة. (${n} سجل)`};
   return map[action]||'✅ تم المسح واتأكدت من النتيجة.';
 }
+async function verifiedSectionClearWithUndoV126(env,chatId,action,callbackId){
+  if(action==='all')return clearDataSectionV126(env,chatId,action);
+  const operationId=`panel-clear:${chatId}:${String(callbackId||crypto.randomUUID())}`;
+  const snapshot=await snapshotUserStateV125(env,chatId);
+  const before=await ensureOperationSnapshotV125(env,chatId,operationId,snapshot,`مسح ${action} من لوحة البيانات`);
+  try{
+    const r=await clearDataSectionV126(env,chatId,action);
+    if(!r?.ok||r?.verified!==true)throw new Error(r?.error||'clear_not_verified');
+    await commitOperationSnapshotV125(env,operationId);
+    await env.DB.prepare(`INSERT INTO sanad_audit(operation_id,chat_id,tool,args_json,result_json,verified,created_at) VALUES(?,?,?,?,?,?,?)`).bind(operationId,String(chatId),`panel.clear.${action}`,JSON.stringify({action}),JSON.stringify(r).slice(0,15000),1,nowIso()).run();
+    return r;
+  }catch(e){
+    try{await restoreUserStateV125(env,chatId,before);await discardOperationSnapshotV125(env,operationId);}catch(restoreError){await reportFailure(env,chatId,'data_clear_restore',restoreError,{action,operationId});}
+    throw e;
+  }
+}
 async function handleCallback(env,q){
   const chatId=String(q?.message?.chat?.id??q?.from?.id??''),messageId=Number(q?.message?.message_id||0),data=String(q?.data||'');
   if(!chatId)return;
@@ -167,13 +183,13 @@ async function handleCallback(env,q){
   if(confirm){
     const action=confirm[1];
     try{
-      const r=await clearDataSectionV126(env,chatId,action);
+      const r=await verifiedSectionClearWithUndoV126(env,chatId,action,q?.id);
       if(!r?.ok||r?.verified!==true)throw new Error(r?.error||'clear_not_verified');
       const kb=action==='all'?{inline_keyboard:[[{text:'🤝 بدء من جديد',callback_data:'s126:panel:home'}]]}:panelBackKeyboardV126('data');
       return panelEditOrSendV126(env,chatId,messageId,clearSuccessCopyV126(action,r),kb);
     }catch(e){
       await reportFailure(env,chatId,'data_clear',e,{action});
-      return panelEditOrSendV126(env,chatId,messageId,'⚠️ المسح ما اكتملش بشكل يمكن إثباته، فمش هقولك إنه تم. جرّب تاني أو راجع /diagnostics.',panelBackKeyboardV126('data'));
+      return panelEditOrSendV126(env,chatId,messageId,'⚠️ المسح ما اكتملش بشكل يمكن إثباته، فرجعت الحالة القديمة ومش هقولك إنه تم.',panelBackKeyboardV126('data'));
     }
   }
   return handleCallbackV126BeforeRestoredPanels(env,q);
