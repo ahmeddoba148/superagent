@@ -12,6 +12,10 @@ async function postText(text,id=++seq){return postBody({update_id:id,message:{me
 async function postCallback(data,id=++seq){return postBody({update_id:id,callback_query:{id:`cb-${id}`,from:{id:Number(CHAT),is_bot:false,first_name:'SanadV126Test'},message:{message_id:++mid,date:Math.floor(Date.now()/1000),chat:{id:Number(CHAT),type:'private'}},data}},id)}
 async function wait(id,max=120000){const end=Date.now()+max;let row;while(Date.now()<end){row=q(`SELECT status,attempts,last_error FROM sanad_inbox WHERE update_id='${esc(id)}' LIMIT 1`)[0];if(row?.status==='done')return row;if(row?.status==='failed')throw new Error(`inbox failed ${id}: ${row.last_error}`);await sleep(650)}throw new Error(`timeout ${id} ${JSON.stringify(row)}`)}
 const passes=[];function pass(name,cond,detail=''){if(!cond)throw new Error(`FAIL ${name}: ${detail}`);passes.push({name,detail:String(detail)});console.log('PASS',name,detail)}
+const built=fs.readFileSync('Sanad_V12_6_ULTIMATE_PARITY.js','utf8');
+pass('organized menu layer present',built.includes("callback_data:'s126:panel:schedule'")&&built.includes("callback_data:'s126:panel:data'")&&built.includes("callback_data:'s126:open:shopping'"));
+pass('data clear controls present',['shopping','context','memory','world','schedule','all'].every(x=>built.includes(`callback_data:'s126:data:${x}'`)));
+pass('direct clear command present',built.includes('text === "/clear"')&&built.includes('showDataPanelV126'));
 
 const tables=['sanad_chat_leases','sanad_inbox','sanad_updates','sanad_shopping','sanad_shopping_sessions','sanad_reminders','sanad_reminder_fires','sanad_recurrences','sanad_recurrence_fires','sanad_dependencies','sanad_memories','sanad_entities','sanad_edges','sanad_projects','sanad_project_tasks','sanad_waiting','sanad_prayer_rules','sanad_prayer_fires','sanad_live_watches','sanad_life_inbox','sanad_audit','sanad_receipts','sanad_failures','sanad_proactive_fires','sanad_pending_actions','sanad_pending_conflicts','sanad_operation_snapshots','sanad_rate_limits','sanad_daily_brief_fires','sanad_legacy_id_map'];
 for(const t of tables){try{q(`DELETE FROM ${t} WHERE chat_id='${esc(CHAT)}'`)}catch{}}
@@ -48,8 +52,29 @@ id=await postText('/live');row=await wait(id,160000);pass('/live composite reali
 
 const diag=await fetch(URL+'/diagnostics',{headers:{'X-Sanad-Key':SETUP}});const dx=await diag.json();pass('protected diagnostics',diag.ok&&dx.ok&&dx.version==='12.6.0'&&Number(dx.tools)>=70,JSON.stringify({status:diag.status,version:dx.version,tools:dx.tools,snapshot_tables:dx.snapshot_tables}));
 
+// Restored V11-style menu/data-management certification.
+id=await postText('/menu');row=await wait(id);pass('organized /menu command',row.status==='done'&&row.attempts===1,JSON.stringify(row));
+id=await postCallback('s126:panel:data');row=await wait(id);pass('data management panel callback',row.status==='done'&&row.attempts===1,JSON.stringify(row));
+
+const shopBeforeClear=Number(q(`SELECT COUNT(*) c FROM sanad_shopping WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('shopping clear fixture exists',shopBeforeClear>0,String(shopBeforeClear));
+id=await postCallback('s126:data:shopping');row=await wait(id);pass('shopping clear confirmation screen',row.status==='done',JSON.stringify(row));
+id=await postCallback('s126:data:confirm:shopping');row=await wait(id);let shopAfterClear=Number(q(`SELECT COUNT(*) c FROM sanad_shopping WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('verified shopping clear',shopAfterClear===0,String(shopAfterClear));
+id=await postText('/undo');row=await wait(id);let shopAfterUndo=Number(q(`SELECT COUNT(*) c FROM sanad_shopping WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('shopping clear undo restores data',shopAfterUndo===shopBeforeClear,`${shopAfterUndo}/${shopBeforeClear}`);
+
+const memoNorm=`menu-test-memory-${seq}`;q(`INSERT INTO sanad_memories(chat_id,memory_type,content,normalized,importance,source,created_at,updated_at) VALUES('${esc(CHAT)}','semantic','اختبار ذاكرة القوائم','${esc(memoNorm)}',0.9,'live_test',datetime('now'),datetime('now'))`);
+const memoryBeforeContext=Number(q(`SELECT COUNT(*) c FROM sanad_memories WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0),contextBefore=Number(q(`SELECT COUNT(*) c FROM sanad_conversation WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('context/memory fixtures exist',memoryBeforeContext>0&&contextBefore>0,`${memoryBeforeContext}/${contextBefore}`);
+id=await postCallback('s126:data:context');row=await wait(id);id=await postCallback('s126:data:confirm:context');row=await wait(id);let contextAfter=Number(q(`SELECT COUNT(*) c FROM sanad_conversation WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0),memoryAfterContext=Number(q(`SELECT COUNT(*) c FROM sanad_memories WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('context clear does not erase long-term memory',contextAfter===0&&memoryAfterContext===memoryBeforeContext,`${contextAfter}/${memoryAfterContext}`);
+id=await postText('/undo');row=await wait(id);let contextRestored=Number(q(`SELECT COUNT(*) c FROM sanad_conversation WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('context clear undo restores conversation',contextRestored===contextBefore,`${contextRestored}/${contextBefore}`);
+
+const memoryBeforeClear=Number(q(`SELECT COUNT(*) c FROM sanad_memories WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('memory clear fixture exists',memoryBeforeClear>0,String(memoryBeforeClear));
+id=await postCallback('s126:data:memory');row=await wait(id);id=await postCallback('s126:data:confirm:memory');row=await wait(id);let memoryAfterClear=Number(q(`SELECT COUNT(*) c FROM sanad_memories WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('verified long-term memory clear',memoryAfterClear===0,String(memoryAfterClear));
+id=await postText('/undo');row=await wait(id);let memoryAfterUndo=Number(q(`SELECT COUNT(*) c FROM sanad_memories WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);pass('memory clear undo restores data',memoryAfterUndo===memoryBeforeClear,`${memoryAfterUndo}/${memoryBeforeClear}`);
+
 const failures=q(`SELECT scope,error_text FROM sanad_failures WHERE chat_id='${esc(CHAT)}'`);pass('runtime failures zero',failures.length===0,JSON.stringify(failures));
 const dangerous=q(`SELECT tool,result_json FROM sanad_audit WHERE chat_id='${esc(CHAT)}' AND verified=0`).filter(x=>/\"changed\"\s*:\s*[1-9]/.test(String(x.result_json)));pass('no changed mutation left unverified',dangerous.length===0,JSON.stringify(dangerous));
+
+id=await postCallback('s126:data:all');row=await wait(id);pass('clear-all final confirmation screen',row.status==='done',JSON.stringify(row));
+id=await postCallback('s126:data:confirm:all');row=await wait(id);const personalTables=['sanad_users','sanad_conversation','sanad_shopping','sanad_shopping_sessions','sanad_reminders','sanad_recurrences','sanad_dependencies','sanad_memories','sanad_entities','sanad_edges','sanad_projects','sanad_project_tasks','sanad_waiting','sanad_prayer_rules','sanad_live_watches','sanad_life_inbox','sanad_pending_actions','sanad_pending_conflicts','sanad_operation_snapshots','sanad_receipts'];let remainingPersonal=0;const remainingByTable={};for(const t of personalTables){try{const c=Number(q(`SELECT COUNT(*) c FROM ${t} WHERE chat_id='${esc(CHAT)}'`)[0]?.c||0);remainingByTable[t]=c;remainingPersonal+=c}catch{}}pass('verified clear all personal data',remainingPersonal===0,JSON.stringify(remainingByTable));
 
 unmuteTelegram();
 fs.writeFileSync('SANAD_V12_6_LIVE_REPORT.json',JSON.stringify({ok:true,version:'12.6.0',scenario_count:passes.length,passes},null,2));
