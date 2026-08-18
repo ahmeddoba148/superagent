@@ -150,3 +150,4 @@ jobs:
             SANAD_V12_8_2_LIVE_REPORT.json
             SANAD_V12_8_2_REGRESSION_REPORT.json
             SANAD_V12_8_2_CI_STATUS.json
+# retry after context selftest typing fix
