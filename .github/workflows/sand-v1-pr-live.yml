@@ -58,14 +58,18 @@ jobs:
           echo "::add-mask::$W"; echo "::add-mask::$K"
           echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
           for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
-      - name: Health and setup
+      - name: Health readiness
         run: |
           set -euo pipefail
-          for i in {1..10};do code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health"||true);[ "$code" = 200 ]&&break;sleep 2;done
+          for i in {1..12};do
+            code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health"||true)
+            if [ "$code" = 200 ]; then
+              if node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.schema_version==="3"&&x.version==="1.1.2-ai-chat-fifo-gate"&&x.bindings?.OMNIAI_SERVICE&&x.bindings?.TELEGRAM_WEBHOOK_SECRET?0:1)'; then break; fi
+            fi
+            sleep 2
+          done
           cat /tmp/h
-          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="3"||x.version!=="1.1.2-ai-chat-fifo-gate"||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
-          curl -fsS -X POST -H "X-Sand-Key: $K" "$URL/setup" >/tmp/s
-          cat /tmp/s
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="3"||x.version!=="1.1.2-ai-chat-fifo-gate"||!x.bindings?.OMNIAI_SERVICE||!x.bindings?.TELEGRAM_WEBHOOK_SECRET)throw Error(JSON.stringify(x))'
       - name: Strict FIFO out-of-order arrival live test
         run: |
           set -euo pipefail
@@ -83,7 +87,6 @@ jobs:
           async function post(id){const body={update_id:id,message:{message_id:id%999999,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'SAND-CI'},text:texts[id]}};const r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status)}
           function q(sql){return JSON.parse(execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',cfg,'--command',sql,'--json'],{encoding:'utf8'}))?.[0]?.results||[]}
           (async()=>{
-            // Deliberately arrive out of order inside one rapid burst.
             await post(b+1); await sleep(120); await post(b+2); await sleep(120); await post(b); await post(b+1);
             let inbox=[],msg=[];
             for(let i=0;i<35;i++){
@@ -109,9 +112,9 @@ jobs:
             if(!/أحمد|احمد/.test(second))throw Error('context order failed, second reply='+second);
           })();
           NODE
-      - name: No deadlock
+      - name: No deadlock via D1
         run: |
           set -euo pipefail
-          curl -fsS -H "X-Sand-Key: $K" "$URL/admin/status" >/tmp/st
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT status,COUNT(*) AS count FROM sand_core_inbox WHERE chat_id='$CHAT' GROUP BY status ORDER BY status" --json >/tmp/st
           cat /tmp/st
-          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/st"));const bad=(x.counts||[]).filter(r=>["pending","processing"].includes(r.status)&&Number(r.count)>0);if(!x.ok||bad.length)throw Error(JSON.stringify(x))'
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/st"))?.[0]?.results||[];const bad=x.filter(r=>["pending","processing"].includes(r.status)&&Number(r.count)>0);if(bad.length)throw Error(JSON.stringify(bad))'
