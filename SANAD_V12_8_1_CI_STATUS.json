@@ -1,22 +1,20 @@
 {
-  "ok": false,
+  "ok": true,
   "version": "12.8.1",
-  "run_id": "32165247192",
+  "run_id": "32165350590",
   "run_attempt": "1",
-  "head_sha": "87c7d88ab67a13c8df5f54689b879c41748410fc",
+  "head_sha": "819d70257c8b99f324996f50a7d0fdecfb164674",
   "stages": {
     "build": "success",
-    "syntax": "failure",
-    "pure": "skipped",
-    "deploy": "skipped",
-    "secrets": "skipped",
-    "deep": "skipped",
-    "live": "skipped",
-    "cert": "skipped",
-    "commit": "skipped"
+    "syntax": "success",
+    "pure": "success",
+    "deploy": "success",
+    "secrets": "success",
+    "deep": "success",
+    "live": "success",
+    "cert": "success",
+    "commit": "success"
   },
-  "failed": [
-    "syntax"
-  ],
-  "updated_at": "2026-08-18T17:22:33.199Z"
+  "failed": [],
+  "updated_at": "2026-08-18T17:28:37.180Z"
 }
