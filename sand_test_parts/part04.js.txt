@@ -1,3 +1,65 @@
+| !chatId) return;
+
+  const text = String(message.text ?? "").trim();
+  if (!text) {
+    await sendTelegramText(env, chatId, "ابعتلي رسالة نصية وأنا معاك.");
+    return;
+  }
+
+  if (text === "/start") {
+    await sendTelegramText(
+      env,
+      chatId,
+      "أنا سند 🤝\nالمحادثة الذكية شغالة دلوقتي. اتكلم معايا بطبيعتك.",
+    );
+    return;
+  }
+
+  await saveUserMessage(env, chatId, updateId, text);
+
+  const savedAssistant = await savedAssistantForUpdate(env, chatId, updateId);
+  if (savedAssistant?.content) {
+    await sendTelegramText(env, chatId, String(savedAssistant.content));
+    return;
+  }
+
+  try {
+    await telegramApi(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch (error) {
+    logError("telegram_typing_noncritical", error, { chatId, updateId });
+  }
+
+  const history = await recentAiHistory(env, chatId, AI_HISTORY_MESSAGES);
+  const local = cairoNow();
+  const systemPrompt = [
+    "أنت سند، مساعد شخصي مصري ذكي.",
+    "اتكلم بالمصري الطبيعي جدًا من غير تصنع ولا فصحى زيادة.",
+    "خليك مختصر ومفيد ودقيق.",
+    "لو المستخدم بيتكلم عادي رد عادي، وما تحولش كل كلامه لمهام.",
+    "ما تدعيش إنك نفذت تذكير أو موعد أو أي إجراء؛ المرحلة الحالية محادثة فقط.",
+    `الوقت الحالي في القاهرة: ${local.date} ${local.time} (${local.weekday}).`,
+  ].join("\n");
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map((row) => ({ role: String(row.role), content: String(row.content) })),
+  ];
+
+  const result = await callAiChain(env, { chatId, updateId, messages });
+  const reply = normalizeAiReply(result.text);
+
+  await saveAssistantMessage(env, chatId, updateId, reply, result.modelId);
+  await sendTelegramText(env, chatId, reply);
+}
+
+async function saveUserMessage(env, chatId, updateId, content) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, 'user', ?, NULL, ?)`)
+    .bind(chatId, updateId, String(content).slice(0, 8000), nowIso())
+    .run();
+}
+
 async function saveAssistantMessage(env, chatId, updateId, content, modelId) {
   await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
     (chat_id, update_id, role, content, model_id, created_at)
@@ -89,73 +151,4 @@ function aiErrorCode(error) {
 }
 
 async function recordAiCall(env, record) {
-  await env.DB.prepare(`INSERT INTO ${TABLES.aiCalls}
-    (chat_id, update_id, model_id, model_role, latency_ms, ok, http_status, error_code, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(
-      record.chatId,
-      record.updateId,
-      record.modelId,
-      record.modelRole,
-      Math.max(0, Number(record.latencyMs) || 0),
-      record.ok ? 1 : 0,
-      record.httpStatus ?? null,
-      record.errorCode ?? null,
-      nowIso(),
-    )
-    .run();
-}
-
-async function recordAiCallSafe(env, record) {
-  try {
-    await recordAiCall(env, record);
-  } catch (error) {
-    logError("ai_call_log_noncritical", error, {
-      chatId: record.chatId,
-      updateId: record.updateId,
-      modelId: record.modelId,
-    });
-  }
-}
-
-async function callOneAiModel(env, model, messages, timeoutMs) {
-  requireBinding(env, "OMNIAI_API_KEY");
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const started = nowMs();
-
-  try {
-    const request = new Request(omniChatUrl(env), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.OMNIAI_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: model.id,
-        messages,
-        temperature: 0.35,
-        max_tokens: 900,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-
-    const response = env?.OMNIAI_SERVICE?.fetch
-      ? await env.OMNIAI_SERVICE.fetch(request)
-      : await fetch(request);
-
-    const httpStatus = response.status;
-    const data = await response.json().catch((error) => {
-      logError("omniai_json", error, { model: model.id, status: httpStatus });
-      return null;
-    });
-
-    if (!response.ok) {
-      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
-      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
-    }
-
-    const content = aiContent(data);
-    if (!content) {
+  await env.DB.prepare(`INS
