@@ -1,0 +1,152 @@
+name: SAND V1 Reminder Live Gate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sand_reminder_live/**'
+      - '.github/workflows/sand-v1-reminder-pr-live.yml'
+permissions:
+  contents: read
+concurrency:
+  group: sand-v1-reminder-live
+  cancel-in-progress: true
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sand-v1-reminder-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-reminder.jsonc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+
+      - name: Assemble exact source and static gates
+        run: |
+          set -euo pipefail
+          base64 -d sand_reminder_live/source.js.gz.b64 | gzip -d > SAND.js
+          ACTUAL="$(sha256sum SAND.js | awk '{print $1}')"
+          echo "source_sha=$ACTUAL"
+          test "$ACTUAL" = "2ed62904068b78c5603f3becef43a2e85e506776465182d2ffdc2c54e1e43a38"
+          node --check SAND.js
+          ! grep -q 'text\.includes(' SAND.js
+          ! grep -q 'Math\.random' SAND.js
+          ! grep -q '@ts-ignore\|@ts-nocheck' SAND.js
+          npm install --no-save typescript@5.8.3 wrangler@latest >/dev/null
+          cat > tsconfig.json <<'EOF'
+          {"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND.js"]}
+          EOF
+          npx tsc -p tsconfig.json --pretty false
+
+      - name: Probe all three models
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const key=process.env.OKEY, ep='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
+          if(!key) throw Error('STAGING_OMNIAI_API_KEY missing');
+          function jsonish(raw){const a=raw.indexOf('{'),b=raw.lastIndexOf('}');if(a<0||b<=a)throw Error('not json');return JSON.parse(raw.slice(a,b+1));}
+          async function probe(model){const c=new AbortController(),tm=setTimeout(()=>c.abort(),9000),t=Date.now();try{const r=await fetch(ep,{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'system',content:'ارجع JSON صالح فقط بالشكل {"action":"chat","reply":"تمام","data":{}} بدون أي كلام آخر.'},{role:'user',content:'هاي'}],temperature:0.1,max_tokens:100,stream:false}),signal:c.signal});const data=await r.json();const content=data?.choices?.[0]?.message?.content||'';const j=jsonish(content);return{model,ok:r.ok&&j.action==='chat',status:r.status,ms:Date.now()-t,content}}catch(e){return{model,ok:false,status:0,ms:Date.now()-t,error:String(e?.message||e)}}finally{clearTimeout(tm)}}
+          (async()=>{const out=[];for(const m of models)out.push(await probe(m));console.log(JSON.stringify(out,null,2));if(!out.every(x=>x.ok))throw Error('model structured probe failed')})();
+          NODE
+
+      - name: Deploy isolated reminder staging
+        run: |
+          set -euo pipefail
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
+          cat > "$CFG" <<'EOF'
+          {"name":"sand-v1-reminder-staging","main":"SAND.js","compatibility_date":"2026-08-18","vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          EOF
+          npx wrangler deploy --config "$CFG" >/dev/null
+          W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
+          echo "::add-mask::$W"; echo "::add-mask::$K"
+          echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
+          for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
+
+      - name: Health and webhook-secret readiness
+        run: |
+          set -euo pipefail
+          for i in {1..15}; do
+            code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
+            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.schema_version==="4"&&x.version==="1.2.0-reminder-create-gate"&&x.reminders===true?0:1)'; then break; fi
+            sleep 2
+          done
+          cat /tmp/h
+          node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));if(!x.ok||x.schema_version!=="4"||x.version!=="1.2.0-reminder-create-gate"||!x.bindings?.OMNIAI_SERVICE)throw Error(JSON.stringify(x))'
+          code=0
+          for i in {1..15}; do
+            code=$(curl -sS -o /tmp/authprobe -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
+            echo "auth probe attempt=$i http=$code"
+            [ "$code" = 200 ] && break
+            sleep 2
+          done
+          test "$code" = 200
+
+      - name: Natural-language reminder creation gate
+        run: |
+          set -euo pipefail
+          SQL="DELETE FROM sand_core_chat_leases WHERE chat_id='$CHAT';DELETE FROM sand_core_chat_ingress WHERE chat_id='$CHAT';DELETE FROM sand_core_inbox WHERE chat_id='$CHAT';DELETE FROM sand_ai_messages WHERE chat_id='$CHAT';DELETE FROM sand_ai_calls WHERE chat_id='$CHAT';DELETE FROM sand_action_decisions WHERE chat_id='$CHAT';DELETE FROM sand_operations WHERE chat_id='$CHAT';DELETE FROM sand_reminders WHERE chat_id='$CHAT';"
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "$SQL" >/dev/null
+          node - <<'NODE'
+          const {execFileSync}=require('child_process');
+          const U=process.env.URL,C=process.env.CHAT,S=process.env.W,D=process.env.DB,cfg=process.env.CFG,sleep=m=>new Promise(r=>setTimeout(r,m));
+          const base=3400000000+(Date.now()%10000000);
+          const cases=[
+            {id:base,text:'بكره الساعة 9 بالليل متنسانيش أكلم ماما',want:'create_reminder'},
+            {id:base+1,text:'عندي تحليل يوم 20 أغسطس الساعة 10 الصبح ومش عايز أنساه',want:'create_reminder'},
+            {id:base+2,text:'عامل ايه يا سند؟',want:'chat'},
+            {id:base+3,text:'متنسانيش أكلم ماما بكرة',want:'clarify_reminder'}
+          ];
+          async function post(x){const body={update_id:x.id,message:{message_id:x.id%999999,date:Math.floor(Date.now()/1000),chat:{id:Number(C),type:'private'},from:{id:Number(C),is_bot:false,first_name:'SAND-CI'},text:x.text}};const r=await fetch(U+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':S},body:JSON.stringify(body)});if(!r.ok)throw Error('webhook '+r.status)}
+          function q(sql){return JSON.parse(execFileSync('npx',['wrangler','d1','execute',D,'--remote','--config',cfg,'--command',sql,'--json'],{encoding:'utf8'}))?.[0]?.results||[]}
+          (async()=>{
+            await Promise.all(cases.map(post)); await post(cases[0]);
+            let inbox=[];
+            for(let i=0;i<45;i++){await sleep(1000);inbox=q(`SELECT update_id,status FROM sand_core_inbox WHERE update_id BETWEEN ${base} AND ${base+3} ORDER BY update_id`);if(inbox.length===4&&inbox.every(x=>x.status==='done'))break}
+            const decisions=q(`SELECT update_id,decision_json,model_id FROM sand_action_decisions WHERE update_id BETWEEN ${base} AND ${base+3} ORDER BY update_id`);
+            const ops=q(`SELECT source_update_id,status,action,plan_json FROM sand_operations WHERE source_update_id BETWEEN ${base} AND ${base+3} ORDER BY source_update_id`);
+            const rem=q(`SELECT source_update_id,title,due_at_utc,timezone,status FROM sand_reminders WHERE source_update_id BETWEEN ${base} AND ${base+3} ORDER BY source_update_id`);
+            const msgs=q(`SELECT update_id,role,content FROM sand_ai_messages WHERE update_id BETWEEN ${base} AND ${base+3} ORDER BY id`);
+            const parsed=new Map(decisions.map(x=>[Number(x.update_id),JSON.parse(x.decision_json)]));
+            const report={base,inbox,decisions:decisions.map(x=>({update_id:x.update_id,decision:JSON.parse(x.decision_json),model_id:x.model_id})),ops,rem,msgs};console.log(JSON.stringify(report,null,2));
+            if(inbox.length!==4||!inbox.every(x=>x.status==='done'))throw Error('queue not done');
+            for(const c of cases){if(parsed.get(c.id)?.action!==c.want)throw Error(`intent mismatch ${c.id}: ${parsed.get(c.id)?.action} != ${c.want}`)}
+            if(decisions.length!==4)throw Error('decision persistence count mismatch');
+            if(ops.length!==2||!ops.every(x=>x.status==='succeeded'&&x.action==='create_reminder'))throw Error('operation gate failed');
+            if(rem.length!==2||!rem.every(x=>x.status==='pending'&&x.timezone==='Africa/Cairo'))throw Error('reminder count/status failed');
+            const r1=rem.find(x=>Number(x.source_update_id)===base),r2=rem.find(x=>Number(x.source_update_id)===base+1);
+            if(!r1||r1.due_at_utc!=='2026-08-19T18:00:00.000Z'||!/ماما/.test(r1.title))throw Error('relative Cairo reminder failed '+JSON.stringify(r1));
+            if(!r2||r2.due_at_utc!=='2026-08-20T07:00:00.000Z'||!/تحليل/.test(r2.title))throw Error('implicit reminder failed '+JSON.stringify(r2));
+            if(msgs.filter(x=>Number(x.update_id)===base&&x.role==='user').length!==1||msgs.filter(x=>Number(x.update_id)===base&&x.role==='assistant').length!==1)throw Error('duplicate update processed');
+          })();
+          NODE
+
+      - name: Operation replay idempotency gate
+        run: |
+          set -euo pipefail
+          BASE=$(npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT MIN(source_update_id) AS n FROM sand_operations WHERE chat_id='$CHAT'" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].results[0].n))')
+          test -n "$BASE"
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "UPDATE sand_core_inbox SET status='pending',process_lease_until=NULL,finished_at=NULL WHERE update_id=$BASE;DELETE FROM sand_ai_messages WHERE update_id=$BASE AND role='assistant';" >/dev/null
+          curl -fsS -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d "{\"update_id\":$BASE,\"message\":{\"message_id\":1,\"date\":1787070000,\"chat\":{\"id\":$CHAT,\"type\":\"private\"},\"from\":{\"id\":$CHAT,\"is_bot\":false},\"text\":\"replay\"}}" "$URL/telegram" >/dev/null
+          for i in {1..25};do STATUS=$(npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT status FROM sand_core_inbox WHERE update_id=$BASE" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].results[0]?.status||""))');[ "$STATUS" = done ]&&break;sleep 1;done
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT COUNT(*) AS reminders FROM sand_reminders WHERE source_update_id=$BASE;SELECT COUNT(*) AS operations FROM sand_operations WHERE source_update_id=$BASE;SELECT COUNT(*) AS decisions FROM sand_action_decisions WHERE update_id=$BASE;" --json >/tmp/replay.json
+          cat /tmp/replay.json
+          node - <<'NODE'
+          const x=JSON.parse(require('fs').readFileSync('/tmp/replay.json'));const vals=x.flatMap(r=>r.results||[]);if(vals[0]?.reminders!==1||vals[1]?.operations!==1||vals[2]?.decisions!==1)throw Error(JSON.stringify(vals));
+          NODE
+
+      - name: No deadlock and final D1 verification
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT status,COUNT(*) AS count FROM sand_core_inbox WHERE chat_id='$CHAT' GROUP BY status ORDER BY status;SELECT status,COUNT(*) AS count FROM sand_operations WHERE chat_id='$CHAT' GROUP BY status ORDER BY status;" --json >/tmp/final.json
+          cat /tmp/final.json
+          node - <<'NODE'
+          const x=JSON.parse(require('fs').readFileSync('/tmp/final.json'));const inbox=x[0]?.results||[],ops=x[1]?.results||[];if(inbox.some(r=>['pending','processing'].includes(r.status)&&Number(r.count)>0))throw Error('queue deadlock '+JSON.stringify(inbox));if(ops.some(r=>r.status!=='succeeded'))throw Error('operation incomplete '+JSON.stringify(ops));
+          NODE
