@@ -23,6 +23,8 @@ if(!src.includes('async function toolScheduleShiftV125('))throw new Error('V12.6
 src=src.replace('async function toolScheduleShiftV125(','async function toolScheduleShiftV126BeforePropagationGuard(');
 if(!src.includes('async function propagateDependenciesV125('))throw new Error('V12.6 dependency propagation entry missing');
 src=src.replace('async function propagateDependenciesV125(','async function propagateDependenciesV126BeforePropagationGuard(');
+if(!src.includes('async function toolReminderUpdate(env,chatId,args){'))throw new Error('V12.6 reminder update entry missing');
+src=src.replace('async function toolReminderUpdate(env,chatId,args){','async function toolReminderUpdateV126BeforePropagationGuard(env,chatId,args){');
 src+='\n\n/* ================= SANAD V12.6 PARITY LAYER 4 ================= */\n'+fs.readFileSync(pack4,'utf8').trim()+'\n';
 const buf=Buffer.from(src,'utf8');
 fs.writeFileSync(file,buf);
