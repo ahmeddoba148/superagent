@@ -1,3 +1,6 @@
+h] = await Promise.all([
+    crypto.subtle.digest("SHA-256", left),
+    crypto.subtle.digest("SHA-256", right),
   ]);
 
   const x = new Uint8Array(leftHash);
@@ -32,7 +35,10 @@ async function ensureSchema(env) {
   if (current === SCHEMA_VERSION) return;
   if (current === "1") {
     await migrateSchemaV2(env);
-  } else if (current !== "2") {
+    await migrateSchemaV3(env);
+  } else if (current === "2") {
+    await migrateSchemaV3(env);
+  } else if (current !== "3") {
     throw new Error(`Unsupported schema version: ${current || "missing"}`);
   }
 
@@ -128,6 +134,22 @@ async function migrateSchemaV2(env) {
   ]);
 }
 
+async function migrateSchemaV3(env) {
+  const at = nowIso();
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.chatIngress} (
+      chat_id TEXT PRIMARY KEY,
+      settle_until_ms INTEGER NOT NULL,
+      last_seen_update_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+    env.DB.prepare(`INSERT INTO ${TABLES.meta}(key,value,updated_at)
+      VALUES('schema_version', '3', ?)
+      ON CONFLICT(key) DO UPDATE SET value='3', updated_at=excluded.updated_at`)
+      .bind(at),
+  ]);
+}
+
 function telegramChatId(update) {
   const id = update?.message?.chat?.id;
   return id === undefined || id === null ? "" : String(id);
@@ -136,22 +158,4 @@ function telegramChatId(update) {
 function isAllowedChat(env, chatId, update) {
   const type = String(update?.message?.chat?.type ?? "");
   if (type && type !== "private") return false;
-  if (truthy(env.PUBLIC_BOT)) return true;
-
-  const raw = String(env.ALLOWED_CHAT_ID ?? "").trim();
-  if (!raw) return true;
-
-  const allowed = new Set(raw.split(",").map((x) => x.trim()).filter(Boolean));
-  return allowed.has(String(chatId));
-}
-
-async function telegramWebhook(request, env, ctx) {
-  requireBinding(env, "DB");
-  requireBinding(env, "TELEGRAM_BOT_TOKEN");
-  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
-  requireBinding(env, "OMNIAI_API_KEY");
-  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) {
-    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
-  }
-
-  const presented = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+  if (truthy(env.PUBLIC_BOT
