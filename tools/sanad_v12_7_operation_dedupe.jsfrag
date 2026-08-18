@@ -4,7 +4,6 @@ function fnv64V127(text){let h=1469598103934665603n;for(const ch of String(text)
 function mutationFingerprintV127(tool,args){
   if(!TOOL_SPECS[String(tool||'')]?.mutation)return null;
   const t=String(tool),a=args&&typeof args==='object'?args:{};
-  // Same reminder shift must never run twice inside one user operation, even if the planner/completion gate repeats it.
   if(t==='schedule.shift')return `reminder-shift:${Number(a.id)||0}:${Math.trunc(Number(a.minutes)||0)}`;
   if(t==='schedule.bulk_shift')return `reminder-bulk-shift:${[...(a.ids||[])].map(Number).filter(Boolean).sort((x,y)=>x-y).join(',')}:${Math.trunc(Number(a.minutes)||0)}`;
   return `${t}:${fnv64V127(stableJsonV127(a))}`;
@@ -20,7 +19,11 @@ async function executeTool(env,{chatId,operationId,stepKey,tool,args,user}){
       }catch(e){await reportFailure(env,chatId,'mutation_dedupe_receipt',e,{operationId,tool,fingerprint:fp});}
     }
   }
-  const result=await executeToolV127BeforeOperationDedupe(env,{chatId,operationId,stepKey,tool,args,user});
+  let result=await executeToolV127BeforeOperationDedupe(env,{chatId,operationId,stepKey,tool,args,user});
+  if(TOOL_SPECS[String(tool||'')]?.mutation&&result?.ok===true){
+    let verified=false;try{verified=await verifyMutationPostconditionV127(env,chatId,tool,args,result)}catch(e){await reportFailure(env,chatId,'mutation_wrapper_verify',e,{operationId,tool,stepKey});}
+    if(!verified)result={...result,ok:false,verified:false,error:'mutation_wrapper_postcondition_failed'};
+  }
   if(fpKey&&result?.ok===true&&result?.verified===true&&Number(result?.changed||0)>0){
     await env.DB.prepare(`INSERT OR IGNORE INTO sanad_receipts(operation_id,step_key,chat_id,tool,result_json,created_at) VALUES(?,?,?,?,?,?)`).bind(operationId,fpKey,chatId,tool,JSON.stringify(result).slice(0,15000),nowIso()).run();
   }
