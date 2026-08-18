@@ -145,6 +145,56 @@ function cairoNowParts(date = new Date()) {
   };
 }
 
+function plannerSnapshotView(snapshot) {
+  const refById = new Map();
+  const activeObjects = snapshot.objects.map((object, index) => {
+    const ref = `o${index + 1}`;
+    refById.set(object.id, ref);
+    return {
+      ref,
+      kind: object.kind,
+      title: object.title,
+      state: object.state,
+      status: object.status,
+      updated_at: object.updated_at,
+    };
+  });
+  const focusRef = snapshot.workspace.focus_object_id
+    ? refById.get(snapshot.workspace.focus_object_id) ?? null
+    : null;
+  const focus = focusRef
+    ? activeObjects.find((object) => object.ref === focusRef) ?? null
+    : null;
+  return {
+    workspace: {
+      goal: snapshot.workspace.goal,
+      thread_summary: snapshot.workspace.thread_summary,
+      focus_ref: focusRef,
+      open_questions: snapshot.workspace.open_questions,
+      context_version: snapshot.workspace.context_version,
+    },
+    focus,
+    active_objects: activeObjects,
+    memories: snapshot.memories.map((memory) => ({
+      subject: memory.subject,
+      predicate: memory.predicate,
+      value: memory.value,
+      confidence: memory.confidence,
+      sensitivity: memory.sensitivity,
+      expires_at: memory.expires_at,
+      updated_at: memory.updated_at,
+    })),
+    pending_reminders: snapshot.reminders.map((reminder) => ({
+      object_ref: refById.get(String(reminder.object_id ?? "")) ?? null,
+      title: reminder.title ?? null,
+      remind_at_utc: reminder.remind_at_utc ?? null,
+      timezone: reminder.timezone ?? null,
+      mode: reminder.mode ?? null,
+      status: reminder.status ?? null,
+    })),
+  };
+}
+
 function plannerSystemPrompt(snapshot) {
   const local = cairoNowParts();
   return [
@@ -163,7 +213,7 @@ function plannerSystemPrompt(snapshot) {
     "Current Cairo local datetime: " + `${local.date}T${local.time}` + ` (${local.weekday}, ${TZ}).`,
     "Allowed object kinds: commitment, task, note, contact, list, project, preference, generic.",
     "Allowed actions: object.create, object.patch, object.archive, focus.set, focus.clear, reminder.set, reminder.cancel, memory.upsert, memory.forget.",
-    "Target contract: {mode:'focus'} or {mode:'id',id:'known object id'}.",
+    "Target contract: {mode:'focus'} for the current focus, or {mode:'ref',ref:'oN'} using only a ref exposed in active_objects for another object. Never invent or copy internal IDs.",
     "Object create args: {kind,title,fields}. Object patch args: {target,fields}. Fields may include title,description,start_local,start_date_local,start_time_local,end_local,location,people,details,status.",
     "Reminder set args: {target,mode:'at_start'|'absolute',remind_local?:'YYYY-MM-DDTHH:mm',title?:string}.",
     "Memory upsert args: {subject,predicate,value,confidence?,sensitivity?,expires_at?}.",
@@ -171,13 +221,7 @@ function plannerSystemPrompt(snapshot) {
     "The reply is the natural Egyptian Arabic response to send AFTER successful verified execution. Do not claim an action succeeded unless the plan actually asks the app to execute it.",
     "Keep reply concise and natural Egyptian Arabic.",
     "Workspace JSON follows:",
-    JSON.stringify({
-      workspace: snapshot.workspace,
-      focus: snapshot.focus,
-      active_objects: snapshot.objects,
-      memories: snapshot.memories,
-      pending_reminders: snapshot.reminders,
-    }),
+    JSON.stringify(plannerSnapshotView(snapshot)),
   ].join("\n");
 }
 
@@ -212,7 +256,15 @@ function validateTarget(target, snapshot) {
   if (!target || typeof target !== "object") throw new SandPlanError("BAD_TARGET", "Missing target");
   const mode = String(target.mode ?? "");
   if (mode === "focus") {
+    if (!snapshot.workspace.focus_object_id) throw new SandPlanError("NO_FOCUS", "No active focus object");
     return { mode: "focus" };
+  }
+  if (mode === "ref") {
+    const match = /^o([1-9][0-9]*)$/.exec(String(target.ref ?? ""));
+    const index = match ? Number(match[1]) - 1 : -1;
+    const object = index >= 0 ? snapshot.objects[index] : null;
+    if (!object) throw new SandPlanError("UNKNOWN_TARGET", "Target ref is not in the active workspace");
+    return { mode: "id", id: object.id };
   }
   if (mode === "id") {
     const id = String(target.id ?? "");
