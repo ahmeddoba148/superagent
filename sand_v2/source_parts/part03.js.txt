@@ -219,6 +219,7 @@ function plannerSystemPrompt(snapshot) {
     "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
     "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
     "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",
+    "For user-provided proper names, identifiers, labels, and scalar text facts stored in memory, preserve the user's original spelling and script exactly; never translate or transliterate the value.",
     "Required top-level keys are intent, continuation, goal, thread_summary, focus, actions, clarification, reply, confidence. focus.mode is keep, set, or clear. If focus.mode is set, focus.target uses the same target string contract. actions is always an array. clarification is either null or an object with question and reason.",
     "The reply is the natural Egyptian Arabic response to send AFTER successful verified execution. Do not claim an action succeeded unless the plan actually asks the app to execute it.",
     "Keep reply concise and natural Egyptian Arabic.",
