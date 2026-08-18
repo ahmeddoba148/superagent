@@ -1,0 +1,77 @@
+function contextBytesV1282(value){return new TextEncoder().encode(JSON.stringify(value)).length;}
+function pushIfFitsV1282(target,item,root,maxBytes){target.push(item);if(contextBytesV1282(root)<=maxBytes)return true;target.pop();return false;}
+function structuredContextBudgetV1282(input,maxBytes){
+  const limit=Math.max(2048,Number(maxBytes||V128_CONTEXT_MAX_BYTES_SIMPLE)),rawBytes=contextBytesV1282(input);
+  if(rawBytes<=limit)return{context:input,bytes:rawBytes,trimmed:false};
+  const src=input||{},state=src.state||{},retrieval=src.retrieval||{};
+  const out={
+    now:src.now,
+    profile:src.profile,
+    user_text:src.user_text,
+    retrieval:{mode:retrieval.mode||'hybrid',domains:Array.isArray(retrieval.domains)?retrieval.domains:[],scores:retrieval.scores||{},budgeting:{strategy:'structured_priority',applied:true,max_bytes:limit}},
+    conversation:[],
+    state:{}
+  };
+  for(const [k,v] of Object.entries(state))out.state[k]=Array.isArray(v)?[]:null;
+  if(contextBytesV1282(out)>limit){delete out.retrieval.scores;}
+  if(contextBytesV1282(out)>limit){out.user_text=null;out.retrieval.budgeting.current_user_text_supplied_separately=true;}
+
+  // Tier 1: current state. Memories/entities are intentionally deferred to tier 3.
+  const statePriority=['shopping_session','shopping','reminders','recurrences','dependencies','projects','tasks','waiting','prayer_rules','live_watches','inbox'];
+  const seenState=new Set();
+  for(const key of [...statePriority,...Object.keys(state)]){
+    if(seenState.has(key)||key==='memories'||key==='entities')continue;seenState.add(key);
+    const value=state[key];
+    if(Array.isArray(value)){
+      const dest=out.state[key]||(out.state[key]=[]);
+      for(const item of value)pushIfFitsV1282(dest,item,out,limit);
+    }else if(value!=null){
+      const prev=out.state[key];out.state[key]=value;if(contextBytesV1282(out)>limit)out.state[key]=prev;
+    }
+  }
+
+  const conv=Array.isArray(src.conversation)?src.conversation:[],byNewest=[...conv].sort((a,b)=>Number(b?.id||0)-Number(a?.id||0));
+  const recent=byNewest.slice(0,6),recentIds=new Set(recent.map(x=>String(x?.id??'')));
+  // Tier 2: recent conversation, newest first for admission, chronological in final JSON.
+  for(const item of recent)pushIfFitsV1282(out.conversation,item,out,limit);
+  out.conversation.sort((a,b)=>Number(a?.id||0)-Number(b?.id||0));
+
+  // Tier 3: relevant memories, then trusted/relevant entities.
+  for(const key of ['memories','entities']){
+    const items=Array.isArray(state[key])?state[key]:[],dest=out.state[key]||(out.state[key]=[]);
+    for(const item of items)pushIfFitsV1282(dest,item,out,limit);
+  }
+
+  // Tier 4: less-relevant/older conversation history.
+  for(const item of byNewest){if(recentIds.has(String(item?.id??'')))continue;pushIfFitsV1282(out.conversation,item,out,limit);}
+  out.conversation.sort((a,b)=>Number(a?.id||0)-Number(b?.id||0));
+
+  const bytes=contextBytesV1282(out);
+  if(bytes>limit)throw new Error(`structured_context_budget_failed:${bytes}>${limit}`);
+  return{context:out,bytes,trimmed:true};
+}
+
+async function buildContext(env,chatId,user,userText){
+  const raw=await buildContextUnbudgetedV1282(env,chatId,user,userText),m=metricV128(env),limit=Number(m?.budget?.maxContext||v128Budget(userText).maxContext||V128_CONTEXT_MAX_BYTES_SIMPLE),started=Date.now();
+  const budgeted=structuredContextBudgetV1282(raw,limit);
+  if(m){
+    m.context_ms+=Date.now()-started;
+    m.context_bytes=budgeted.bytes;
+    m.budget_exceeded=m.d1_queries>m.budget.maxD1||m.ai_calls>m.budget.maxAi||m.tool_calls>m.budget.maxTools||m.context_bytes>m.budget.maxContext;
+  }
+  return budgeted.context;
+}
+
+async function deepSelftestV1282(env){
+  const tests=[];const add=(name,ok,detail='')=>tests.push({name,ok:!!ok,detail:String(detail??'')});
+  const conversation=[];for(let i=1;i<=14;i++)conversation.push({id:i,role:i%2?'user':'assistant',content:`history-${i}-`+'x'.repeat(520),created_at:new Date(1700000000000+i*1000).toISOString()});
+  const state={shopping:[],shopping_session:null,reminders:Array.from({length:3},(_,i)=>({id:i+1,title:`current-${i+1}-`+'s'.repeat(520),local_date:'2026-08-19',local_time:`0${8+i}:00`,status:'active'})),recurrences:[],dependencies:[],projects:[],tasks:[],waiting:[],prayer_rules:[],live_watches:[],inbox:[],memories:Array.from({length:5},(_,i)=>({id:i+1,content:`memory-${i+1}-`+'m'.repeat(560),importance:1-i*.1,updated_at:new Date(1700001000000+i*1000).toISOString()})),entities:[]};
+  const raw={now:{date:'2026-08-18',time:'20:00',timezone:'Africa/Cairo'},profile:{timezone:'Africa/Cairo',city:'Cairo',country:'Egypt'},user_text:'اختبار الميزانية',retrieval:{mode:'hybrid',domains:['schedule'],scores:{schedule:2}},conversation,state};
+  const cap=9000,b=structuredContextBudgetV1282(raw,cap),serialized=JSON.stringify(b.context),parsed=JSON.parse(serialized),recentIds=new Set((parsed.conversation||[]).map(x=>Number(x.id))),oldKept=(parsed.conversation||[]).filter(x=>Number(x.id)<=8).length;
+  add('structured context stays inside byte budget',b.bytes<=cap,`${b.bytes}/${cap}`);
+  add('structured context remains valid complete JSON',!!parsed&&serialized.startsWith('{')&&serialized.endsWith('}'),serialized.length);
+  add('current state survives before lower priority history',parsed.state?.reminders?.length===3,parsed.state?.reminders?.length);
+  add('recent conversation survives before older history',[9,10,11,12,13,14].every(id=>recentIds.has(id))&&oldKept<8,JSON.stringify({ids:[...recentIds],oldKept}));
+  add('relevant memories admitted before less relevant history',(parsed.state?.memories?.length||0)>0,parsed.state?.memories?.length||0);
+  return{ok:tests.every(x=>x.ok),version:VERSION,count:tests.length,tests};
+}
