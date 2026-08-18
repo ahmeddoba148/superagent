@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 execFileSync(process.execPath,['tools/build_sanad_v12_7.mjs'],{stdio:'inherit'});
 const input=new URL('../Sanad_V12_7_HARDENED.js',import.meta.url);
 const runtime=new URL('./sanad_v12_8_runtime.jsfrag',import.meta.url);
+const selftest=new URL('./sanad_v12_8_selftest.jsfrag',import.meta.url);
 const pre=new URL('../Sanad_V12_8_PRE.js',import.meta.url);
 const output=new URL('../Sanad_V12_8_ATOMIC.js',import.meta.url);
 let src=fs.readFileSync(input,'utf8');
@@ -45,10 +46,12 @@ for(const [name,renamed] of [
 ])renameFunction(name,renamed);
 
 replaceRequired('diagnostics route','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV126(request, env);','if (request.method === "GET" && url.pathname === "/diagnostics") return diagnosticsV128(request, env);');
+const selftestNeedle='if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }';
+replaceRequired('v128 selftest route',selftestNeedle,'if (request.method === "GET" && url.pathname === "/selftest") { if (url.searchParams.get("v128") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV128(env)); } if (url.searchParams.get("v127") === "1") { if(!env.SETUP_KEY||!secureEq(adminKey(request),env.SETUP_KEY))return j({ok:false,error:"Unauthorized"},401); await ensureSchema(env); return j(await deepSelftestV127(env)); } return selftest(request, env); }');
 replaceRequired('not found route','    return new Response("Not found", { status: 404 });','    if (url.pathname === "/admin/dead-letter" && (request.method === "GET" || request.method === "POST")) return deadLetterAdminV128(request,env,ctx,url);\n    if (url.pathname === "/admin/delivery/replay" && request.method === "POST") return deliveryReplayAdminV128(request,env);\n    return new Response("Not found", { status: 404 });');
 
 let layer=fs.readFileSync(runtime,'utf8').trim().replaceAll('Buffer.byteLength(JSON.stringify(out))','new TextEncoder().encode(JSON.stringify(out)).length');
-src+='\n\n'+layer+'\n';
+src+='\n\n'+layer+'\n\n'+fs.readFileSync(selftest,'utf8').trim()+'\n';
 fs.writeFileSync(pre,src);
 
 execFileSync('npx',['--yes','esbuild@0.25.9',pre.pathname,'--bundle','--format=esm','--platform=browser','--target=es2022','--tree-shaking=true','--legal-comments=none',`--outfile=${output.pathname}`],{stdio:'inherit'});
