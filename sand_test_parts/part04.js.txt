@@ -1,0 +1,154 @@
+| !chatId) return;
+
+  const text = String(message.text ?? "").trim();
+  if (!text) {
+    await sendTelegramText(env, chatId, "ابعتلي رسالة نصية وأنا معاك.");
+    return;
+  }
+
+  if (text === "/start") {
+    await sendTelegramText(
+      env,
+      chatId,
+      "أنا سند 🤝\nالمحادثة الذكية شغالة دلوقتي. اتكلم معايا بطبيعتك.",
+    );
+    return;
+  }
+
+  await saveUserMessage(env, chatId, updateId, text);
+
+  const savedAssistant = await savedAssistantForUpdate(env, chatId, updateId);
+  if (savedAssistant?.content) {
+    await sendTelegramText(env, chatId, String(savedAssistant.content));
+    return;
+  }
+
+  try {
+    await telegramApi(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch (error) {
+    logError("telegram_typing_noncritical", error, { chatId, updateId });
+  }
+
+  const history = await recentAiHistory(env, chatId, AI_HISTORY_MESSAGES);
+  const local = cairoNow();
+  const systemPrompt = [
+    "أنت سند، مساعد شخصي مصري ذكي.",
+    "اتكلم بالمصري الطبيعي جدًا من غير تصنع ولا فصحى زيادة.",
+    "خليك مختصر ومفيد ودقيق.",
+    "لو المستخدم بيتكلم عادي رد عادي، وما تحولش كل كلامه لمهام.",
+    "ما تدعيش إنك نفذت تذكير أو موعد أو أي إجراء؛ المرحلة الحالية محادثة فقط.",
+    `الوقت الحالي في القاهرة: ${local.date} ${local.time} (${local.weekday}).`,
+  ].join("\n");
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map((row) => ({ role: String(row.role), content: String(row.content) })),
+  ];
+
+  const result = await callAiChain(env, { chatId, updateId, messages });
+  const reply = normalizeAiReply(result.text);
+
+  await saveAssistantMessage(env, chatId, updateId, reply, result.modelId);
+  await sendTelegramText(env, chatId, reply);
+}
+
+async function saveUserMessage(env, chatId, updateId, content) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, 'user', ?, NULL, ?)`)
+    .bind(chatId, updateId, String(content).slice(0, 8000), nowIso())
+    .run();
+}
+
+async function saveAssistantMessage(env, chatId, updateId, content, modelId) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, 'assistant', ?, ?, ?)`)
+    .bind(chatId, updateId, String(content).slice(0, AI_MAX_REPLY_CHARS), modelId, nowIso())
+    .run();
+}
+
+async function savedAssistantForUpdate(env, chatId, updateId) {
+  return env.DB.prepare(`SELECT content, model_id
+    FROM ${TABLES.messages}
+    WHERE chat_id=? AND update_id=? AND role='assistant'
+    LIMIT 1`)
+    .bind(chatId, updateId)
+    .first();
+}
+
+async function recentAiHistory(env, chatId, limit) {
+  const rows = await env.DB.prepare(`SELECT role, content
+    FROM ${TABLES.messages}
+    WHERE chat_id=?
+    ORDER BY id DESC
+    LIMIT ?`)
+    .bind(chatId, Math.max(2, Math.min(30, Number(limit) || AI_HISTORY_MESSAGES)))
+    .all();
+
+  return (rows?.results ?? []).reverse();
+}
+
+function cairoNow() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Africa/Cairo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date())
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+    weekday: String(parts.weekday ?? ""),
+  };
+}
+
+function omniChatUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/chat/completions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+
+  if (/\/v1\/chat\/completions$/i.test(configured)) return configured;
+  if (/\/v1$/i.test(configured)) return `${configured}/chat/completions`;
+  return `${configured}/v1/chat/completions`;
+}
+
+function normalizeAiReply(value) {
+  const text = String(value ?? "").trim();
+  if (!text) throw new Error("AI returned an empty reply");
+  return text.slice(0, AI_MAX_REPLY_CHARS);
+}
+
+function aiContent(data) {
+  const direct = data?.choices?.[0]?.message?.content;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  const output = data?.output_text ?? data?.text;
+  if (typeof output === "string" && output.trim()) return output.trim();
+
+  return "";
+}
+
+function aiErrorCode(error) {
+  if (error?.name === "AbortError") return "timeout";
+  const message = safeError(error).toLowerCase();
+  if (message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("empty")) return "empty_response";
+  return "network_or_runtime";
+}
+
+async function recordAiCall(env, record) {
+  await env.DB.prepare(`INS

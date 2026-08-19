@@ -1,0 +1,157 @@
+ATE ${TABLES.inbox}
+    SET status='processing',
+        attempts=attempts+1,
+        process_lease_until=?,
+        updated_at=?,
+        last_error=NULL
+    WHERE update_id=?
+      AND (
+        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+      )
+    RETURNING attempts`)
+    .bind(leaseUntil, at, updateId, nowMs(), nowMs())
+    .first();
+}
+
+async function markUpdateDone(env, updateId) {
+  const at = nowIso();
+  await env.DB.prepare(`UPDATE ${TABLES.inbox}
+    SET status='done', process_lease_until=NULL, last_error=NULL, updated_at=?, finished_at=?
+    WHERE update_id=?`)
+    .bind(at, at, updateId)
+    .run();
+}
+
+async function hasRecoverableUpdate(env, chatId) {
+  const row = await env.DB.prepare(`SELECT 1 AS ok
+    FROM ${TABLES.inbox}
+    WHERE chat_id=?
+      AND (
+        (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+        OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+      )
+    LIMIT 1`)
+    .bind(chatId, nowMs(), nowMs())
+    .first();
+  return Number(row?.ok ?? 0) === 1;
+}
+
+async function triggerDrainContinuation(env, chatId, origin) {
+  if (!origin || !env?.TELEGRAM_WEBHOOK_SECRET) return false;
+  try {
+    const response = await fetch(`${String(origin).replace(/\/$/, "")}/internal/drain`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Sand-Internal": env.TELEGRAM_WEBHOOK_SECRET,
+      },
+      body: JSON.stringify({ chat_id: String(chatId) }),
+    });
+    if (response.body) await response.body.cancel().catch((error) => logError("continuation_body_cancel", error));
+    if (response.status !== 202) throw new Error(`Continuation failed (${response.status})`);
+    return true;
+  } catch (error) {
+    logError("drain_continuation", error, { chatId });
+    return false;
+  }
+}
+
+async function acquireChatLeaseWithWait(env, chatId, owner) {
+  const deadline = nowMs() + CHAT_ACQUIRE_WAIT_MS;
+  do {
+    if (await acquireChatLease(env, chatId, owner)) return true;
+    await sleep(300);
+  } while (nowMs() < deadline);
+  return false;
+}
+
+function aiFailurePublicCode(error) {
+  if (!(error instanceof SandAiChainError)) return "RUNTIME";
+  return String(error.code || "AI_UNAVAILABLE").slice(0, 40);
+}
+
+async function markUpdateFailed(env, updateId, error) {
+  const at = nowIso();
+  await env.DB.prepare(`UPDATE ${TABLES.inbox}
+    SET status='failed', process_lease_until=NULL, last_error=?, updated_at=?, finished_at=?
+    WHERE update_id=?`)
+    .bind(safeError(error), at, at, updateId)
+    .run();
+}
+
+async function drainChat(env, chatId, origin = "") {
+  await ensureSchema(env);
+
+  const owner = crypto.randomUUID();
+  const acquired = await acquireChatLeaseWithWait(env, chatId, owner);
+  if (!acquired) {
+    if (origin) await triggerDrainContinuation(env, chatId, origin);
+    return;
+  }
+
+  const settled = await waitForChatSettle(env, chatId);
+  if (!settled) {
+    await releaseChatLease(env, chatId, owner).catch((error) => {
+      logError("release_chat_lease_after_settle_timeout", error, { chatId });
+    });
+    if (origin) await triggerDrainContinuation(env, chatId, origin);
+    return;
+  }
+
+  const deadline = nowMs() + DRAIN_BUDGET_MS;
+  let processed = 0;
+
+  try {
+    while (processed < MAX_DRAIN_BATCH && nowMs() < deadline - 1200) {
+      if (!(await waitForChatSettle(env, chatId))) break;
+      const row = await nextRecoverableUpdate(env, chatId);
+      if (!row) break;
+
+      const claim = await claimUpdate(env, Number(row.update_id));
+      if (!claim) continue;
+
+      try {
+        const update = JSON.parse(String(row.payload_json));
+        await processAiChatUpdate(env, update);
+        await markUpdateDone(env, Number(row.update_id));
+      } catch (error) {
+        await markUpdateFailed(env, Number(row.update_id), error);
+        logError("ai_chat_update", error, {
+          updateId: Number(row.update_id),
+          chatId,
+          attempts: Number(claim.attempts ?? 1),
+          terminal: true,
+        });
+
+        try {
+          await sendTelegramText(
+            env,
+            chatId,
+            `⚠️ حصلت مشكلة في محرك الذكاء ومش هسيب رسالتك معلقة. كود: ${aiFailurePublicCode(error)}`,
+          );
+        } catch (notifyError) {
+          logError("ai_failure_notice", notifyError, { chatId, updateId: Number(row.update_id) });
+        }
+      }
+
+      processed += 1;
+    }
+  } finally {
+    await releaseChatLease(env, chatId, owner).catch((error) => {
+      logError("release_chat_lease", error, { chatId });
+    });
+  }
+
+  if (origin && (processed >= MAX_DRAIN_BATCH || (await hasRecoverableUpdate(env, chatId)))) {
+    await triggerDrainContinuation(env, chatId, origin);
+  }
+}
+
+async function processAiChatUpdate(env, update) {
+  const message = update?.message;
+  if (!message) return;
+
+  const updateId = Number(update?.update_id);
+  const chatId = String(message.chat?.id ?? "");
+  if (!Number.isSafeInteger(updateId) |

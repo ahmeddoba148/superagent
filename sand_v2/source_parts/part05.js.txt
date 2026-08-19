@@ -1,0 +1,250 @@
+    const verify = await objectById(env, chatId, objectId);
+    if (!verify || JSON.stringify(verify.state) !== JSON.stringify(merged)) throw new Error("Object patch verification failed");
+    await syncAnchoredReminderForObject(env, chatId, objectId, merged.start_local, updateId);
+    return { ok: true, object_id: objectId, focus_object_id: objectId, object: verify };
+  }
+
+  if (action.type === "object.archive") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object to archive");
+    await env.DB.prepare(`UPDATE ${TABLES.objects} SET status='archived',updated_by_update=?,updated_at=?
+      WHERE id=? AND chat_id=? AND status='active'`)
+      .bind(updateId, nowIso(), objectId, chatId)
+      .run();
+    await cancelReminderForObject(env, chatId, objectId);
+    const verify = await env.DB.prepare(`SELECT status FROM ${TABLES.objects} WHERE id=? AND chat_id=? LIMIT 1`)
+      .bind(objectId, chatId)
+      .first();
+    if (String(verify?.status ?? "") !== "archived") throw new Error("Archive verification failed");
+    return { ok: true, object_id: objectId, archived: true, focus_object_id: runtimeFocusId === objectId ? null : runtimeFocusId };
+  }
+
+  if (action.type === "focus.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for focus");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Focus target missing");
+    return { ok: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "focus.clear") return { ok: true, focus_object_id: null };
+
+  if (action.type === "reminder.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Reminder target missing");
+    const remindLocal = action.args.mode === "at_start" ? normalizeLocalMinute(obj.state?.start_local) : action.args.remind_local;
+    if (!remindLocal) throw new Error("Target has no start time for reminder");
+    const remindAtUtc = cairoLocalToUtc(remindLocal);
+    if (!remindAtUtc) throw new Error("Could not resolve Cairo reminder time");
+    if (new Date(remindAtUtc).getTime() <= nowMs() - 30_000) throw new Error("Reminder time is already in the past");
+    const title = action.args.title || obj.title || "تذكير";
+    const reminderId = await upsertReminderForObject(env, {
+      chatId,
+      objectId,
+      title,
+      remindAtUtc,
+      mode: action.args.mode,
+      sourceUpdateId: updateId,
+    });
+    const verify = await env.DB.prepare(`SELECT id,remind_at_utc,status FROM ${TABLES.reminders} WHERE id=? LIMIT 1`)
+      .bind(reminderId)
+      .first();
+    if (!verify || String(verify.remind_at_utc) !== remindAtUtc || String(verify.status) !== "pending") {
+      throw new Error("Reminder verification failed");
+    }
+    return { ok: true, reminder_id: reminderId, object_id: objectId, remind_at_utc: remindAtUtc, remind_local: remindLocal, focus_object_id: objectId };
+  }
+
+  if (action.type === "reminder.cancel") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder cancel");
+    await cancelReminderForObject(env, chatId, objectId);
+    const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.reminders}
+      WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
+      .bind(chatId, objectId)
+      .first();
+    if (Number(left?.n ?? 0) !== 0) throw new Error("Reminder cancel verification failed");
+    return { ok: true, object_id: objectId, reminder_cancelled: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "memory.upsert") {
+    const at = nowIso();
+    const id = randomId("mem");
+    await env.DB.prepare(`INSERT INTO ${TABLES.memories}
+      (id,chat_id,subject,predicate,value_json,confidence,sensitivity,expires_at,source_update_id,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)
+      ON CONFLICT(chat_id,subject,predicate) DO UPDATE SET
+        value_json=excluded.value_json,
+        confidence=excluded.confidence,
+        sensitivity=excluded.sensitivity,
+        expires_at=excluded.expires_at,
+        source_update_id=excluded.source_update_id,
+        status='active',
+        updated_at=excluded.updated_at`)
+      .bind(
+        id,
+        chatId,
+        action.args.subject,
+        action.args.predicate,
+        JSON.stringify(action.args.value),
+        action.args.confidence,
+        action.args.sensitivity,
+        action.args.expires_at,
+        updateId,
+        at,
+        at,
+      )
+      .run();
+    const verify = await env.DB.prepare(`SELECT value_json,status FROM ${TABLES.memories}
+      WHERE chat_id=? AND subject=? AND predicate=? LIMIT 1`)
+      .bind(chatId, action.args.subject, action.args.predicate)
+      .first();
+    if (!verify || String(verify.status) !== "active") throw new Error("Memory verification failed");
+    return { ok: true, memory: { subject: action.args.subject, predicate: action.args.predicate, value: safeJsonParse(verify.value_json, null) } };
+  }
+
+  if (action.type === "memory.forget") {
+    await env.DB.prepare(`UPDATE ${TABLES.memories} SET status='forgotten',updated_at=?
+      WHERE chat_id=? AND subject=? AND predicate=? AND status='active'`)
+      .bind(nowIso(), chatId, action.args.subject, action.args.predicate)
+      .run();
+    return { ok: true, forgotten: true };
+  }
+
+  throw new Error(`Unsupported executor action: ${action.type}`);
+}
+
+function normalizeLocalMinute(value) {
+  const s = compactText(value, 40);
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const yy = Number(y), mm = Number(mo), dd = Number(d), hh = Number(h), mn = Number(mi);
+  if (yy < 2020 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh < 0 || hh > 23 || mn < 0 || mn > 59) return null;
+  return `${y}-${mo}-${d}T${h}:${mi}`;
+}
+
+function mergeObjectState(currentState, patch, fallbackTitle) {
+  const current = currentState && typeof currentState === "object" && !Array.isArray(currentState) ? structuredClone(currentState) : {};
+  const out = {
+    title: compactText(current.title || fallbackTitle || "موضوع", 240),
+    description: current.description ?? null,
+    start_local: normalizeLocalMinute(current.start_local) ?? null,
+    end_local: normalizeLocalMinute(current.end_local) ?? null,
+    timezone: TZ,
+    location: current.location ?? null,
+    people: Array.isArray(current.people) ? current.people : [],
+    details: current.details && typeof current.details === "object" ? current.details : {},
+  };
+
+  if (Object.hasOwn(patch, "title") && patch.title !== null) out.title = compactText(patch.title, 240) || out.title;
+  if (Object.hasOwn(patch, "description")) out.description = patch.description === null ? null : compactText(patch.description, 3000);
+  if (Object.hasOwn(patch, "location")) out.location = patch.location === null ? null : compactText(patch.location, 300);
+  if (Object.hasOwn(patch, "people")) out.people = Array.isArray(patch.people) ? patch.people.slice(0, 20) : [];
+  if (Object.hasOwn(patch, "details")) out.details = patch.details && typeof patch.details === "object" ? sanitizeJsonValue(patch.details, 4) : {};
+
+  if (Object.hasOwn(patch, "start_local")) out.start_local = patch.start_local === null ? null : normalizeLocalMinute(patch.start_local);
+  if (Object.hasOwn(patch, "end_local")) out.end_local = patch.end_local === null ? null : normalizeLocalMinute(patch.end_local);
+
+  const oldStart = out.start_local;
+  if (Object.hasOwn(patch, "start_date_local") && patch.start_date_local) {
+    const date = compactText(patch.start_date_local, 20);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Invalid start_date_local");
+    const time = oldStart?.slice(11, 16) || "09:00";
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+  if (Object.hasOwn(patch, "start_time_local") && patch.start_time_local) {
+    const time = compactText(patch.start_time_local, 20);
+    if (!/^\d{2}:\d{2}$/.test(time)) throw new Error("Invalid start_time_local");
+    const date = out.start_local?.slice(0, 10);
+    if (!date) throw new Error("Cannot set only a time when target has no known date");
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+
+  if (out.start_local === null && (patch.start_local || patch.start_date_local || patch.start_time_local)) {
+    throw new Error("Invalid start time");
+  }
+  if (out.end_local && out.start_local && out.end_local < out.start_local) throw new Error("End time cannot be before start time");
+  return out;
+}
+
+async function objectById(env, chatId, id) {
+  const row = await env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects}
+    WHERE id=? AND chat_id=? LIMIT 1`)
+    .bind(id, chatId)
+    .first();
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    kind: String(row.kind),
+    title: String(row.title),
+    state: safeJsonParse(row.state_json, {}),
+    status: String(row.status),
+    updated_at: String(row.updated_at),
+  };
+}
+
+async function persistWorkspace(env, chatId, { goal, thread_summary, focus_object_id, open_questions }) {
+  const at = nowIso();
+  await env.DB.prepare(`INSERT INTO ${TABLES.workspaces}
+    (chat_id,goal,thread_summary,focus_object_id,open_questions_json,context_version,updated_at)
+    VALUES(?,?,?,?,?,1,?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      goal=excluded.goal,
+      thread_summary=excluded.thread_summary,
+      focus_object_id=excluded.focus_object_id,
+      open_questions_json=excluded.open_questions_json,
+      context_version=${TABLES.workspaces}.context_version+1,
+      updated_at=excluded.updated_at`)
+    .bind(chatId, goal || null, thread_summary || null, focus_object_id || null, JSON.stringify(open_questions ?? []), at)
+    .run();
+}
+
+function buildVerifiedReply(plan, execution) {
+  if (plan.clarification) return plan.clarification.question;
+  if (!execution.ok) return "حصلت مشكلة وأنا بنفذ آخر خطوة، فمش هأكدلك إن التعديل تم. حاول تاني بعد شوية.";
+  const reply = compactText(plan.reply, AI_MAX_REPLY_CHARS);
+  return reply || "تمام، اتعملت ✅";
+}
+
+async function upsertReminderForObject(env, { chatId, objectId, title, remindAtUtc, mode, sourceUpdateId }) {
+  const existing = await env.DB.prepare(`SELECT id FROM ${TABLES.reminders}
+    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain') LIMIT 1`)
+    .bind(chatId, objectId)
+    .first();
+  const at = nowIso();
+  if (existing?.id) {
+    await env.DB.prepare(`UPDATE ${TABLES.reminders}
+      SET title=?,remind_at_utc=?,timezone=?,mode=?,status='pending',source_update_id=?,telegram_message_id=NULL,updated_at=?,sent_at=NULL
+      WHERE id=?`)
+      .bind(title, remindAtUtc, TZ, mode, sourceUpdateId, at, existing.id)
+      .run();
+    return String(existing.id);
+  }
+  const id = randomId("rem");
+  await env.DB.prepare(`INSERT INTO ${TABLES.reminders}
+    (id,chat_id,object_id,title,remind_at_utc,timezone,mode,status,source_update_id,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'pending',?,?,?)`)
+    .bind(id, chatId, objectId, title, remindAtUtc, TZ, mode, sourceUpdateId, at, at)
+    .run();
+  return id;
+}
+
+async function syncAnchoredReminderForObject(env, chatId, objectId, startLocal, sourceUpdateId) {
+  const local = normalizeLocalMinute(startLocal);
+  if (!local) return;
+  const utc = cairoLocalToUtc(local);
+  if (!utc) throw new Error("Could not resolve updated reminder time");
+  await env.DB.prepare(`UPDATE ${TABLES.reminders}
+    SET remind_at_utc=?,source_update_id=?,status='pending',telegram_message_id=NULL,updated_at=?,sent_at=NULL
+    WHERE chat_id=? AND object_id=? AND mode='at_start' AND status IN ('pending','sending','uncertain')`)
+    .bind(utc, sourceUpdateId, nowIso(), chatId, objectId)
+    .run();
+}
+
+async function cancelReminderForObject(env, chatId, objectId) {
+  await env.DB.prepare(`UPDATE ${TABLES.reminders}
+    SET status='cancelled',updated_at=?
