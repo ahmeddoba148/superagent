@@ -1,0 +1,53 @@
+name: SAND ONE dev5 Certified Root Sync PR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sand-one-dev5-root-sync-pr.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'sand-one-1.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sand-one-1.0
+          fetch-depth: 0
+
+      - name: Verify exact live-certified dev5 source
+        run: |
+          set -euo pipefail
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").version')" = '1.0.0-dev.5' ]
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").parts')" = '29' ]
+          count=$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')
+          [ "$count" = '29' ]
+          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_dev5_certified.js
+          echo '2287474d353fed8ee315ebd42d854626033123d4d2966b2d99e640f6381a29c1  /tmp/SAND_ONE_dev5_certified.js' | sha256sum -c -
+          [ "$(wc -c < /tmp/SAND_ONE_dev5_certified.js | tr -d ' ')" = '238668' ]
+          node --check /tmp/SAND_ONE_dev5_certified.js
+          grep -Fq 'const APP_VERSION = "1.0.0-dev.5"' /tmp/SAND_ONE_dev5_certified.js
+
+      - name: Materialize root and clean temporary sync gates
+        run: |
+          set -euo pipefail
+          remote_head=$(git ls-remote origin refs/heads/sand-one-1.0 | awk '{print $1}')
+          local_head=$(git rev-parse HEAD)
+          [ "$remote_head" = "$local_head" ] || { echo 'STALE_ROOT_SYNC_REFUSED'; exit 1; }
+          cp /tmp/SAND_ONE_dev5_certified.js SAND_ONE_1.0.js
+          rm -f .github/workflows/sand-one-dev5-root-sync.yml
+          rm -f .github/workflows/sand-one-dev5-root-sync-pr.yml
+          sed -i '0,/  contents: write/s//  contents: read/' .github/workflows/sand-one-foundation-live.yml
+          rm -f tools/sand-one-ci/dev5-recertification.txt
+          git config user.name 'SAND ONE Certified Root Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add SAND_ONE_1.0.js .github/workflows/sand-one-foundation-live.yml
+          git add -u .github/workflows/sand-one-dev5-root-sync.yml .github/workflows/sand-one-dev5-root-sync-pr.yml tools/sand-one-ci/dev5-recertification.txt || true
+          git diff --cached --check
+          git commit -m 'SAND ONE: materialize certified dev5 runtime root'
+          git push origin HEAD:sand-one-1.0
