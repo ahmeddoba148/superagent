@@ -1,0 +1,122 @@
+name: SAND ONE Foundation Live Gate
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - 'SAND_ONE_1.0.js'
+      - 'sand_v2/live_gate.mjs'
+      - '.github/workflows/sand-one-foundation-live.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'SAND_ONE_1.0.js'
+      - 'sand_v2/live_gate.mjs'
+      - '.github/workflows/sand-one-foundation-live.yml'
+permissions:
+  contents: read
+concurrency:
+  group: sand-one-foundation-live
+  cancel-in-progress: true
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BOT: ${{ secrets.STAGING_TELEGRAM_BOT_TOKEN }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
+      CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
+      URL: https://sand-one-staging.ahmeddoba91.workers.dev
+      DB: superagent-v106-staging
+      CFG: wrangler.sand-one.jsonc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Exact one-file static gate
+        run: |
+          set -euo pipefail
+          sha256sum SAND_ONE_1.0.js
+          node --check SAND_ONE_1.0.js
+          ! grep -q 'text\.includes(' SAND_ONE_1.0.js
+          ! grep -Eq '\beval\(' SAND_ONE_1.0.js
+          ! grep -q 'Math\.random' SAND_ONE_1.0.js
+          ! grep -q '@ts-ignore\|@ts-nocheck' SAND_ONE_1.0.js
+          ! grep -q 'AMBIGUOUS' SAND_ONE_1.0.js
+
+      - name: checkJs zero diagnostics
+        run: |
+          set -euo pipefail
+          npm install --no-save typescript@5.8.3 wrangler@latest >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_ONE_1.0.js"]}' > tsconfig.json
+          npx tsc -p tsconfig.json --pretty false
+
+      - name: Probe fixed model chain
+        run: |
+          set -euo pipefail
+          test -n "$OKEY"
+          node - <<'NODE'
+          const key=process.env.OKEY,ep='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
+          (async()=>{for(const model of models){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000);try{const r=await fetch(ep,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});if(!r.ok)throw Error(model+' HTTP '+r.status);console.log(model+' OK '+r.status)}finally{clearTimeout(tm)}}})().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+      - name: Deploy isolated SAND ONE staging
+        run: |
+          set -euo pipefail
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
+          cat > "$CFG" <<'JSON'
+          {"name":"sand-one-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          JSON
+          npx wrangler deploy --config "$CFG" >/dev/null
+          W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
+          echo "::add-mask::$W"; echo "::add-mask::$K"
+          echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
+          for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
+
+      - name: Health, families and selftest proof
+        run: |
+          set -euo pipefail
+          healthy=0
+          for i in {1..35}; do
+            code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
+            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0-dev.1"&&x.architecture==="semantic-conversation-workspace+capability-layer"&&x.semantic_routing===true&&x.keyword_routing===false&&x.voice_input===true&&x.capability_families?.length===12?0:1)'; then healthy=1; break; fi
+            sleep 2
+          done
+          [ "$healthy" = 1 ] || { cat /tmp/h >&2; exit 1; }
+          cat /tmp/h
+          webhook_ok=0
+          admin_ok=0
+          for i in {1..50}; do
+            wc=$(curl -sS -o /tmp/w -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
+            ac=$(curl -sS -o /tmp/a -w '%{http_code}' -H "x-sand-admin: $K" "$URL/admin/selftest" || true)
+            if [ "$wc" = 200 ]; then webhook_ok=$((webhook_ok+1)); else webhook_ok=0; fi
+            if [ "$ac" = 200 ] && node -e 'try{const x=JSON.parse(require("fs").readFileSync("/tmp/a"));process.exit(x.ok&&x.tests?.every(t=>t.ok)&&x.tests?.some(t=>t.name==="voice_adapter_contract"&&t.ok)&&x.tests?.some(t=>t.name==="capability_family_contract"&&t.ok)?0:1)}catch{process.exit(1)}'; then admin_ok=$((admin_ok+1)); else admin_ok=0; fi
+            [ "$webhook_ok" -ge 3 ] && [ "$admin_ok" -ge 3 ] && break
+            sleep 2
+          done
+          [ "$webhook_ok" -ge 3 ] && [ "$admin_ok" -ge 3 ] || { echo 'SECRET_PROPAGATION_OR_SELFTEST_FAILED'; cat /tmp/a; exit 1; }
+          cat /tmp/a
+
+      - name: Core V2 semantic regression gate
+        run: |
+          set +e
+          node sand_v2/live_gate.mjs
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '===== SAND ONE CORE REGRESSION DIAGNOSTICS ====='
+            npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT source_update_id,status,error,plan_json,result_json FROM sand_v2_operations ORDER BY created_at DESC LIMIT 12;" || true
+            npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT update_id,phase,model_id,model_role,ok,http_status,error_code,created_at FROM sand_v2_ai_calls ORDER BY id DESC LIMIT 18;" || true
+            exit "$rc"
+          fi
+
+      - name: Upload exact foundation source
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAND_ONE_1.0-foundation-source
+          path: SAND_ONE_1.0.js
+          if-no-files-found: error
+          retention-days: 30
