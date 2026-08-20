@@ -24,9 +24,9 @@ jobs:
       GSEARCH_KEY: ${{ secrets.STAGING_GOOGLE_SEARCH_API_KEY }}
       GSEARCH_CX: ${{ secrets.STAGING_GOOGLE_SEARCH_CX }}
       GMAPS_KEY: ${{ secrets.STAGING_GOOGLE_MAPS_API_KEY }}
-      URL: https://sand-one-staging.ahmeddoba91.workers.dev
-      DB: sand-one-staging-v1
-      CFG: wrangler.sand-one-web-live.jsonc
+      URL: https://sand-one-web-live-staging.ahmeddoba91.workers.dev
+      DB: sand-one-web-live-staging-v1
+      CFG: wrangler.sand-one-web-live-isolated.jsonc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,7 +67,7 @@ jobs:
           (async()=>{for(const model of models){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000);try{const r=await fetch(ep,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});if(!r.ok)throw Error(model+' HTTP '+r.status);console.log(model+' OK '+r.status)}finally{clearTimeout(tm)}}})().catch(e=>{console.error(e);process.exit(1)});
           NODE
 
-      - name: Provision dedicated SAND ONE staging D1
+      - name: Provision dedicated Web Live staging D1
         run: |
           set -euo pipefail
           npx wrangler d1 list --json > /tmp/d1.json
@@ -81,12 +81,12 @@ jobs:
           test -n "$DB_ID"
           echo "DB_ID=$DB_ID" >> "$GITHUB_ENV"
 
-      - name: Deploy isolated SAND ONE staging
+      - name: Deploy isolated Web Live staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$DB_ID"
           cat > "$CFG" <<JSON
-          {"name":"sand-one-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"$DB","database_id":"$DB_ID"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          {"name":"sand-one-web-live-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"$DB","database_id":"$DB_ID"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           JSON
           npx wrangler deploy --config "$CFG" >/dev/null
           W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
@@ -177,10 +177,10 @@ jobs:
           set -euo pipefail
           git config user.name 'SAND ONE Gate'
           git config user.email 'actions@users.noreply.github.com'
-          rm -f tools/apply-sand-one-web-live.py .github/workflows/sand-one-web-live-gated-apply.yml
+          rm -f tools/apply-sand-one-web-live.py tools/sand-one-web-live-isolation-guard.txt .github/workflows/sand-one-web-live-gated-apply.yml
           rm -rf tools/sand-one-web-live-bootstrap
           git add -- SAND_ONE_1.0.js sand_one/source/part00.js.txt sand_one/source/part05_01.js.txt sand_one/source/part07_01.js.txt sand_one/source/part08_00.js.txt sand_one/source/part08_01.js.txt
-          git add -u -- tools/apply-sand-one-web-live.py tools/sand-one-web-live-bootstrap .github/workflows/sand-one-web-live-gated-apply.yml
+          git add -u -- tools/apply-sand-one-web-live.py tools/sand-one-web-live-isolation-guard.txt tools/sand-one-web-live-bootstrap .github/workflows/sand-one-web-live-gated-apply.yml
           git diff --cached --check
           git diff --cached --stat
           git commit -m 'SAND ONE: activate Web and Live capability family'
