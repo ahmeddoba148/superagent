@@ -1,0 +1,181 @@
+    const response = await fetch(`${String(origin).replace(/\/$/, "")}/internal/drain`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Sand-Internal": env.TELEGRAM_WEBHOOK_SECRET },
+      body: JSON.stringify({ chat_id: String(chatId) }),
+    });
+    if (response.body) await response.body.cancel().catch(() => {});
+    if (response.status !== 202) throw new Error(`Continuation failed (${response.status})`);
+    return true;
+  } catch (error) {
+    logError("drain_continuation", error, { chatId });
+    return false;
+  }
+}
+
+async function drainChat(env, chatId, origin = "") {
+  await ensureSchema(env);
+  const owner = randomId("lease");
+  const acquired = await acquireChatLeaseWithWait(env, chatId, owner);
+  if (!acquired) {
+    if (origin) await triggerDrainContinuation(env, chatId, origin);
+    return;
+  }
+
+  const settled = await waitForChatSettle(env, chatId);
+  if (!settled) {
+    await releaseChatLease(env, chatId, owner).catch(() => {});
+    if (origin) await triggerDrainContinuation(env, chatId, origin);
+    return;
+  }
+
+  const deadline = nowMs() + DRAIN_BUDGET_MS;
+  let processed = 0;
+  try {
+    while (processed < MAX_DRAIN_BATCH && nowMs() < deadline - 1500) {
+      if (!(await waitForChatSettle(env, chatId))) break;
+      const row = await nextRecoverableUpdate(env, chatId);
+      if (!row) break;
+      const claim = await claimUpdate(env, Number(row.update_id));
+      if (!claim) continue;
+
+      try {
+        const update = JSON.parse(String(row.payload_json));
+        await processConversationTurn(env, update);
+        await markUpdateDone(env, Number(row.update_id));
+      } catch (error) {
+        const outcome = await markUpdateRetryOrFailed(
+          env,
+          Number(row.update_id),
+          Number(claim.attempts ?? 1),
+          error,
+        );
+        logError("conversation_turn", error, {
+          updateId: Number(row.update_id),
+          chatId,
+          attempts: Number(claim.attempts ?? 1),
+          outcome,
+        });
+        if (outcome === "failed") {
+          await deliverTextOnce(
+            env,
+            chatId,
+            "turn_error",
+            String(row.update_id),
+            "⚠️ حصلت مشكلة ومش هأكدلك إن حاجة اتنفذت. جرّب تبعتلي الرسالة تاني بعد شوية.",
+          ).catch((notifyError) => logError("turn_failure_notice", notifyError, { chatId }));
+        }
+      }
+      processed += 1;
+    }
+  } finally {
+    await releaseChatLease(env, chatId, owner).catch((error) => logError("release_chat_lease", error, { chatId }));
+  }
+
+  if (origin && (processed >= MAX_DRAIN_BATCH || (await hasRecoverableUpdate(env, chatId)))) {
+    await triggerDrainContinuation(env, chatId, origin);
+  }
+}
+
+async function processConversationTurn(env, update) {
+  const message = update?.message;
+  if (!message) return;
+  const updateId = Number(update.update_id);
+  const chatId = String(message.chat?.id ?? "");
+  if (!Number.isSafeInteger(updateId) || !chatId) return;
+
+  const input = await extractTelegramInput(env, message, chatId, updateId);
+  const text = input.text;
+  if (!text) {
+    await deliverTextOnce(env, chatId, "turn", String(updateId), "ابعتلي رسالة نصية أو فويس وأنا معاك.");
+    return;
+  }
+
+  if (text === "/start") {
+    await deliverTextOnce(
+      env,
+      chatId,
+      "turn",
+      String(updateId),
+      "أنا سند 🤝\nقول اللي في دماغك بطريقتك وأنا هتابع معاك السياق خطوة بخطوة.",
+    );
+    return;
+  }
+
+  await saveMessage(env, chatId, updateId, "user", text, null);
+
+  const existingOperation = await operationForUpdate(env, chatId, updateId);
+  if (existingOperation?.status === "done" || existingOperation?.status === "clarify") {
+    const previous = safeJsonParse(existingOperation.result_json, {});
+    const reply = compactText(previous?.reply, AI_MAX_REPLY_CHARS);
+    if (reply) await deliverTextOnce(env, chatId, "turn", String(updateId), reply);
+    return;
+  }
+
+  try {
+    await telegramApi(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch (error) {
+    logError("telegram_typing_noncritical", error, { chatId, updateId });
+  }
+
+  const snapshot = await loadConversationSnapshot(env, chatId);
+  const planResult = await planSemanticTurn(env, { chatId, updateId, text, snapshot });
+  const plan = validateSemanticPlan(planResult.plan, snapshot);
+
+  const operation = await startOrLoadOperation(env, chatId, updateId, plan, planResult.modelId);
+  const execution = await executeSemanticPlan(env, {
+    chatId,
+    updateId,
+    operationId: operation.id,
+    plan,
+    snapshot,
+  });
+
+  const reply = buildVerifiedReply(plan, execution);
+  const operationStatus = plan.clarification ? "clarify" : execution.ok ? "done" : "partial";
+  await finishOperation(env, operation.id, operationStatus, { reply, execution }, execution.ok ? null : execution.error);
+  await saveMessage(env, chatId, updateId, "assistant", reply, planResult.modelId);
+  await deliverTextOnce(env, chatId, "turn", String(updateId), reply);
+}
+
+async function extractTelegramInput(env, message, chatId, updateId) {
+  const text = compactText(message?.text, 12_000);
+  if (text) return { text, kind: "text" };
+  const caption = compactText(message?.caption, 12_000);
+  if (caption) return { text: caption, kind: "caption" };
+  const media = message?.voice ?? message?.audio ?? null;
+  if (!media) return { text: "", kind: "unsupported" };
+  try {
+    await telegramApi(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch (error) {
+    logError("voice_typing_noncritical", error, { chatId, updateId });
+  }
+  const transcribed = await transcribeTelegramAudio(env, media, { chatId, updateId });
+  return { text: compactText(transcribed, 12_000), kind: message?.voice ? "voice" : "audio" };
+}
+
+function omniAudioUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/audio/transcriptions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+  const root = configured
+    .replace(/\/v1\/chat\/completions$/i, "/v1")
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/v1$/i, "/v1");
+  return `${root}/audio/transcriptions`;
+}
+
+async function fetchTelegramMediaBlob(env, media, deadline) {
+  const fileId = compactText(media?.file_id, 300);
+  if (!fileId) throw new Error("voice_file_missing");
+  const declaredSize = Number(media?.file_size ?? 0);
+  if (declaredSize > VOICE_MAX_BYTES) throw new Error("voice_too_large");
+  if (nowMs() >= deadline) throw new Error("voice_timeout");
+  const info = await telegramApi(env, "getFile", { file_id: fileId });
+  const filePath = compactText(info?.result?.file_path, 1000);
+  if (!filePath) throw new Error("voice_path_missing");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(250, Math.min(VOICE_STAGE_TIMEOUT_MS, deadline - nowMs())));
+  try {
