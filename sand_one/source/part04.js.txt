@@ -355,4 +355,4 @@ async function executeAction(env, { chatId, updateId, operationId = "", stepInde
     const id = randomId("mem");
     await env.DB.prepare(`INSERT INTO ${TABLES.memories}
       (id,chat_id,subject,predicate,value_json,confidence,sensitivity,expires_at,source_update_id,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)`
+      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)
