@@ -28,7 +28,7 @@ jobs:
       OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
       CHAT: ${{ secrets.STAGING_ADMIN_CHAT_ID }}
       URL: https://sand-one-staging.ahmeddoba91.workers.dev
-      DB: superagent-v106-staging
+      DB: sand-one-staging-v1
       CFG: wrangler.sand-one.jsonc
     steps:
       - uses: actions/checkout@v4
@@ -63,12 +63,27 @@ jobs:
           (async()=>{for(const model of models){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000);try{const r=await fetch(ep,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});if(!r.ok)throw Error(model+' HTTP '+r.status);console.log(model+' OK '+r.status)}finally{clearTimeout(tm)}}})().catch(e=>{console.error(e);process.exit(1)});
           NODE
 
+      - name: Provision dedicated SAND ONE staging D1
+        run: |
+          set -euo pipefail
+          npx wrangler d1 list --json > /tmp/d1.json
+          DB_ID=$(node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("/tmp/d1.json","utf8"));const r=x.find(v=>v.name===process.env.DB);process.stdout.write(r?.uuid||r?.id||"")')
+          if [ -z "$DB_ID" ]; then
+            npx wrangler d1 create "$DB" >/tmp/d1-create.txt
+            sleep 2
+            npx wrangler d1 list --json > /tmp/d1.json
+            DB_ID=$(node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync("/tmp/d1.json","utf8"));const r=x.find(v=>v.name===process.env.DB);process.stdout.write(r?.uuid||r?.id||"")')
+          fi
+          test -n "$DB_ID"
+          echo "DB_ID=$DB_ID" >> "$GITHUB_ENV"
+          echo "Dedicated D1 ready: $DB"
+
       - name: Deploy isolated SAND ONE staging
         run: |
           set -euo pipefail
-          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"
-          cat > "$CFG" <<'JSON'
-          {"name":"sand-one-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"superagent-v106-staging","database_id":"65df37bc-973d-4bfe-a3f4-7c049e570697"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$DB_ID"
+          cat > "$CFG" <<JSON
+          {"name":"sand-one-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"$DB","database_id":"$DB_ID"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           JSON
           npx wrangler deploy --config "$CFG" >/dev/null
           W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
