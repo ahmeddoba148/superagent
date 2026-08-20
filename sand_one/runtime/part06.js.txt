@@ -1,0 +1,100 @@
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday ?? ""),
+  };
+}
+
+function plannerSnapshotView(snapshot) {
+  const refById = new Map();
+  const activeObjects = snapshot.objects.map((object, index) => {
+    const ref = `o${index + 1}`;
+    refById.set(object.id, ref);
+    return {
+      ref,
+      kind: object.kind,
+      title: object.title,
+      state: object.state,
+      status: object.status,
+      updated_at: object.updated_at,
+    };
+  });
+  const focusRef = snapshot.workspace.focus_object_id
+    ? refById.get(snapshot.workspace.focus_object_id) ?? null
+    : null;
+  const focus = focusRef
+    ? activeObjects.find((object) => object.ref === focusRef) ?? null
+    : null;
+  return {
+    workspace: {
+      goal: snapshot.workspace.goal,
+      thread_summary: snapshot.workspace.thread_summary,
+      focus_ref: focusRef,
+      open_questions: snapshot.workspace.open_questions,
+      context_version: snapshot.workspace.context_version,
+    },
+    focus,
+    active_objects: activeObjects,
+    memories: snapshot.memories.map((memory) => ({
+      subject: memory.subject,
+      predicate: memory.predicate,
+      value: memory.value,
+      confidence: memory.confidence,
+      sensitivity: memory.sensitivity,
+      expires_at: memory.expires_at,
+      updated_at: memory.updated_at,
+    })),
+    pending_reminders: snapshot.reminders.map((reminder) => ({
+      object_ref: refById.get(String(reminder.object_id ?? "")) ?? null,
+      title: reminder.title ?? null,
+      remind_at_utc: reminder.remind_at_utc ?? null,
+      timezone: reminder.timezone ?? null,
+      mode: reminder.mode ?? null,
+      status: reminder.status ?? null,
+    })),
+  };
+}
+
+function plannerSystemPrompt(snapshot) {
+  const local = cairoNowParts();
+  return [
+    "You are the semantic conversation brain for SAND, an Egyptian personal secretary agent.",
+    "Return exactly ONE strict JSON object. Use double quotes for every JSON key and string. No markdown, comments, trailing commas, or prose outside JSON.",
+    "Interpret meaning and conversational reference from the whole workspace. Never route by literal phrases or keyword matching.",
+    "The application owns state and execution. You may only request actions from the declared action contract.",
+    "Treat the current focus object as the default referent only when the new turn semantically continues it. If the user clearly changes subject, do not force the old focus.",
+    "When more than one active object exists, every object-targeting mutation must use the exposed ref of the intended object (such as o1 or o2), even when that object is currently focused. Resolve explicit semantic references by object identity and meaning, never by recency alone.",
+    "A user correction or refinement should update the existing intended object rather than create a duplicate when continuity is clear.",
+    "Do not ask for fields that are unnecessary for the user's goal. A commitment can exist with a start time and no end time.",
+    "Do not silently invent an end time, attendee, location, recurrence, or reminder policy.",
+    "When only a date or only a time changes, preserve the other known components of that same object's start time.",
+    "Clarify only when an essential decision is genuinely unresolved between multiple plausible targets or required values.",
+    "If the user asks to be alerted at the object's own time, set a reminder with mode at_start. This is a semantic policy, not a phrase rule.",
+    "If the user merely states a future commitment without asking for an alert, represent the commitment; do not invent a reminder.",
+    "object.create automatically makes the newly created object the runtime focus. Do not add focus.set just to focus a new object.",
+    "Current Cairo local datetime: " + `${local.date}T${local.time}` + ` (${local.weekday}, ${TZ}).`,
+    "Allowed object kinds: commitment, task, note, contact, list, project, preference, generic.",
+    "Allowed actions: object.create, object.patch, object.archive, focus.set, focus.clear, reminder.set, reminder.cancel, memory.upsert, memory.forget, capability.request.",
+    "For a request that belongs to a non-core capability family, emit capability.request with args {family, request, target?}. The top-level brain chooses only the family and semantic request; it does NOT choose the family operation. A second family-specific planner sees only that family contract.",
+    "Deterministic arithmetic, unit conversion, and current/difference date-time requests belong to the utility family. Do not calculate them in model prose when the utility family is available.",
+    "Capability families: " + JSON.stringify(CAPABILITY_FAMILY_CATALOG),
+    "Every action object MUST contain a non-empty type from the allowed actions and an args object matching that action contract.",
+    "Target contract is intentionally simple: whenever an action or focus needs a target, use target as ONE string: focus for current runtime focus, created for the latest object created earlier in this same plan, or an exposed active_objects ref such as o1 or o2. Never emit or copy internal IDs.",
+    "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
+    "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
+    "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",
+    "For user-provided proper names, identifiers, labels, and scalar text facts stored in memory, preserve the user's original spelling and script exactly; never translate or transliterate the value.",
+    "Required top-level keys are effect, intent, continuation, goal, thread_summary, focus, actions, clarification, reply, confidence. effect is exactly answer, mutate, or clarify. Use mutate whenever the user asks to create, change, remove, remember, forget, schedule, cancel, or otherwise alter durable state; answer when no durable state change is requested; clarify only when a genuinely essential ambiguity blocks execution.",
+    "A mutate plan MUST contain at least one real domain mutation action; changing focus alone is never enough to satisfy a requested state change.",
+    "focus.mode is keep, set, or clear. If focus.mode is set, focus.target uses the same target string contract. actions is always an array. clarification is either null or an object with question and reason.",
+    "The reply is the natural Egyptian Arabic response to send AFTER successful verified execution. Do not claim an action succeeded unless the plan actually asks the app to execute it.",
+    "Keep reply concise and natural Egyptian Arabic.",
+    "Workspace JSON follows:",
+    JSON.stringify(plannerSnapshotView(snapshot)),
+  ].join("\n");
+}
+
+function isPlannerPlanObject(value) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
