@@ -1,0 +1,179 @@
+function validateFamilyPlan(family, input, familyState) {
+  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
+  if (!contract) throw new SandPlanError("CAPABILITY_NOT_READY", `Family not ready: ${family}`);
+  const rawSteps = Array.isArray(input.steps) ? input.steps : [];
+  if (rawSteps.length > contract.max_steps) throw new SandPlanError("TOO_MANY_CAPABILITY_STEPS", "Capability step budget exceeded");
+  const refs = familyRefMap(familyState);
+  const steps = rawSteps.map((step, index) => validateFamilyStep(family, step, refs, index));
+  return { steps, reply_hint: compactText(input.reply_hint, 800) };
+}
+
+function validateFamilyStep(family, step, refs, index) {
+  if (!step || typeof step !== "object") throw new SandPlanError("BAD_CAPABILITY_STEP", `Bad family step ${index}`);
+  const op = compactText(step.op, 120);
+  if (!CAPABILITY_FAMILY_CONTRACTS[family]?.operations?.[op]) throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Operation not allowed in ${family}: ${op}`);
+  const a = step.args && typeof step.args === "object" && !Array.isArray(step.args) ? step.args : {};
+  if (family === "shopping") {
+    if (op === "shopping.add") {
+      const items = Array.isArray(a.items) ? a.items.slice(0, 30).map((item) => ({ title: compactText(item?.title, 240), quantity: compactText(item?.quantity, 120) || null, category: compactText(item?.category, 120) || null, priority: compactText(item?.priority, 80) || null })).filter((x) => x.title) : [];
+      if (!items.length) throw new SandPlanError("SHOPPING_ITEMS_REQUIRED", "shopping.add requires items");
+      return { op, args: { items } };
+    }
+    if (op === "shopping.list") {
+      const status = compactText(a.status, 40) || "all";
+      if (!["pending","bought","unavailable","skipped","all"].includes(status)) throw new SandPlanError("BAD_SHOPPING_STATUS", "Bad shopping status");
+      return { op, args: { status } };
+    }
+    if (op === "shopping.mark") {
+      const target = compactText(a.target, 120), status = compactText(a.status, 40);
+      if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown shopping target");
+      if (!["pending","bought","unavailable","skipped"].includes(status)) throw new SandPlanError("BAD_SHOPPING_STATUS", "Bad shopping status");
+      return { op, args: { target, status } };
+    }
+    if (op === "shopping.remove") {
+      const target = compactText(a.target, 120);
+      if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown shopping target");
+      return { op, args: { target } };
+    }
+    if (op === "shopping.progress" || op === "shopping.session.finish") return { op, args: {} };
+    if (op === "shopping.session.start") return { op, args: { place_name: compactText(a.place_name, 240) || null } };
+  }
+  if (family === "work") {
+    if (op === "project.create") {
+      const title = compactText(a.title, 240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Project title required");
+      const priority = compactText(a.priority, 40) || "normal"; if (!["low","normal","high"].includes(priority)) throw new SandPlanError("BAD_PRIORITY", "Bad priority");
+      return { op, args: { title, priority, deadline: compactText(a.deadline, 80) || null, notes: compactText(a.notes, 2000) || null } };
+    }
+    if (op === "project.list") return { op, args: { status: compactText(a.status, 40) || "all" } };
+    if (op === "project.update") {
+      const target = compactText(a.target, 120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project target");
+      return { op, args: { target, status: compactText(a.status, 40) || null, progress: a.progress === undefined ? null : clampInt(a.progress,0,100,0), priority: compactText(a.priority,40) || null, deadline: compactText(a.deadline,80) || null, notes: compactText(a.notes,2000) || null } };
+    }
+    if (op === "task.create") {
+      const title = compactText(a.title, 240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Task title required");
+      const parent = compactText(a.parent,120) || null;
+      if (parent && !refs.has(parent) && !/^created:[1-9][0-9]*$/.test(parent)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project parent");
+      return { op, args: { title, parent, due_at: compactText(a.due_at,80) || null, priority: compactText(a.priority,40) || "normal" } };
+    }
+    if (op === "task.list") {
+      const project = compactText(a.project,120) || null;
+      if (project && !refs.has(project)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project filter");
+      return { op, args: { project, status: compactText(a.status,40) || "all" } };
+    }
+    if (op === "task.update") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown task target");
+      return { op, args: { target, title: compactText(a.title,240) || null, status: compactText(a.status,40) || null, due_at: compactText(a.due_at,80) || null, priority: compactText(a.priority,40) || null } };
+    }
+    if (op === "waiting.create") {
+      const title = compactText(a.title,240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Waiting title required");
+      return { op, args: { title, waiting_on: compactText(a.waiting_on,240) || null, due_at: compactText(a.due_at,80) || null } };
+    }
+    if (op === "waiting.list") return { op, args: { status: compactText(a.status,40) || "all" } };
+    if (op === "waiting.close") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown waiting target");
+      return { op, args: { target } };
+    }
+    if (op === "inbox.add") {
+      const text = compactText(a.text,2000); if (!text) throw new SandPlanError("TEXT_REQUIRED", "Inbox text required");
+      return { op, args: { text, classified_as: compactText(a.classified_as,120) || null } };
+    }
+    if (op === "inbox.list") return { op, args: { status: compactText(a.status,40) || "all" } };
+    if (op === "inbox.classify") {
+      const target = compactText(a.target,120), classified_as = compactText(a.classified_as,120);
+      if (!refs.has(target) || !classified_as) throw new SandPlanError("BAD_INBOX_CLASSIFY", "Inbox classify target and class required");
+      return { op, args: { target, classified_as } };
+    }
+    if (op === "inbox.close") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown inbox target");
+      return { op, args: { target } };
+    }
+  }
+  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
+}
+
+async function stableCapabilityId(prefix, operationId, stepIndex, itemIndex = 0) {
+  const h = await textHash(`${operationId}:${stepIndex}:${itemIndex}:${prefix}`);
+  return `${prefix}_${h.slice(0, 28)}`;
+}
+
+async function loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest }) {
+  const existing = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex).first();
+  if (existing) return { plan: safeJsonParse(existing.plan_json, { steps: [] }), modelId: existing.model_id ? String(existing.model_id) : null };
+  const [currentText, familyState] = await Promise.all([currentUserMessage(env, chatId, updateId), capabilitySnapshot(env, chatId, family)]);
+  const planned = await planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState });
+  const at = nowIso();
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.capabilityPlans}
+    (operation_id,step_index,family,request_text,plan_json,model_id,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,'planned',?,?)`)
+    .bind(operationId, stepIndex, family, semanticRequest, JSON.stringify(planned.plan), planned.modelId, at, at).run();
+  const stored = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex).first();
+  return { plan: safeJsonParse(stored?.plan_json, planned.plan), modelId: stored?.model_id ? String(stored.model_id) : planned.modelId };
+}
+
+function renderShoppingList(rows) {
+  if (!rows.length) return "قائمة المشتريات فاضية حاليًا.";
+  return ["🛒 المشتريات:", ...rows.map((r, i) => `${i + 1}) ${r.title}${r.state.quantity ? ` — ${r.state.quantity}` : ""} [${r.status}]`)].join("\n");
+}
+
+function renderWorkList(rows, label) {
+  if (!rows.length) return `${label} مفيهاش عناصر حاليًا.`;
+  return [label, ...rows.map((r, i) => `${i + 1}) ${r.title} [${r.status}]`)].join("\n");
+}
+
+async function executeCapabilityRequest(env, { chatId, updateId, operationId, stepIndex, request }) {
+  if (!operationId) throw new Error("Capability execution requires operation id");
+  const family = request.family;
+  const familyState = await capabilitySnapshot(env, chatId, family);
+  const refs = familyRefMap(familyState);
+  const planned = await loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest: request.request });
+  const plan = validateFamilyPlan(family, planned.plan, familyState);
+  const result = await executeFamilyPlan(env, { chatId, updateId, operationId, mainStepIndex: stepIndex, family, plan, refs });
+  await env.DB.prepare(`UPDATE ${TABLES.capabilityPlans} SET status='done',result_json=?,updated_at=? WHERE operation_id=? AND step_index=?`)
+    .bind(JSON.stringify(result), nowIso(), operationId, stepIndex).run();
+  return { ok: true, family, ...result };
+}
+
+async function executeFamilyPlan(env, { chatId, updateId, operationId, mainStepIndex, family, plan, refs }) {
+  if (family === "shopping") return executeShoppingPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  if (family === "work") return executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);
+}
+
+async function executeShoppingPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const hasMutation = plan.steps.some((s) => !["shopping.list","shopping.progress"].includes(s.op));
+  if (!hasMutation) {
+    let reply = ""; const outputs = [];
+    for (const step of plan.steps) {
+      if (step.op === "shopping.list") {
+        const all = await capabilitySnapshot(env, chatId, "shopping");
+        const rows = all.filter((x) => x.kind === "shopping_item" && (step.args.status === "all" || x.status === step.args.status));
+        outputs.push({ op: step.op, rows: rows.map(({ id, ...x }) => x) }); reply = renderShoppingList(rows);
+      } else if (step.op === "shopping.progress") {
+        const all = (await capabilitySnapshot(env, chatId, "shopping")).filter((x) => x.kind === "shopping_item");
+        const counts = Object.fromEntries(["pending","bought","unavailable","skipped"].map((status) => [status, all.filter((x) => x.status === status).length]));
+        outputs.push({ op: step.op, counts, total: all.length }); reply = `🛒 الإجمالي ${all.length} — باقي ${counts.pending} — اتجاب ${counts.bought} — مش متاح ${counts.unavailable} — متخطّي ${counts.skipped}`;
+      }
+    }
+    return { steps: outputs, reply: reply || compactText(plan.reply_hint,800) };
+  }
+  if (plan.steps.some((s) => ["shopping.list","shopping.progress"].includes(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN", "Do not mix shopping reads and mutations in one family plan");
+  const stmts = [], created = [], expected = [];
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const step = plan.steps[i], at = nowIso();
+    if (step.op === "shopping.add") {
+      for (let j = 0; j < step.args.items.length; j += 1) {
+        const item = step.args.items[j], id = await stableCapabilityId("shop", operationId, mainStepIndex * 100 + i, j);
+        created[i] = created[i] || id;
+        const state = { quantity: item.quantity, category: item.category, priority: item.priority };
+        stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_item',NULL,?,?,'pending',?,?,?)`).bind(id,chatId,item.title,JSON.stringify(state),updateId,at,at));
+        expected.push({ id, status: "pending", title: item.title });
+      }
+    } else if (step.op === "shopping.mark") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(step.args.status,updateId,at,id,chatId)); expected.push({ id, status: step.args.status });
+    } else if (step.op === "shopping.remove") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='archived',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(updateId,at,id,chatId)); expected.push({ id, status: "archived" });
+    } else if (step.op === "shopping.session.start") {
