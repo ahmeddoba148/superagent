@@ -1,0 +1,144 @@
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new SandPlanError("BAD_PLAN", "Plan must be an object");
+  }
+
+  const effect = String(input.effect ?? "");
+  if (!new Set(["answer", "mutate", "clarify"]).has(effect)) {
+    throw new SandPlanError("BAD_EFFECT", "Plan effect must be answer, mutate, or clarify");
+  }
+
+  const actionsRaw = Array.isArray(input.actions) ? input.actions : [];
+  if (actionsRaw.length > PLANNER_MAX_ACTIONS) throw new SandPlanError("TOO_MANY_ACTIONS", "Planner exceeded action budget");
+
+  const actions = actionsRaw.map((action, index) => {
+    if (!action || typeof action !== "object") throw new SandPlanError("BAD_ACTION", `Action ${index} invalid`);
+    const type = String(action.type ?? "");
+    if (!ALLOWED_ACTIONS.has(type)) throw new SandPlanError("ACTION_NOT_ALLOWED", `Action not allowed: ${type}`);
+    const args = action.args && typeof action.args === "object" && !Array.isArray(action.args) ? action.args : {};
+
+    if (type === "object.create") {
+      const kind = String(args.kind ?? "generic");
+      if (!ALLOWED_OBJECT_KINDS.has(kind)) throw new SandPlanError("BAD_KIND", `Unsupported object kind: ${kind}`);
+      const title = compactText(args.title, 240);
+      if (!title) throw new SandPlanError("TITLE_REQUIRED", "Created object needs a title");
+      return { type, args: { kind, title, fields: sanitizeObjectFields(args.fields) } };
+    }
+
+    if (type === "object.patch") {
+      const target = validateTarget(args.target, snapshot);
+      const fields = sanitizeObjectFields(args.fields);
+      if (Object.keys(fields).length === 0) throw new SandPlanError("EMPTY_PATCH", "Object patch has no fields");
+      const current = target.mode === "id"
+        ? snapshot.objects.find((object) => object.id === target.id) ?? null
+        : snapshot.focus ?? (snapshot.workspace.focus_object_id
+          ? snapshot.objects.find((object) => object.id === snapshot.workspace.focus_object_id) ?? null
+          : null);
+      if (current) {
+        const preview = mergeObjectState(current.state, fields, current.title);
+        if (JSON.stringify(preview) === JSON.stringify(current.state)) {
+          throw new SandPlanError("NOOP_PATCH", "Object patch would not change the target state");
+        }
+      }
+      return { type, args: { target, fields } };    }
+
+    if (type === "object.archive" || type === "reminder.cancel") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.set") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.clear") return { type, args: {} };
+
+    if (type === "reminder.set") {
+      const mode = String(args.mode ?? "");
+      if (!new Set(["at_start", "absolute"]).has(mode)) throw new SandPlanError("BAD_REMINDER_MODE", `Bad reminder mode: ${mode}`);
+      const target = validateTarget(args.target, snapshot);
+      const remindLocal = mode === "absolute" ? normalizeLocalMinute(args.remind_local) : null;
+      if (mode === "absolute" && !remindLocal) throw new SandPlanError("REMINDER_TIME_REQUIRED", "Absolute reminder requires remind_local");
+      return { type, args: { target, mode, remind_local: remindLocal, title: compactText(args.title, 240) || null } };
+    }
+
+    if (type === "capability.request") {
+      const family = compactText(args.family, 80);
+      const request = compactText(args.request, 1200);
+      if (!family || !CAPABILITY_FAMILIES[family]) throw new SandPlanError("BAD_CAPABILITY_FAMILY", `Unknown capability family: ${family}`);
+      if (!request) throw new SandPlanError("BAD_CAPABILITY_REQUEST", "Capability request requires semantic request text");
+      if (!CAPABILITY_FAMILY_CONTRACTS[family]) throw new SandPlanError("CAPABILITY_NOT_READY", `Capability family is not enabled yet: ${family}`);
+      const target = args.target === undefined || args.target === null ? null : validateTarget(args.target, snapshot);
+      return { type, args: { family, request, target } };
+    }
+
+    if (type === "memory.upsert") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory requires subject and predicate");
+      return {
+        type,
+        args: {
+          subject,
+          predicate,
+          value: args.value ?? null,
+          confidence: Math.max(0, Math.min(1, Number(args.confidence ?? 1))),
+          sensitivity: compactText(args.sensitivity, 40) || "normal",
+          expires_at: args.expires_at ? compactText(args.expires_at, 40) : null,
+        },
+      };
+    }
+
+    if (type === "memory.forget") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory forget requires subject and predicate");
+      return { type, args: { subject, predicate } };
+    }
+
+    throw new SandPlanError("BAD_ACTION", `Unhandled action: ${type}`);
+  });
+
+  const domainMutationTypes = new Set([
+    "object.create", "object.patch", "object.archive",
+    "reminder.set", "reminder.cancel", "memory.upsert", "memory.forget", "capability.request",
+  ]);
+  if (effect === "mutate" && !actions.some((action) => domainMutationTypes.has(action.type))) {
+    throw new SandPlanError("EMPTY_MUTATION", "Mutation intent requires a real domain mutation action");
+  }
+
+  let focus = { mode: "keep" };
+  if (input.focus && typeof input.focus === "object") {
+    const mode = String(input.focus.mode ?? "keep");
+    if (mode === "set") focus = { mode: "set", target: validateTarget(input.focus.target, snapshot) };
+    else if (mode === "clear") focus = { mode: "clear" };
+    else focus = { mode: "keep" };
+  }
+
+  const clarification = input.clarification && typeof input.clarification === "object"
+    ? {
+        question: compactText(input.clarification.question, 800),
+        reason: compactText(input.clarification.reason, 400),
+      }
+    : null;
+
+  return {
+    effect,
+    intent: compactText(input.intent, 120) || "conversation",
+    continuation: Boolean(input.continuation),
+    goal: compactText(input.goal, 800),
+    thread_summary: compactText(input.thread_summary, 1800),
+    focus,
+    actions,
+    clarification: clarification?.question ? clarification : null,
+    reply: compactText(input.reply, AI_MAX_REPLY_CHARS),
+    confidence: Math.max(0, Math.min(1, Number(input.confidence ?? 0.5))),
+  };
+}
+
+function sanitizeObjectFields(fields) {
+  const src = fields && typeof fields === "object" && !Array.isArray(fields) ? fields : {};
+  const out = {};
+  const textFields = ["title", "description", "start_local", "start_date_local", "start_time_local", "end_local", "location", "status"];
+  for (const key of textFields) {
+    if (Object.hasOwn(src, key)) out[key] = src[key] === null ? null : compactText(src[key], key === "description" ? 3000 : 300);
+  }
+  if (Object.hasOwn(src, "people")) out.people = Array.isArray(src.people) ? src.people.slice(0, 20).map((x) => compactText(x, 160)).filter(Boolean) : [];
