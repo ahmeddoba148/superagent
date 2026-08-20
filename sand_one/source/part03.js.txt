@@ -98,6 +98,7 @@ function plannerSystemPrompt(snapshot) {
     "Interpret meaning and conversational reference from the whole workspace. Never route by literal phrases or keyword matching.",
     "The application owns state and execution. You may only request actions from the declared action contract.",
     "Treat the current focus object as the default referent only when the new turn semantically continues it. If the user clearly changes subject, do not force the old focus.",
+    "When more than one active object exists, every object-targeting mutation must use the exposed ref of the intended object (such as o1 or o2), even when that object is currently focused. Resolve explicit semantic references by object identity and meaning, never by recency alone.",
     "A user correction or refinement should update the existing intended object rather than create a duplicate when continuity is clear.",
     "Do not ask for fields that are unnecessary for the user's goal. A commitment can exist with a start time and no end time.",
     "Do not silently invent an end time, attendee, location, recurrence, or reminder policy.",
@@ -290,7 +291,11 @@ async function planSemanticTurn(env, { chatId, updateId, text, snapshot }) {
 function validateTarget(target, snapshot) {
   if (typeof target === "string") {
     const ref = target.trim();
-    if (ref === "focus" || ref === "created") return { mode: "focus" };
+    if (ref === "focus") {
+      if (snapshot.objects.length > 1) throw new SandPlanError("EXPLICIT_TARGET_REQUIRED", "Multiple active objects require an explicit exposed object ref");
+      return { mode: "focus" };
+    }
+    if (ref === "created") return { mode: "focus" };
     const match = /^o([1-9][0-9]*)$/.exec(ref);
     const index = match ? Number(match[1]) - 1 : -1;
     const object = index >= 0 ? snapshot.objects[index] : null;
@@ -300,7 +305,11 @@ function validateTarget(target, snapshot) {
 
   if (!target || typeof target !== "object") throw new SandPlanError("BAD_TARGET", "Missing target");
   const mode = String(target.mode ?? "");
-  if (mode === "focus" || mode === "created") return { mode: "focus" };
+  if (mode === "focus") {
+    if (snapshot.objects.length > 1) throw new SandPlanError("EXPLICIT_TARGET_REQUIRED", "Multiple active objects require an explicit exposed object ref");
+    return { mode: "focus" };
+  }
+  if (mode === "created") return { mode: "focus" };
   if (mode === "ref") {
     const match = /^o([1-9][0-9]*)$/.exec(String(target.ref ?? ""));
     const index = match ? Number(match[1]) - 1 : -1;
