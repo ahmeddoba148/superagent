@@ -1,0 +1,134 @@
+      for (const [key, value] of Object.entries(step.args.patch)) state[key] = value;
+      statements.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='person'`)
+        .bind(JSON.stringify(state), updateId, at, id, chatId));
+      expected.push({ id, kind: "person", title: String(row.title), status: String(row.status) });
+    } else if (step.op === "relations.set") {
+      const subjectId = resolveFamilyRef(step.args.subject, refs, created);
+      const objectId = resolveFamilyRef(step.args.object, refs, created);
+      if (!subjectId || !objectId || subjectId === objectId) throw new SandPlanError("BAD_RELATION", "Relationship endpoints could not be resolved");
+      const pairHash = await textHash(`${chatId}:${subjectId}:${objectId}:relationship`);
+      const id = `relation_${pairHash.slice(0, 28)}`;
+      const state = { object_id: objectId, relation: step.args.relation };
+      statements.push(env.DB.prepare(`INSERT INTO ${TABLES.lifeItems}
+        (id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at)
+        VALUES(?,?,'relationship',?,?,?,'active',?,?,?)
+        ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,title=excluded.title,state_json=excluded.state_json,status='active',source_update_id=excluded.source_update_id,updated_at=excluded.updated_at`)
+        .bind(id, chatId, subjectId, step.args.relation, JSON.stringify(state), updateId, at, at));
+      expected.push({ id, kind: "relationship", title: step.args.relation, status: "active", subjectId, objectId });
+    }
+  }
+
+  if (statements.length) await env.DB.batch(statements);
+  for (const exp of expected) {
+    const row = await env.DB.prepare(`SELECT kind,parent_id,title,state_json,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id, chatId).first();
+    if (!row || String(row.kind) !== exp.kind || String(row.title) !== exp.title || String(row.status) !== exp.status) {
+      throw new Error("Memory/People capability verification failed");
+    }
+    if (exp.kind === "relationship") {
+      const state = safeJsonParse(row.state_json, {});
+      if (String(row.parent_id ?? "") !== exp.subjectId || String(state.object_id ?? "") !== exp.objectId) {
+        throw new Error("Relationship verification failed");
+      }
+    }
+  }
+  return {
+    steps: plan.steps.map((step, index) => ({ op: step.op, created_id: created[index] || null })),
+    reply: compactText(plan.reply_hint, 800) || "تمام، حدّثت الأشخاص والعلاقات واتأكدت من النتيجة ✅",
+  };
+}
+
+const UTILITY_UNITS = Object.freeze({
+  m: Object.freeze({ dimension: "length", factor: 1 }), km: Object.freeze({ dimension: "length", factor: 1000 }),
+  cm: Object.freeze({ dimension: "length", factor: 0.01 }), mm: Object.freeze({ dimension: "length", factor: 0.001 }),
+  mi: Object.freeze({ dimension: "length", factor: 1609.344 }), yd: Object.freeze({ dimension: "length", factor: 0.9144 }),
+  ft: Object.freeze({ dimension: "length", factor: 0.3048 }), in: Object.freeze({ dimension: "length", factor: 0.0254 }),
+  kg: Object.freeze({ dimension: "mass", factor: 1 }), g: Object.freeze({ dimension: "mass", factor: 0.001 }),
+  mg: Object.freeze({ dimension: "mass", factor: 0.000001 }), lb: Object.freeze({ dimension: "mass", factor: 0.45359237 }),
+  oz: Object.freeze({ dimension: "mass", factor: 0.028349523125 }),
+  l: Object.freeze({ dimension: "volume", factor: 1 }), ml: Object.freeze({ dimension: "volume", factor: 0.001 }),
+  cup_us: Object.freeze({ dimension: "volume", factor: 0.2365882365 }), gal_us: Object.freeze({ dimension: "volume", factor: 3.785411784 }),
+  b: Object.freeze({ dimension: "data", factor: 1 }), kb: Object.freeze({ dimension: "data", factor: 1000 }),
+  mb: Object.freeze({ dimension: "data", factor: 1000000 }), gb: Object.freeze({ dimension: "data", factor: 1000000000 }),
+  kib: Object.freeze({ dimension: "data", factor: 1024 }), mib: Object.freeze({ dimension: "data", factor: 1048576 }),
+  gib: Object.freeze({ dimension: "data", factor: 1073741824 }),
+});
+
+function tokenizeArithmetic(expression) {
+  const raw = String(expression ?? "").replace(/\s+/g, "");
+  if (!raw || raw.length > 500) throw new SandPlanError("BAD_EXPRESSION", "Expression is empty or too long");
+  const tokens = [];
+  let i = 0;
+  while (i < raw.length) {
+    const rest = raw.slice(i);
+    const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i.exec(rest);
+    if (number) {
+      const value = Number(number[0]);
+      if (!Number.isFinite(value)) throw new SandPlanError("BAD_EXPRESSION", "Invalid number");
+      tokens.push({ type: "number", value });
+      i += number[0].length;
+      continue;
+    }
+    const ch = raw[i];
+    if ("+-*/%^()".includes(ch)) {
+      tokens.push({ type: ch === "(" || ch === ")" ? "paren" : "op", value: ch });
+      i += 1;
+      continue;
+    }
+    throw new SandPlanError("BAD_EXPRESSION", "Unsupported character in expression");
+  }
+  if (tokens.length > 200) throw new SandPlanError("BAD_EXPRESSION", "Expression has too many tokens");
+  return tokens;
+}
+
+function evaluateArithmetic(expression) {
+  const tokens = tokenizeArithmetic(expression);
+  /** @type {Array<{type:string,value:any}>} */ const output = [];
+  /** @type {Array<{type:string,value:any}>} */ const operators = [];
+  const precedence = { "u-": 4, "^": 3, "*": 2, "/": 2, "%": 2, "+": 1, "-": 1 };
+  const rightAssociative = new Set(["u-", "^"]);
+  let previous = "start";
+  for (const token of tokens) {
+    if (token.type === "number") {
+      output.push(token);
+      previous = "value";
+      continue;
+    }
+    if (token.type === "paren" && token.value === "(") {
+      operators.push(token);
+      previous = "open";
+      continue;
+    }
+    if (token.type === "paren" && token.value === ")") {
+      let found = false;
+      while (operators.length) {
+        const top = operators.pop();
+        if (top.type === "paren" && top.value === "(") { found = true; break; }
+        output.push(top);
+      }
+      if (!found) throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
+      previous = "value";
+      continue;
+    }
+    let op = token.value;
+    if (op === "-" && (previous === "start" || previous === "open" || previous === "operator")) op = "u-";
+    if (op === "+" && (previous === "start" || previous === "open" || previous === "operator")) {
+      previous = "operator";
+      continue;
+    }
+    while (operators.length) {
+      const top = operators[operators.length - 1];
+      if (top.type !== "op") break;
+      const pTop = precedence[top.value], pCurrent = precedence[op];
+      if (pTop > pCurrent || (pTop === pCurrent && !rightAssociative.has(String(op)))) output.push(operators.pop());
+      else break;
+    }
+    operators.push({ type: "op", value: op });
+    previous = "operator";
+  }
+  while (operators.length) {
+    const top = operators.pop();
+    if (top.type === "paren") throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
+    output.push(top);
+  }
+  /** @type {number[]} */ const stack = [];
+  for (const token of output) {
