@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0-dev.4",
+  "parts": 25,
+  "required_family_states": {
+    "schedule": "core",
+    "work": "active",
+    "shopping": "active",
+    "memory_people": "active",
+    "web_live": "active",
+    "files_media": "input_adapter",
+    "utility": "active"
+  },
+  "required_selftests": [
+    "voice_adapter_contract",
+    "capability_family_contract"
+  ],
+  "required_functions": [
+    "normalizeLocalMinute",
+    "health",
+    "callOneAiModel"
+  ]
+}
