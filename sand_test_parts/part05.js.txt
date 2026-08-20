@@ -1,0 +1,168 @@
+ERT INTO ${TABLES.aiCalls}
+    (chat_id, update_id, model_id, model_role, latency_ms, ok, http_status, error_code, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(
+      record.chatId,
+      record.updateId,
+      record.modelId,
+      record.modelRole,
+      Math.max(0, Number(record.latencyMs) || 0),
+      record.ok ? 1 : 0,
+      record.httpStatus ?? null,
+      record.errorCode ?? null,
+      nowIso(),
+    )
+    .run();
+}
+
+async function recordAiCallSafe(env, record) {
+  try {
+    await recordAiCall(env, record);
+  } catch (error) {
+    logError("ai_call_log_noncritical", error, {
+      chatId: record.chatId,
+      updateId: record.updateId,
+      modelId: record.modelId,
+    });
+  }
+}
+
+async function callOneAiModel(env, model, messages, timeoutMs) {
+  requireBinding(env, "OMNIAI_API_KEY");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = nowMs();
+
+  try {
+    const request = new Request(omniChatUrl(env), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.OMNIAI_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages,
+        temperature: 0.35,
+        max_tokens: 900,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    const response = env?.OMNIAI_SERVICE?.fetch
+      ? await env.OMNIAI_SERVICE.fetch(request)
+      : await fetch(request);
+
+    const httpStatus = response.status;
+    const data = await response.json().catch((error) => {
+      logError("omniai_json", error, { model: model.id, status: httpStatus });
+      return null;
+    });
+
+    if (!response.ok) {
+      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
+      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
+    }
+
+    const content = aiContent(data);
+    if (!content) {
+      throw new SandHttpError(`OmniAI ${model.id} returned empty content`, httpStatus);
+    }
+
+    return {
+      text: content,
+      latencyMs: nowMs() - started,
+      httpStatus,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callAiChain(env, { chatId, updateId, messages }) {
+  requireBinding(env, "OMNIAI_API_KEY");
+  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) {
+    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
+  }
+
+  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
+  const failures = [];
+
+  for (const model of AI_MODELS) {
+    const remaining = deadline - nowMs();
+    if (remaining < 500) break;
+
+    const timeoutMs = Math.min(AI_MODEL_TIMEOUT_MS, remaining);
+    const started = nowMs();
+
+    try {
+      const result = await callOneAiModel(env, model, messages, timeoutMs);
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        modelId: model.id,
+        modelRole: model.role,
+        latencyMs: result.latencyMs,
+        ok: true,
+        httpStatus: result.httpStatus,
+        errorCode: null,
+      });
+
+      return { text: result.text, modelId: model.id };
+    } catch (error) {
+      const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
+      const code = httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
+
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        modelId: model.id,
+        modelRole: model.role,
+        latencyMs: nowMs() - started,
+        ok: false,
+        httpStatus,
+        errorCode: code,
+      });
+
+      failures.push(`${model.id}:${code}`);
+      logError("ai_model_failed", error, { model: model.id, role: model.role, code });
+
+      // 401/403 are shared gateway/auth failures; trying another model cannot fix them.
+      if (httpStatus === 401 || httpStatus === 403) break;
+    }
+  }
+
+  const joined = failures.join(" | ");
+  let code = "AI_UNAVAILABLE";
+  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
+  else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL";
+  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";
+  else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM";
+  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";
+  throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
+}
+
+async function telegramApi(env, method, payload) {
+  requireBinding(env, "TELEGRAM_BOT_TOKEN");
+
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch((error) => {
+    logError("telegram_response_json", error, { method, status: response.status });
+    return null;
+  });
+
+  if (!response.ok || !data?.ok) {
+    throw new Error(`Telegram ${method} failed (${response.status}): ${JSON.stringify(data).slice(0, 500)}`);
+  }
+
+  return data;
+}
+
+async function sendTelegramText(env, chatId, 
