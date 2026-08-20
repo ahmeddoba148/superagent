@@ -1,8 +1,12 @@
-# retrigger: 2026-08-20T23:55Z
+# retrigger: 2026-08-20T23:56Z
 name: SAND ONE dev6 Manual Staging
 on:
   push:
     branches: [sand-one-1.0]
+    paths:
+      - '.github/workflows/sand-one-dev6-manual-staging.yml'
+  pull_request:
+    branches: [main]
     paths:
       - '.github/workflows/sand-one-dev6-manual-staging.yml'
 permissions:
