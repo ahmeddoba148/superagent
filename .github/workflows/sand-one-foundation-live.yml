@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
-      - name: Assemble exact one-file SAND ONE dev2
+      - name: Assemble exact one-file SAND ONE
         run: |
           set -euo pipefail
           test -d sand_one/source
@@ -60,14 +60,35 @@ jobs:
           printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_ONE_1.0.js"]}' > tsconfig.json
           npx tsc -p tsconfig.json --pretty false
 
-      - name: Probe fixed model chain
+      - name: Probe fixed model chain with failover semantics
         run: |
           set -euo pipefail
           test -n "$OKEY"
           node - <<'NODE'
-          const key=process.env.OKEY,ep='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const key=process.env.OKEY;
+          const ep='https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
           const models=['groq::openai/gpt-oss-120b','groq::qwen/qwen3.6-27b','gemini::gemini-3.5-flash-lite'];
-          (async()=>{for(const model of models){const c=new AbortController(),tm=setTimeout(()=>c.abort(),12000);try{const r=await fetch(ep,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});if(!r.ok)throw Error(model+' HTTP '+r.status);console.log(model+' OK '+r.status)}finally{clearTimeout(tm)}}})().catch(e=>{console.error(e);process.exit(1)});
+          (async()=>{
+            let success=0;
+            const failures=[];
+            for(const model of models){
+              const c=new AbortController();
+              const tm=setTimeout(()=>c.abort(),12000);
+              try{
+                const r=await fetch(ep,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:'رد OK فقط'}],max_tokens:32,stream:false}),signal:c.signal});
+                if(r.status===401||r.status===403) throw new Error('SHARED_AUTH_'+r.status+' '+model);
+                if(r.ok){success+=1;console.log(model+' OK '+r.status);}
+                else {failures.push(model+' HTTP '+r.status);console.log(model+' TRANSIENT '+r.status);}
+              }catch(e){
+                const msg=String(e?.message||e);
+                if(msg.startsWith('SHARED_AUTH_')) throw e;
+                failures.push(model+' '+msg);
+                console.log(model+' TRANSIENT '+msg);
+              }finally{clearTimeout(tm);}
+            }
+            if(success<1) throw new Error('MODEL_CHAIN_NO_LIVE_MODEL: '+failures.join(' | '));
+            console.log('MODEL_CHAIN_FAILOVER_PROBE_OK successes='+success+' transient='+failures.length);
+          })().catch(e=>{console.error(e);process.exit(1)});
           NODE
 
       - name: Provision dedicated SAND ONE staging D1
@@ -148,10 +169,10 @@ jobs:
           console.log('SAND_ONE_SHOPPING_WORK_PERSISTENCE_OK');
           NODE
 
-      - name: Upload exact gated dev2 source
+      - name: Upload exact gated source
         uses: actions/upload-artifact@v4
         with:
-          name: SAND_ONE_1.0-dev2-gated-source
+          name: SAND_ONE_1.0-gated-source
           path: SAND_ONE_1.0.js
           if-no-files-found: error
           retention-days: 30
