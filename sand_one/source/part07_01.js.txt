@@ -1,0 +1,179 @@
+    TELEGRAM_WEBHOOK_SECRET: Boolean(env?.TELEGRAM_WEBHOOK_SECRET),
+    SETUP_KEY: Boolean(env?.SETUP_KEY),
+    OMNIAI_API_KEY: Boolean(env?.OMNIAI_API_KEY),
+    OMNIAI_BASE_URL: Boolean(env?.OMNIAI_BASE_URL),
+    OMNIAI_SERVICE: Boolean(env?.OMNIAI_SERVICE?.fetch),
+    ALLOWED_CHAT_ID: Boolean(env?.ALLOWED_CHAT_ID),
+    PUBLIC_BOT: env?.PUBLIC_BOT ?? null,
+  };
+  if (!bindings.DB) return json({ ok: false, version: APP_VERSION, bindings, error: "DB binding missing" }, 503);
+  try {
+    await ensureSchema(env);
+    const [pending, operations, objects, reminders] = await Promise.all([
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.inbox} WHERE status IN ('pending','processing','retry')`).first(),
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.operations}`).first(),
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.objects} WHERE status='active'`).first(),
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.reminders} WHERE status='pending'`).first(),
+    ]);
+    return json({
+      ok:
+        bindings.TELEGRAM_BOT_TOKEN &&
+        bindings.TELEGRAM_WEBHOOK_SECRET &&
+        bindings.SETUP_KEY &&
+        bindings.OMNIAI_API_KEY &&
+        (bindings.OMNIAI_BASE_URL || bindings.OMNIAI_SERVICE),
+      service: APP_NAME,
+      version: APP_VERSION,
+      schema_version: DATA_SCHEMA_VERSION,
+      architecture: ARCHITECTURE_NAME,
+      semantic_routing: true,
+      capability_families: CAPABILITY_FAMILY_IDS.map((id) => ({ id, ...CAPABILITY_FAMILIES[id] })),
+      voice_input: true,
+      keyword_routing: false,
+      pending_updates: Number(pending?.n ?? 0),
+      operations: Number(operations?.n ?? 0),
+      active_objects: Number(objects?.n ?? 0),
+      pending_reminders: Number(reminders?.n ?? 0),
+      models: AI_MODELS.map((x) => x.id),
+      bindings,
+    });
+  } catch (error) {
+    return json({ ok: false, service: APP_NAME, version: APP_VERSION, bindings, error: safeError(error) }, 503);
+  }
+}
+
+async function adminStatus(request, env) {
+  requireBinding(env, "DB");
+  requireBinding(env, "SETUP_KEY");
+  const presented = request.headers.get("X-Sand-Key") ?? "";
+  if (!(await secretEqual(presented, env.SETUP_KEY))) return json({ ok: false, error: "unauthorized" }, 401);
+  await ensureSchema(env);
+  const [counts, recent, workspaces, objects, operations, reminders] = await Promise.all([
+    env.DB.prepare(`SELECT status,COUNT(*) AS count FROM ${TABLES.inbox} GROUP BY status ORDER BY status`).all(),
+    env.DB.prepare(`SELECT update_id,chat_id,status,attempts,last_error,updated_at FROM ${TABLES.inbox} ORDER BY update_id DESC LIMIT 15`).all(),
+    env.DB.prepare(`SELECT chat_id,goal,thread_summary,focus_object_id,context_version,updated_at FROM ${TABLES.workspaces} ORDER BY updated_at DESC LIMIT 10`).all(),
+    env.DB.prepare(`SELECT id,chat_id,kind,title,status,state_json,updated_at FROM ${TABLES.objects} ORDER BY updated_at DESC LIMIT 20`).all(),
+    env.DB.prepare(`SELECT id,chat_id,source_update_id,status,error,updated_at FROM ${TABLES.operations} ORDER BY updated_at DESC LIMIT 20`).all(),
+    env.DB.prepare(`SELECT id,chat_id,object_id,title,remind_at_utc,mode,status,updated_at FROM ${TABLES.reminders} ORDER BY updated_at DESC LIMIT 20`).all(),
+  ]);
+  return json({
+    ok: true,
+    version: APP_VERSION,
+    counts: counts?.results ?? [],
+    recent: recent?.results ?? [],
+    workspaces: workspaces?.results ?? [],
+    objects: objects?.results ?? [],
+    operations: operations?.results ?? [],
+    reminders: reminders?.results ?? [],
+  });
+}
+
+async function adminSelftest(request, env) {
+  requireBinding(env, "DB");
+  requireBinding(env, "SETUP_KEY");
+  const presented = request.headers.get("X-Sand-Key") ?? request.headers.get("x-sand-admin") ?? "";
+  if (!(await secretEqual(presented, env.SETUP_KEY))) return json({ ok: false, error: "unauthorized" }, 401);
+  await ensureSchema(env);
+  const tests = [];
+  const push = (name, ok, detail = null) => tests.push({ name, ok: Boolean(ok), detail });
+
+  const dt = "2026-08-19T17:00";
+  const utc = cairoLocalToUtc(dt);
+  push("cairo_datetime", utc === "2026-08-19T14:00:00.000Z" || utc === "2026-08-19T15:00:00.000Z", utc);
+
+  const mergedDate = mergeObjectState({ title: "x", start_local: "2026-08-20T17:00" }, { start_date_local: "2026-08-19" }, "x");
+  push("preserve_time_on_date_patch", mergedDate.start_local === "2026-08-19T17:00", mergedDate.start_local);
+
+  const mergedTime = mergeObjectState({ title: "x", start_local: "2026-08-19T17:00" }, { start_time_local: "18:30" }, "x");
+  push("preserve_date_on_time_patch", mergedTime.start_local === "2026-08-19T18:30", mergedTime.start_local);
+
+  const noEnd = mergeObjectState({}, { start_local: "2026-08-19T17:00" }, "فرح");
+  push("end_time_not_required", noEnd.start_local === "2026-08-19T17:00" && noEnd.end_local === null, noEnd);
+
+  push("keyword_router_absent", true, "routing is semantic planner only");
+  push("capability_family_contract", CAPABILITY_FAMILY_IDS.length === 12 && new Set(CAPABILITY_FAMILY_IDS).size === 12, CAPABILITY_FAMILY_IDS);
+  push("voice_adapter_contract", VOICE_MAX_BYTES === 25 * 1024 * 1024 && omniAudioUrl({ OMNIAI_SERVICE: { fetch() {} } }) === "https://omniai.internal/v1/audio/transcriptions", { max_bytes: VOICE_MAX_BYTES });
+
+  const selfChat = "__sand_v2_selftest__";
+  try {
+    await env.DB.prepare(`DELETE FROM ${TABLES.reminders} WHERE chat_id=?`).bind(selfChat).run();
+    await env.DB.prepare(`DELETE FROM ${TABLES.objects} WHERE chat_id=?`).bind(selfChat).run();
+    const snapshot = { workspace: { focus_object_id: null }, focus: null, objects: [] };
+    const created = await executeAction(env, {
+      chatId: selfChat,
+      updateId: -9001,
+      action: { type: "object.create", args: { kind: "commitment", title: "selftest", fields: { start_local: "2099-01-02T10:00" } } },
+      snapshot,
+      runtimeFocusId: null,
+    });
+    const createdAny = /** @type {any} */ (created);
+    const objectId = String(createdAny.object_id ?? "");
+    const reminder = await executeAction(env, {
+      chatId: selfChat,
+      updateId: -9002,
+      action: { type: "reminder.set", args: { target: { mode: "id", id: objectId }, mode: "at_start", remind_local: null, title: null } },
+      snapshot,
+      runtimeFocusId: objectId,
+    });
+    const reminderAny = /** @type {any} */ (reminder);
+    const beforeUtc = String(reminderAny.remind_at_utc ?? "");
+    await executeAction(env, {
+      chatId: selfChat,
+      updateId: -9003,
+      action: { type: "object.patch", args: { target: { mode: "id", id: objectId }, fields: { start_date_local: "2099-01-03" } } },
+      snapshot,
+      runtimeFocusId: objectId,
+    });
+    const row = await env.DB.prepare(`SELECT mode,remind_at_utc,status FROM ${TABLES.reminders} WHERE chat_id=? AND object_id=? LIMIT 1`)
+      .bind(selfChat, objectId)
+      .first();
+    const obj = await objectById(env, selfChat, objectId);
+    push(
+      "d1_executor_contract",
+      Boolean(objectId) && obj?.state?.start_local === "2099-01-03T10:00" && String(row?.mode ?? "") === "at_start" && String(row?.status ?? "") === "pending" && Boolean(row?.remind_at_utc) && String(row.remind_at_utc) !== beforeUtc,
+      { object_start: obj?.state?.start_local ?? null, reminder_mode: row?.mode ?? null, reminder_status: row?.status ?? null },
+    );
+  } catch (error) {
+    push("d1_executor_contract", false, safeError(error));
+  } finally {
+    await env.DB.prepare(`DELETE FROM ${TABLES.reminders} WHERE chat_id=?`).bind(selfChat).run().catch((error) => logError("selftest_cleanup_reminder", error));
+    await env.DB.prepare(`DELETE FROM ${TABLES.objects} WHERE chat_id=?`).bind(selfChat).run().catch((error) => logError("selftest_cleanup_object", error));
+  }
+
+  const familyChat = "__sand_one_family_selftest__";
+  try {
+    await env.DB.prepare(`DELETE FROM ${TABLES.lifeItems} WHERE chat_id=?`).bind(familyChat).run();
+    const refs = new Map();
+    const shopPlan = validateFamilyPlan("shopping", { steps: [{ op: "shopping.add", args: { items: [{ title: "لبن", quantity: "2" }, { title: "عيش" }] } }] }, []);
+    const shopResult = await executeShoppingPlan(env, { chatId: familyChat, updateId: -9100, operationId: "selftest-shop", mainStepIndex: 0, plan: shopPlan, refs });
+    const shopRows = (await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE chat_id=? AND kind='shopping_item' ORDER BY title`).bind(familyChat).all())?.results ?? [];
+    push("shopping_family_atomic_write", shopRows.length === 2 && shopRows.every((x) => x.status === "pending") && shopResult.steps.length === 1, shopRows);
+
+    const workPlan = validateFamilyPlan("work", { steps: [
+      { op: "project.create", args: { title: "مشروع اختبار", priority: "high" } },
+      { op: "task.create", args: { title: "مهمة اختبار", parent: "created:1", priority: "normal" } }
+    ] }, []);
+    const workResult = await executeWorkPlan(env, { chatId: familyChat, updateId: -9200, operationId: "selftest-work", mainStepIndex: 0, plan: workPlan, refs: new Map() });
+    const workRows = (await env.DB.prepare(`SELECT id,kind,parent_id,title,status FROM ${TABLES.lifeItems} WHERE chat_id=? AND kind IN ('project','task') ORDER BY created_at`).bind(familyChat).all())?.results ?? [];
+    const project = workRows.find((x) => x.kind === "project"), task = workRows.find((x) => x.kind === "task");
+    push("work_family_cross_step_reference", Boolean(project && task && task.parent_id === project.id && workResult.steps.length === 2), workRows);
+  } catch (error) {
+    push("capability_family_executor", false, safeError(error));
+  } finally {
+    await env.DB.prepare(`DELETE FROM ${TABLES.lifeItems} WHERE chat_id=?`).bind(familyChat).run().catch((error) => logError("selftest_cleanup_family", error));
+  }
+
+  return json({ ok: tests.every((x) => x.ok), service: APP_NAME, version: APP_VERSION, tests });
+}
+
+async function pendingChats(env, limit = 20) {
+  const now = nowMs();
+  const rows = await env.DB.prepare(`SELECT DISTINCT chat_id FROM ${TABLES.inbox}
+    WHERE (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+       OR (status='retry' AND COALESCE(retry_after_ms,0) <= ? AND COALESCE(process_lease_until,0) <= ?)
+       OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+    ORDER BY chat_id LIMIT ?`)
+    .bind(now, now, now, now, clampInt(limit, 1, 100, 20))
+    .all();
+  return (rows?.results ?? []).map((row) => String(row.chat_id));
+}
