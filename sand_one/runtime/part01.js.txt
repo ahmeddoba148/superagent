@@ -1,0 +1,251 @@
+      "weather.read": "Current weather + 1..7 day forecast. city or latitude+longitude required",
+      "places.search": "Google Places text search. args.query required; optional coordinates/radius/limit/language",
+    }),
+  }),
+});
+const CAPABILITY_FAMILY_CATALOG = Object.freeze(
+  CAPABILITY_FAMILY_IDS.map((id) => ({ id, label: CAPABILITY_FAMILIES[id].label, role: CAPABILITY_FAMILIES[id].role, state: CAPABILITY_FAMILIES[id].state })),
+);
+
+const ALLOWED_ACTIONS = new Set([
+  "object.create",
+  "object.patch",
+  "object.archive",
+  "focus.set",
+  "focus.clear",
+  "reminder.set",
+  "reminder.cancel",
+  "memory.upsert",
+  "memory.forget",
+  "capability.request",
+]);
+
+const ALLOWED_OBJECT_KINDS = new Set([
+  "commitment",
+  "task",
+  "note",
+  "contact",
+  "list",
+  "project",
+  "preference",
+  "generic",
+]);
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET" && url.pathname === "/") {
+        return json({
+          ok: true,
+          service: APP_NAME,
+          version: APP_VERSION,
+          architecture: ARCHITECTURE_NAME,
+          semantic_routing: true,
+          capability_families: CAPABILITY_FAMILY_IDS,
+          voice_input: true,
+          keyword_routing: false,
+          models: AI_MODELS.map((x) => x.id),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/health") {
+        return await health(env);
+      }
+
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === "/setup") {
+        return await setup(request, env);
+      }
+
+      if (request.method === "POST" && url.pathname === "/telegram") {
+        return await telegramWebhook(request, env, ctx);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/drain") {
+        return await internalDrain(request, env, ctx);
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/status") {
+        return await adminStatus(request, env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/selftest") {
+        return await adminSelftest(request, env);
+      }
+
+      return new Response("Not found", { status: 404 });
+    } catch (error) {
+      logError("fetch_unhandled", error);
+      return json({ ok: false, error: "internal_error", message: safeError(error) }, 500);
+    }
+  },
+
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await ensureSchema(env);
+          const chats = await pendingChats(env, 20);
+          await Promise.allSettled(chats.map((chatId) => drainChat(env, chatId)));
+          await deliverDueReminders(env, 30);
+          await markStaleDeliveriesUncertain(env);
+        } catch (error) {
+          logError("scheduled_recovery", error, { scheduledTime: controller?.scheduledTime ?? null });
+        }
+      })(),
+    );
+  },
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function safeError(error) {
+  if (error instanceof Error) return error.message.slice(0, 1200);
+  return String(error ?? "Unknown error").slice(0, 1200);
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function truthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function compactText(value, max = 1000) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, max);
+}
+
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(String(value ?? ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function randomId(prefix = "id") {
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+async function secretEqual(a, b) {
+  const left = new TextEncoder().encode(String(a ?? ""));
+  const right = new TextEncoder().encode(String(b ?? ""));
+  const [leftHash, rightHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", left),
+    crypto.subtle.digest("SHA-256", right),
+  ]);
+  const x = new Uint8Array(leftHash);
+  const y = new Uint8Array(rightHash);
+  let diff = 0;
+  for (let i = 0; i < x.length; i += 1) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+function requireBinding(env, name) {
+  if (!env?.[name]) throw new Error(`Missing binding: ${name}`);
+}
+
+function logError(scope, error, extra = {}) {
+  console.error(JSON.stringify({ level: "error", scope, error: safeError(error), ...extra, at: nowIso() }));
+}
+
+class SandHttpError extends Error {
+  constructor(message, httpStatus) {
+    super(message);
+    this.name = "SandHttpError";
+    this.httpStatus = httpStatus;
+  }
+}
+
+class SandAiChainError extends Error {
+  constructor(code, failures) {
+    super(`AI unavailable: ${failures.join(" | ") || code}`);
+    this.name = "SandAiChainError";
+    this.code = code;
+    this.failures = failures;
+  }
+}
+
+class SandPlanError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "SandPlanError";
+    this.code = code;
+  }
+}
+
+async function ensureSchema(env) {
+  requireBinding(env, "DB");
+  const at = nowIso();
+
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.meta} (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.inbox} (
+      update_id INTEGER PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','done','retry','failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      process_lease_until INTEGER,
+      retry_after_ms INTEGER,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_inbox_pending
+      ON ${TABLES.inbox}(status, retry_after_ms, process_lease_until, update_id)`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_inbox_chat
+      ON ${TABLES.inbox}(chat_id, status, update_id)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.chatLeases} (
+      chat_id TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      lease_until INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.chatIngress} (
+      chat_id TEXT PRIMARY KEY,
+      settle_until_ms INTEGER NOT NULL,
+      last_seen_update_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.messages} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      update_id INTEGER NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+      content TEXT NOT NULL,
+      model_id TEXT,
