@@ -2,12 +2,14 @@ import { spawnSync } from 'node:child_process';
 
 const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = [0, 35_000, 70_000];
+const TURN_PACE_MS = 65_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function runOnce() {
+  const nodeOptions = [process.env.NODE_OPTIONS, '--import=./tools/sand-one-ci/paced-gate-fetch.mjs'].filter(Boolean).join(' ');
   const result = spawnSync(process.execPath, ['sand_v2/live_gate_once.mjs'], {
     encoding: 'utf8',
-    env: process.env,
+    env: { ...process.env, NODE_OPTIONS: nodeOptions, SAND_GATE_TURN_PACE_MS: String(TURN_PACE_MS) },
     maxBuffer: 16 * 1024 * 1024,
   });
   const stdout = String(result.stdout ?? '');
@@ -45,7 +47,7 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     console.log(`CORE_TORTURE_TRANSIENT_BACKOFF attempt=${attempt} ms=${backoff}`);
     await sleep(backoff);
   }
-  console.log(`CORE_TORTURE_ATTEMPT ${attempt}/${MAX_ATTEMPTS}`);
+  console.log(`CORE_TORTURE_ATTEMPT ${attempt}/${MAX_ATTEMPTS} pace_ms=${TURN_PACE_MS}`);
   const result = runOnce();
   if (result.status === 0) {
     console.log(`CORE_TORTURE_WRAPPER_OK attempt=${attempt}`);
