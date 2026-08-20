@@ -38,7 +38,6 @@ jobs:
       - name: Build exact one-file Agent OS V2
         run: |
           set -euo pipefail
-          gzip -dc sand_agent/build.py.gz > sand_agent/build.py
           python sand_agent/build.py
           test "$(sha256sum SAND_AGENT_OS_V2.js | awk '{print $1}')" = "82ace03c31a40712c44bf18c6c103a1b4c1c3f7f0521c814de8047509b4a5086"
           node --check SAND_AGENT_OS_V2.js
