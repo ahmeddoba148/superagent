@@ -1,26 +1,28 @@
-name: SAND ONE Foundation Live Gate
+name: SAND ONE Capability Live Gate
 on:
   push:
     branches: [sand-one-1.0]
     paths:
       - 'SAND_ONE_1.0.js'
+      - 'sand_one/source/**'
       - 'sand_v2/live_gate.mjs'
       - '.github/workflows/sand-one-foundation-live.yml'
   pull_request:
     branches: [main]
     paths:
       - 'SAND_ONE_1.0.js'
+      - 'sand_one/source/**'
       - 'sand_v2/live_gate.mjs'
       - '.github/workflows/sand-one-foundation-live.yml'
 permissions:
   contents: read
 concurrency:
-  group: sand-one-foundation-live
+  group: sand-one-capability-live
   cancel-in-progress: true
 jobs:
   live:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -35,10 +37,15 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
-      - name: Exact one-file static gate
+      - name: Assemble exact one-file SAND ONE dev2
         run: |
           set -euo pipefail
+          test -d sand_one/source
+          cat sand_one/source/part*.js.txt > SAND_ONE_1.0.js
+          test -s SAND_ONE_1.0.js
+          grep -q 'const APP_VERSION = "1.0.0-dev.2"' SAND_ONE_1.0.js
           sha256sum SAND_ONE_1.0.js
+          wc -l -c SAND_ONE_1.0.js
           node --check SAND_ONE_1.0.js
           ! grep -q 'text\.includes(' SAND_ONE_1.0.js
           ! grep -Eq '\beval\(' SAND_ONE_1.0.js
@@ -76,7 +83,6 @@ jobs:
           fi
           test -n "$DB_ID"
           echo "DB_ID=$DB_ID" >> "$GITHUB_ENV"
-          echo "Dedicated D1 ready: $DB"
 
       - name: Deploy isolated SAND ONE staging
         run: |
@@ -91,19 +97,23 @@ jobs:
           echo "W=$W" >> "$GITHUB_ENV"; echo "K=$K" >> "$GITHUB_ENV"
           for p in "TELEGRAM_BOT_TOKEN:$BOT" "OMNIAI_API_KEY:$OKEY" "TELEGRAM_WEBHOOK_SECRET:$W" "SETUP_KEY:$K" "ALLOWED_CHAT_ID:$CHAT"; do n=${p%%:*};v=${p#*:};printf '%s' "$v"|npx wrangler secret put "$n" --config "$CFG" >/dev/null;done
 
-      - name: Health, families and selftest proof
+      - name: Health, registry and selftest proof
         run: |
           set -euo pipefail
           healthy=0
-          for i in {1..35}; do
+          for i in {1..40}; do
             code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
-            if [ "$code" = 200 ] && node -e 'const x=JSON.parse(require("fs").readFileSync("/tmp/h"));process.exit(x.ok&&x.version==="1.0.0-dev.1"&&x.architecture==="semantic-conversation-workspace+capability-layer"&&x.semantic_routing===true&&x.keyword_routing===false&&x.voice_input===true&&x.capability_families?.length===12?0:1)'; then healthy=1; break; fi
+            if [ "$code" = 200 ] && node - <<'NODE'
+          const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/h'));
+          const f=Object.fromEntries((x.capability_families||[]).map(v=>[v.id,v.state]));
+          process.exit(x.ok&&x.version==='1.0.0-dev.2'&&x.architecture==='semantic-conversation-workspace+capability-layer'&&x.semantic_routing===true&&x.keyword_routing===false&&x.voice_input===true&&(x.capability_families||[]).length===12&&f.shopping==='active'&&f.work==='active'?0:1);
+          NODE
+            then healthy=1; break; fi
             sleep 2
           done
           [ "$healthy" = 1 ] || { cat /tmp/h >&2; exit 1; }
           cat /tmp/h
-          webhook_ok=0
-          admin_ok=0
+          webhook_ok=0; admin_ok=0
           for i in {1..50}; do
             wc=$(curl -sS -o /tmp/w -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
             ac=$(curl -sS -o /tmp/a -w '%{http_code}' -H "x-sand-admin: $K" "$URL/admin/selftest" || true)
@@ -128,10 +138,20 @@ jobs:
             exit "$rc"
           fi
 
-      - name: Upload exact foundation source
+      - name: Shopping and Work persistence contract
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute "$DB" --remote --config "$CFG" --command "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sand_one_life_items','sand_one_capability_plans') ORDER BY name;" --json > /tmp/tables.json
+          node - <<'NODE'
+          const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/tables.json'));const names=(x?.[0]?.results||[]).map(v=>v.name);
+          if(!names.includes('sand_one_life_items')||!names.includes('sand_one_capability_plans')) throw Error('capability tables missing: '+JSON.stringify(names));
+          console.log('SAND_ONE_SHOPPING_WORK_PERSISTENCE_OK');
+          NODE
+
+      - name: Upload exact gated dev2 source
         uses: actions/upload-artifact@v4
         with:
-          name: SAND_ONE_1.0-foundation-source
+          name: SAND_ONE_1.0-dev2-gated-source
           path: SAND_ONE_1.0.js
           if-no-files-found: error
           retention-days: 30
