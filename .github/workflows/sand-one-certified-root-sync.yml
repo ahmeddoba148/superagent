@@ -23,26 +23,42 @@ jobs:
         with:
           ref: sand-one-1.0
           fetch-depth: 0
-      - name: Assemble exact certified runtime source
+      - name: Refuse stale certification
         run: |
           set -euo pipefail
+          current=$(git rev-parse HEAD)
+          certified='${{ github.event.workflow_run.head_sha }}'
+          if [ "$current" != "$certified" ]; then
+            echo "STALE_CERTIFICATION current=$current certified=$certified"
+            exit 0
+          fi
+          echo "CERTIFIED_HEAD_MATCH=true" >> "$GITHUB_ENV"
+      - name: Assemble exact certified runtime source
+        if: env.CERTIFIED_HEAD_MATCH == 'true'
+        run: |
+          set -euo pipefail
+          test -s sand_one/runtime/manifest.json
+          VERSION=$(node -p 'require("./sand_one/runtime/manifest.json").version')
+          PARTS=$(node -p 'require("./sand_one/runtime/manifest.json").parts')
           count=$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')
-          [ "$count" = "25" ]
+          [ "$count" = "$PARTS" ]
           cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_1.0.js
-          grep -q 'const APP_VERSION = "1.0.0-dev.4"' /tmp/SAND_ONE_1.0.js
+          grep -Fq "const APP_VERSION = \"$VERSION\"" /tmp/SAND_ONE_1.0.js
           node --check /tmp/SAND_ONE_1.0.js
           sha256sum /tmp/SAND_ONE_1.0.js
           cp /tmp/SAND_ONE_1.0.js SAND_ONE_1.0.js
       - name: Commit only when root differs
+        if: env.CERTIFIED_HEAD_MATCH == 'true'
         run: |
           set -euo pipefail
           if git diff --quiet -- SAND_ONE_1.0.js; then
             echo 'ROOT_ALREADY_CERTIFIED'
             exit 0
           fi
+          VERSION=$(node -p 'require("./sand_one/runtime/manifest.json").version')
           git config user.name 'SAND ONE Gate'
           git config user.email 'actions@users.noreply.github.com'
           git add -- SAND_ONE_1.0.js
           git diff --cached --check
-          git commit -m 'SAND ONE: sync certified dev4 runtime root'
+          git commit -m "SAND ONE: sync certified $VERSION runtime root"
           git push origin HEAD:sand-one-1.0
