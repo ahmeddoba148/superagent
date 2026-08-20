@@ -51,3 +51,4 @@ if (live < 1) {
 }
 
 console.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK live=${live} transient=${transient.length}`);
+// Re-certification trigger: root sync must follow a fresh green canonical gate.
