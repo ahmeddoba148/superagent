@@ -115,6 +115,7 @@ async function executeFamilyPlan(env, { chatId, updateId, operationId, mainStepI
   if (family === "memory_people") return executeMemoryPeoplePlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
   if (family === "utility") return executeUtilityPlan(env, { plan });
   if (family === "web_live") return executeWebLivePlan(env, { plan });
+  if (family === "local_life") return executeLocalLifePlan(env, { plan });
   throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);
 }
 

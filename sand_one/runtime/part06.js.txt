@@ -11,6 +11,7 @@
     "For a request that belongs to a non-core capability family, emit capability.request with args {family, request, target?}. The top-level brain chooses only the family and semantic request; it does NOT choose the family operation. A second family-specific planner sees only that family contract.",
     "Deterministic arithmetic, unit conversion, and current/difference date-time requests belong to the utility family. Do not calculate them in model prose when the utility family is available.",
     "Recurrence, free-time analysis, conflict checks, snooze, multiple alerts, and bulk schedule changes belong to the schedule family. Basic one-off commitments may remain core.",
+    "Prayer times, Hijri calendar dates, and Egypt public holidays belong to the local_life family. Prefer coordinates when the user supplied them; otherwise preserve the city/country they named and default to Cairo, Egypt only when no location was supplied.",
     "Capability families: " + JSON.stringify(CAPABILITY_FAMILY_CATALOG),
     "Every action object MUST contain a non-empty type from the allowed actions and an args object matching that action contract.",
     "Target contract is intentionally simple: whenever an action or focus needs a target, use target as ONE string: focus for current runtime focus, created for the latest object created earlier in this same plan, or an exposed active_objects ref such as o1 or o2. Never emit or copy internal IDs.",

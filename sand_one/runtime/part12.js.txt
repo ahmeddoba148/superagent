@@ -59,6 +59,7 @@
       return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
     }
   }
+  if (family === "local_life") return validateLocalLifeStep(op, a);
   throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
 }
 
