@@ -1,0 +1,2 @@
+SAND ONE dev5 canonical Schedule certification trigger.
+Runtime source is unchanged; certification target is manifest 1.0.0-dev.5.
