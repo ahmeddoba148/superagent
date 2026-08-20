@@ -1,0 +1,108 @@
+  if (family === "memory_people") {
+    if (op === "people.create") {
+      const name = compactText(a.name, 240);
+      if (!name) throw new SandPlanError("PERSON_NAME_REQUIRED", "Person name required");
+      return {
+        op,
+        args: {
+          name,
+          relationship_to_user: compactText(a.relationship_to_user, 160) || null,
+          notes: compactText(a.notes, 2000) || null,
+          facts: sanitizeScalarFacts(a.facts),
+        },
+      };
+    }
+    if (op === "people.list") return { op, args: { query: compactText(a.query, 240) || null } };
+    if (op === "people.update") {
+      const target = compactText(a.target, 120);
+      if (!refs.has(target) || !target.startsWith("p")) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person target");
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(a, "relationship_to_user")) patch.relationship_to_user = compactText(a.relationship_to_user, 160) || null;
+      if (Object.prototype.hasOwnProperty.call(a, "notes")) patch.notes = compactText(a.notes, 2000) || null;
+      if (Object.prototype.hasOwnProperty.call(a, "facts")) patch.facts = sanitizeScalarFacts(a.facts);
+      if (!Object.keys(patch).length) throw new SandPlanError("EMPTY_PERSON_PATCH", "Person update has no fields");
+      return { op, args: { target, patch } };
+    }
+    if (op === "relations.set") {
+      const subject = compactText(a.subject, 120), object = compactText(a.object, 120), relation = compactText(a.relation, 160);
+      if (!familyPersonRefOrCreated(subject, refs) || !familyPersonRefOrCreated(object, refs) || !relation) {
+        throw new SandPlanError("BAD_RELATION", "Relationship needs valid subject, object and relation");
+      }
+      if (subject === object) throw new SandPlanError("BAD_RELATION", "Relationship endpoints must differ");
+      return { op, args: { subject, object, relation } };
+    }
+    if (op === "relations.list") {
+      const person = compactText(a.person, 120) || null;
+      if (person && (!refs.has(person) || !person.startsWith("p"))) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person filter");
+      return { op, args: { person } };
+    }
+  }
+  if (family === "utility") {
+    if (op === "calculator.evaluate") {
+      const expression = compactText(a.expression, 500);
+      if (!expression) throw new SandPlanError("EXPRESSION_REQUIRED", "Calculator expression required");
+      return { op, args: { expression } };
+    }
+    if (op === "unit.convert") {
+      const value = Number(a.value);
+      if (!Number.isFinite(value)) throw new SandPlanError("BAD_UNIT_VALUE", "Unit value must be finite");
+      const from = compactText(a.from, 40).toLowerCase(), to = compactText(a.to, 40).toLowerCase();
+      if (!from || !to) throw new SandPlanError("UNIT_REQUIRED", "Both source and destination units are required");
+      return { op, args: { value, from, to } };
+    }
+    if (op === "datetime.now") return { op, args: { timezone: compactText(a.timezone, 120) || TZ } };
+    if (op === "datetime.diff") {
+      const from = compactText(a.from, 120), to = compactText(a.to, 120), unit = compactText(a.unit, 40) || "hours";
+      if (!from || !to || !["seconds", "minutes", "hours", "days"].includes(unit)) throw new SandPlanError("BAD_DATETIME_DIFF", "Invalid datetime diff args");
+      return { op, args: { from, to, unit } };
+    }
+  }
+  if (family === "web_live") {
+    if (op === "web.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Web search query required");
+      return { op, args: { query, limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar", country: compactText(a.country, 8) || "eg" } };
+    }
+    if (op === "web.read") {
+      const url = normalizePublicHttpsUrl(a.url).toString();
+      return { op, args: { url, max_chars: clampInt(a.max_chars, 1000, 12_000, 7000) } };
+    }
+    if (op === "news.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "News query required");
+      return { op, args: { query, limit: clampInt(a.limit, 1, 12, 8) } };
+    }
+    if (op === "weather.read") {
+      const city = compactText(a.city, 240) || null;
+      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+      if (!city && latitude === null) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
+      return { op, args: { city, latitude, longitude, forecast_days: clampInt(a.forecast_days, 1, 7, 7) } };
+    }
+    if (op === "places.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Places query required");
+      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+      return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
+    }
+  }
+  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
+}
+
+async function stableCapabilityId(prefix, operationId, stepIndex, itemIndex = 0) {
+  const h = await textHash(`${operationId}:${stepIndex}:${itemIndex}:${prefix}`);
+  return `${prefix}_${h.slice(0, 28)}`;
+}
+
+async function loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest }) {
+  const existing = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex).first();
+  if (existing) return { plan: safeJsonParse(existing.plan_json, { steps: [] }), modelId: existing.model_id ? String(existing.model_id) : null };
+  const [currentText, familyState] = await Promise.all([currentUserMessage(env, chatId, updateId), capabilitySnapshot(env, chatId, family)]);
+  const planned = await planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState });
+  const at = nowIso();
