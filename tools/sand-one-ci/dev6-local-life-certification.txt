@@ -1,0 +1,2 @@
+SAND ONE dev6 Local Life canonical certification trigger.
+Runtime source is unchanged; target manifest is 1.0.0-dev.6 with local_life active.
