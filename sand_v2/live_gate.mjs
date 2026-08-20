@@ -17,19 +17,32 @@ function runOnce() {
   return { status: result.status ?? 1, output: `${stdout}\n${stderr}` };
 }
 
-function isIsolatedAllModelRateLimit(output) {
+function isTransientModelFailure(code) {
+  return code === 'http_429' || code === 'timeout' || code === 'network' || /^http_5\d\d$/.test(code);
+}
+
+function isIsolatedTransientModelChainOutage(output) {
   const text = String(output ?? '');
-  return text.includes('AI unavailable:') && [
-    'groq::openai/gpt-oss-120b:http_429',
-    'groq::qwen/qwen3.6-27b:http_429',
-    'gemini::gemini-3.5-flash-lite:http_429',
-  ].every((needle) => text.includes(needle));
+  const marker = 'AI unavailable:';
+  const at = text.lastIndexOf(marker);
+  if (at < 0) return false;
+  const line = text.slice(at).split(/\r?\n/, 1)[0];
+  const models = [
+    'groq::openai/gpt-oss-120b',
+    'groq::qwen/qwen3.6-27b',
+    'gemini::gemini-3.5-flash-lite',
+  ];
+  return models.every((model) => {
+    const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = line.match(new RegExp(`${escaped}:([^ |]+)`));
+    return Boolean(match && isTransientModelFailure(match[1]));
+  });
 }
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
   const backoff = BACKOFF_MS[attempt - 1];
   if (backoff > 0) {
-    console.log(`CORE_TORTURE_RATE_LIMIT_BACKOFF attempt=${attempt} ms=${backoff}`);
+    console.log(`CORE_TORTURE_TRANSIENT_BACKOFF attempt=${attempt} ms=${backoff}`);
     await sleep(backoff);
   }
   console.log(`CORE_TORTURE_ATTEMPT ${attempt}/${MAX_ATTEMPTS}`);
@@ -38,15 +51,15 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     console.log(`CORE_TORTURE_WRAPPER_OK attempt=${attempt}`);
     process.exit(0);
   }
-  if (!isIsolatedAllModelRateLimit(result.output)) {
-    console.error('CORE_TORTURE_NON_RATE_LIMIT_FAILURE');
+  if (!isIsolatedTransientModelChainOutage(result.output)) {
+    console.error('CORE_TORTURE_NON_TRANSIENT_FAILURE');
     process.exit(result.status || 1);
   }
   if (attempt === MAX_ATTEMPTS) {
-    console.error('CORE_TORTURE_RATE_LIMIT_EXHAUSTED');
+    console.error('CORE_TORTURE_TRANSIENT_RETRY_EXHAUSTED');
     process.exit(result.status || 1);
   }
-  console.warn(`CORE_TORTURE_ALL_MODELS_429_RETRYING attempt=${attempt}`);
+  console.warn(`CORE_TORTURE_MODEL_CHAIN_TRANSIENT_RETRY attempt=${attempt}`);
 }
 
 process.exit(1);
