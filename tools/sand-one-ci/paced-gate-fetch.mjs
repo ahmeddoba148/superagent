@@ -2,7 +2,8 @@ const originalFetch = globalThis.fetch.bind(globalThis);
 const paceMs = Math.max(0, Number(process.env.SAND_GATE_TURN_PACE_MS || 0));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let lastLogicalUpdateId = null;
-let lastLogicalPostAt = Date.now();
+let lastLogicalPostAt = 0;
+let lastLogicalResponseAt = 0;
 
 globalThis.fetch = async function pacedFetch(input, init = undefined) {
   let updateId = null;
@@ -17,7 +18,8 @@ globalThis.fetch = async function pacedFetch(input, init = undefined) {
   }
 
   if (updateId !== null && updateId !== lastLogicalUpdateId) {
-    const remaining = lastLogicalPostAt + paceMs - Date.now();
+    const anchor = Math.max(lastLogicalPostAt, lastLogicalResponseAt);
+    const remaining = anchor > 0 ? anchor + paceMs - Date.now() : 0;
     if (remaining > 0) {
       console.log(`CORE_TORTURE_TURN_PACE update=${updateId} ms=${remaining}`);
       await sleep(remaining);
@@ -26,5 +28,7 @@ globalThis.fetch = async function pacedFetch(input, init = undefined) {
     lastLogicalPostAt = Date.now();
   }
 
-  return originalFetch(input, init);
+  const response = await originalFetch(input, init);
+  if (updateId !== null) lastLogicalResponseAt = Date.now();
+  return response;
 };
