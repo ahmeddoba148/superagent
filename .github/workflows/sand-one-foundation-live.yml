@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           test -d sand_one/runtime
           count=$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')
-          [ "$count" = "20" ]
+          [ "$count" = "21" ]
           cat sand_one/runtime/part*.js.txt > SAND_ONE_1.0.js
           test -s SAND_ONE_1.0.js
           grep -q 'const APP_VERSION = "1.0.0-dev.4"' SAND_ONE_1.0.js
