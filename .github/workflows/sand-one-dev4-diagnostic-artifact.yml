@@ -1,0 +1,25 @@
+name: SAND ONE dev4 Diagnostic Artifact
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - 'sand_one/runtime/**'
+      - '.github/workflows/sand-one-dev4-diagnostic-artifact.yml'
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble candidate
+        run: |
+          set -euo pipefail
+          cat sand_one/runtime/part*.js.txt > SAND_ONE_DEV4_CANDIDATE.js
+          sha256sum SAND_ONE_DEV4_CANDIDATE.js
+          wc -l -c SAND_ONE_DEV4_CANDIDATE.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SAND_ONE_DEV4_CANDIDATE
+          path: SAND_ONE_DEV4_CANDIDATE.js
+          retention-days: 3
