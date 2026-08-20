@@ -1,0 +1,134 @@
+/*
+ * SAND ONE — Unified Personal Agent OS 1.0
+ * Clean semantic conversation workspace built on a durable FIFO transport pattern.
+ * One physical Cloudflare Worker file.
+ *
+ * Design contract:
+ * - No keyword/phrase intent routing.
+ * - AI interprets meaning into an app-owned structured turn plan.
+ * - The app validates, authorizes, executes and verifies every state mutation.
+ * - Conversation focus and active objects are durable first-class state.
+ * - Follow-up turns resolve against the active workspace, not against phrase dictionaries.
+ * - AI never writes D1 directly and never sees raw secrets.
+ */
+
+const APP_NAME = "SAND ONE";
+const APP_VERSION = "1.0.0-dev.4";
+const DATA_SCHEMA_VERSION = "1";
+const ARCHITECTURE_NAME = "semantic-conversation-workspace+capability-layer";
+const VOICE_MAX_BYTES = 25 * 1024 * 1024;
+const VOICE_TOTAL_BUDGET_MS = 16_000;
+const VOICE_STAGE_TIMEOUT_MS = 7_000;
+
+const TZ = "Africa/Cairo";
+const INBOX_PROCESS_LEASE_MS = 25_000;
+const CHAT_LEASE_MS = 32_000;
+const CHAT_ACQUIRE_WAIT_MS = 12_000;
+const DRAIN_BUDGET_MS = 27_000;
+const MAX_DRAIN_BATCH = 4;
+const CHAT_SETTLE_MS = 900;
+const CHAT_SETTLE_MAX_WAIT_MS = 6_000;
+const AI_TOTAL_BUDGET_MS = 12_000;
+const AI_MODEL_TIMEOUT_MS = 4_000;
+const AI_HISTORY_MESSAGES = 20;
+const AI_MAX_REPLY_CHARS = 3900;
+const INBOX_TRANSIENT_MAX_ATTEMPTS = 4;
+const DELIVERY_UNCERTAIN_AFTER_MS = 30_000;
+const PLANNER_MAX_ACTIONS = 8;
+
+const AI_MODELS = Object.freeze([
+  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),
+  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_1" }),
+  Object.freeze({ id: "gemini::gemini-3.5-flash-lite", role: "fallback_2" }),
+]);
+
+const TABLES = Object.freeze({
+  meta: "sand_v2_meta",
+  inbox: "sand_v2_inbox",
+  chatLeases: "sand_v2_chat_leases",
+  chatIngress: "sand_v2_chat_ingress",
+  messages: "sand_v2_messages",
+  aiCalls: "sand_v2_ai_calls",
+  workspaces: "sand_v2_workspaces",
+  objects: "sand_v2_objects",
+  memories: "sand_v2_memories",
+  reminders: "sand_v2_reminders",
+  operations: "sand_v2_operations",
+  steps: "sand_v2_operation_steps",
+  deliveries: "sand_v2_deliveries",
+  lifeItems: "sand_one_life_items",
+  capabilityPlans: "sand_one_capability_plans",
+});
+
+const CAPABILITY_FAMILIES = Object.freeze({
+  schedule: Object.freeze({ label: "Schedule", role: "appointments, reminders, recurrence, free time and conflicts", state: "core" }),
+  work: Object.freeze({ label: "Work", role: "tasks, projects, waiting and life inbox", state: "active" }),
+  shopping: Object.freeze({ label: "Shopping", role: "shopping lists, sessions, status and progress", state: "active" }),
+  memory_people: Object.freeze({ label: "Memory & People", role: "memory, people, relationships and contacts", state: "active" }),
+  web_live: Object.freeze({ label: "Web & Live", role: "Google search, web reading, news, weather and places", state: "active" }),
+  communications: Object.freeze({ label: "Communications", role: "Gmail and controlled outbound communication", state: "planned" }),
+  google_workspace: Object.freeze({ label: "Google Workspace", role: "Google Calendar, free-busy and Contacts", state: "planned" }),
+  files_media: Object.freeze({ label: "Files & Media", role: "files, OCR, vision and Telegram voice", state: "input_adapter" }),
+  local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "planned" }),
+  utility: Object.freeze({ label: "Utility", role: "calculator, units and deterministic date-time", state: "active" }),
+  automation: Object.freeze({ label: "Automation", role: "scheduler, briefs, monitoring and follow-ups", state: "planned" }),
+  personal_system: Object.freeze({ label: "Personal/System", role: "profile, settings, global search, audit and undo", state: "planned" }),
+});
+const CAPABILITY_FAMILY_IDS = Object.freeze(Object.keys(CAPABILITY_FAMILIES));
+
+const CAPABILITY_FAMILY_CONTRACTS = Object.freeze({
+  shopping: Object.freeze({
+    max_steps: 8,
+    operations: Object.freeze({
+      "shopping.add": "args.items = array of {title, quantity?, category?, priority?}",
+      "shopping.list": "args.status = pending|bought|unavailable|skipped|all (optional)",
+      "shopping.mark": "args.target = exposed shopping ref such as s1; args.status = pending|bought|unavailable|skipped",
+      "shopping.remove": "args.target = exposed shopping ref such as s1",
+      "shopping.progress": "args = {}",
+      "shopping.session.start": "args.place_name optional",
+      "shopping.session.finish": "args = {}",
+    }),
+  }),
+  work: Object.freeze({
+    max_steps: 8,
+    operations: Object.freeze({
+      "project.create": "args.title required; priority low|normal|high optional; deadline optional; notes optional",
+      "project.list": "args.status = active|done|all optional",
+      "project.update": "args.target = exposed work ref such as w1; status/progress/priority/deadline/notes optional",
+      "task.create": "args.title required; parent = exposed project ref or created:N optional; due_at/priority optional",
+      "task.list": "args.project = exposed project ref optional; status optional",
+      "task.update": "args.target = exposed task ref; title/status/due_at/priority optional",
+      "waiting.create": "args.title required; waiting_on/due_at optional",
+      "waiting.list": "args.status optional",
+      "waiting.close": "args.target = exposed waiting ref",
+      "inbox.add": "args.text required; classified_as optional",
+      "inbox.list": "args.status = open|closed|all optional",
+      "inbox.classify": "args.target = exposed inbox ref; classified_as required",
+      "inbox.close": "args.target = exposed inbox ref",
+    }),
+  }),
+  memory_people: Object.freeze({
+    max_steps: 8,
+    operations: Object.freeze({
+      "people.create": "args.name required; relationship_to_user/notes/facts optional",
+      "people.list": "args.query optional",
+      "people.update": "args.target = exposed person ref such as p1; patch may contain relationship_to_user, notes, facts",
+      "relations.set": "args.subject and args.object = exposed person ref or created:N; args.relation required",
+      "relations.list": "args.person = exposed person ref optional",
+    }),
+  }),
+  utility: Object.freeze({
+    max_steps: 6,
+    operations: Object.freeze({
+      "calculator.evaluate": "args.expression required; arithmetic only: + - * / % ^ and parentheses",
+      "unit.convert": "args.value number; args.from/to one of c,f,k,m,km,cm,mm,mi,yd,ft,in,kg,g,mg,lb,oz,l,ml,cup_us,gal_us,b,kb,mb,gb,kib,mib,gib",
+      "datetime.now": "args.timezone optional IANA timezone; defaults Africa/Cairo",
+      "datetime.diff": "args.from and args.to ISO datetime; args.unit = seconds|minutes|hours|days optional",
+    }),
+  }),
+  web_live: Object.freeze({
+    max_steps: 5,
+    operations: Object.freeze({
+      "web.search": "Google web search. args.query required; limit/language/country optional",
+      "web.read": "Read a public HTTPS web page. args.url required; max_chars optional",
+      "news.search": "Live news search. args.query required; limit optional",
