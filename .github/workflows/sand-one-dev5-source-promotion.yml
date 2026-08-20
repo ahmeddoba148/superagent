@@ -117,3 +117,5 @@ jobs:
           git diff --cached --check
           git commit -m 'SAND ONE dev5: activate advanced Schedule family'
           git push origin HEAD:sand-one-1.0
+
+# retrigger: 2026-08-20T20:58Z
