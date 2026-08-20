@@ -34,26 +34,40 @@ jobs:
       GSEARCH_KEY: ${{ secrets.STAGING_GOOGLE_SEARCH_API_KEY }}
       GSEARCH_CX: ${{ secrets.STAGING_GOOGLE_SEARCH_CX }}
       GMAPS_KEY: ${{ secrets.STAGING_GOOGLE_MAPS_API_KEY }}
-      URL: https://sand-one-dev4-staging.ahmeddoba91.workers.dev
-      DB: sand-one-dev4-staging-v1
-      CFG: wrangler.sand-one-dev4.jsonc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
 
-      - name: Assemble canonical SAND ONE dev4 runtime
+      - name: Resolve canonical runtime manifest
         run: |
           set -euo pipefail
-          test -d sand_one/runtime
+          test -s sand_one/runtime/manifest.json
+          node -e 'const m=require("./sand_one/runtime/manifest.json");if(!/^1\.0\.0-dev\.\d+$/.test(m.version)||!Number.isInteger(m.parts)||m.parts<1||!m.required_family_states||!Array.isArray(m.required_selftests))process.exit(1)'
+          VERSION=$(node -p 'require("./sand_one/runtime/manifest.json").version')
+          PARTS=$(node -p 'require("./sand_one/runtime/manifest.json").parts')
+          TAG=$(printf '%s' "$VERSION" | sed -E 's/^.*-//;s/[^A-Za-z0-9]//g')
+          test -n "$TAG"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PARTS=$PARTS" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "URL=https://sand-one-$TAG-staging.ahmeddoba91.workers.dev" >> "$GITHUB_ENV"
+          echo "DB=sand-one-$TAG-staging-v1" >> "$GITHUB_ENV"
+          echo "CFG=wrangler.sand-one-$TAG.jsonc" >> "$GITHUB_ENV"
+          echo "SAND_ARTIFACT_NAME=SAND_ONE_1.0-$TAG-certified-source" >> "$GITHUB_ENV"
+
+      - name: Assemble canonical SAND ONE runtime
+        run: |
+          set -euo pipefail
           count=$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')
-          [ "$count" = "25" ]
+          [ "$count" = "$PARTS" ]
           cat sand_one/runtime/part*.js.txt > SAND_ONE_1.0.js
           test -s SAND_ONE_1.0.js
-          grep -q 'const APP_VERSION = "1.0.0-dev.4"' SAND_ONE_1.0.js
-          grep -q '^function normalizeLocalMinute(value)' SAND_ONE_1.0.js
-          grep -q '^async function health' SAND_ONE_1.0.js
-          grep -q '^async function callOneAiModel' SAND_ONE_1.0.js
+          grep -Fq "const APP_VERSION = \"$VERSION\"" SAND_ONE_1.0.js
+          node - <<'NODE'
+          const fs=require('fs');const m=require('./sand_one/runtime/manifest.json');const s=fs.readFileSync('SAND_ONE_1.0.js','utf8');
+          for(const f of m.required_functions||[]){const ok=new RegExp(`(?:async\\s+)?function\\s+${f.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')}\\s*\\(`).test(s);if(!ok)throw Error('missing required function '+f)}
+          NODE
           sha256sum SAND_ONE_1.0.js
           wc -l -c SAND_ONE_1.0.js
           node --check SAND_ONE_1.0.js
@@ -75,7 +89,7 @@ jobs:
           set -euo pipefail
           node tools/sand-one-ci/probe-models.mjs
 
-      - name: Provision isolated dev4 staging D1
+      - name: Provision isolated staging D1
         run: |
           set -euo pipefail
           npx wrangler d1 list --json > /tmp/d1.json
@@ -89,12 +103,12 @@ jobs:
           test -n "$DB_ID"
           echo "DB_ID=$DB_ID" >> "$GITHUB_ENV"
 
-      - name: Deploy isolated dev4 staging
+      - name: Deploy isolated staging
         run: |
           set -euo pipefail
           test -n "$BOT"; test -n "$OKEY"; test -n "$CHAT"; test -n "$DB_ID"
           cat > "$CFG" <<JSON
-          {"name":"sand-one-dev4-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"$DB","database_id":"$DB_ID"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
+          {"name":"sand-one-$TAG-staging","main":"SAND_ONE_1.0.js","compatibility_date":"2026-08-20","compatibility_flags":["global_fetch_strictly_public"],"vars":{"PUBLIC_BOT":"false"},"d1_databases":[{"binding":"DB","database_name":"$DB","database_id":"$DB_ID"}],"services":[{"binding":"OMNIAI_SERVICE","service":"omniai-engine"}]}
           JSON
           npx wrangler deploy --config "$CFG" >/dev/null
           W=$(openssl rand -hex 32); K=$(openssl rand -hex 32)
@@ -112,26 +126,26 @@ jobs:
           for i in {1..50}; do
             code=$(curl -sS -o /tmp/h -w '%{http_code}' "$URL/health" || true)
             if [ "$code" = 200 ] && node - <<'NODE'
-          const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/h'));
-          const f=Object.fromEntries((x.capability_families||[]).map(v=>[v.id,v.state]));
-          const ok=x.ok&&x.version==='1.0.0-dev.4'&&x.architecture==='semantic-conversation-workspace+capability-layer'&&x.semantic_routing===true&&x.keyword_routing===false&&x.voice_input===true&&(x.capability_families||[]).length===12&&f.schedule==='core'&&f.shopping==='active'&&f.work==='active'&&f.memory_people==='active'&&f.web_live==='active'&&f.files_media==='input_adapter'&&f.utility==='active';
-          process.exit(ok?0:1);
+          const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/h'));const m=require('./sand_one/runtime/manifest.json');const f=Object.fromEntries((x.capability_families||[]).map(v=>[v.id,v.state]));let ok=x.ok&&x.version===m.version&&x.architecture==='semantic-conversation-workspace+capability-layer'&&x.semantic_routing===true&&x.keyword_routing===false&&x.voice_input===true&&(x.capability_families||[]).length===12;for(const [k,v] of Object.entries(m.required_family_states||{}))ok=ok&&f[k]===v;process.exit(ok?0:1);
           NODE
             then healthy=1; break; fi
             sleep 2
           done
           [ "$healthy" = 1 ] || { cat /tmp/h >&2; exit 1; }
-          cat /tmp/h
           webhook_ok=0; admin_ok=0
           for i in {1..50}; do
             wc=$(curl -sS -o /tmp/w -w '%{http_code}' -X POST -H 'content-type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $W" -d '{}' "$URL/telegram" || true)
             ac=$(curl -sS -o /tmp/a -w '%{http_code}' -H "x-sand-admin: $K" "$URL/admin/selftest" || true)
             if [ "$wc" = 200 ]; then webhook_ok=$((webhook_ok+1)); else webhook_ok=0; fi
-            if [ "$ac" = 200 ] && node -e 'try{const x=JSON.parse(require("fs").readFileSync("/tmp/a"));process.exit(x.ok&&Array.isArray(x.tests)&&x.tests.length>0&&x.tests.every(t=>t.ok)&&x.tests.some(t=>t.name==="voice_adapter_contract")&&x.tests.some(t=>t.name==="capability_family_contract")?0:1)}catch{process.exit(1)}'; then admin_ok=$((admin_ok+1)); else admin_ok=0; fi
+            if [ "$ac" = 200 ] && node - <<'NODE'
+          const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/a'));const m=require('./sand_one/runtime/manifest.json');const n=new Set((x.tests||[]).filter(t=>t.ok).map(t=>t.name));let ok=x.ok&&Array.isArray(x.tests)&&x.tests.every(t=>t.ok);for(const t of m.required_selftests||[])ok=ok&&n.has(t);process.exit(ok?0:1)}catch{process.exit(1)}
+          NODE
+            then admin_ok=$((admin_ok+1)); else admin_ok=0; fi
             [ "$webhook_ok" -ge 3 ] && [ "$admin_ok" -ge 3 ] && break
             sleep 2
           done
           [ "$webhook_ok" -ge 3 ] && [ "$admin_ok" -ge 3 ] || { echo 'SECRET_PROPAGATION_OR_SELFTEST_FAILED'; cat /tmp/a; exit 1; }
+          cat /tmp/h
           cat /tmp/a
 
       - name: Core V2 semantic regression torture gate
@@ -151,48 +165,25 @@ jobs:
         run: |
           set -euo pipefail
           node - <<'NODE'
-          const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
-          async function get(url,attempts=3){let last='';for(let i=1;i<=attempts;i++){try{const r=await fetch(url,{signal:AbortSignal.timeout(12000)});if(r.ok)return r;last='HTTP '+r.status}catch(e){last=String(e?.message||e)}if(i<attempts)await sleep(i*750)}throw Error('live adapter smoke failed '+url+' '+last)}
-          const w=await (await get('https://api.open-meteo.com/v1/forecast?latitude=30.0444&longitude=31.2357&current=temperature_2m&timezone=auto')).json();
-          if(typeof w?.current?.temperature_2m!=='number') throw Error('weather payload invalid');
-          let newsOk=false;
-          try {
-            const r=await fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=Egypt&mode=ArtList&maxrecords=3&format=json&sort=HybridRel',{signal:AbortSignal.timeout(10000)});
-            if(r.ok){const n=await r.json();newsOk=Array.isArray(n?.articles)&&n.articles.length>0;}
-          } catch {}
-          if(!newsOk){
-            const rss=await get('https://news.google.com/rss/search?q=Egypt&hl=en&gl=US&ceid=US:en');
-            const xml=await rss.text();
-            newsOk=/<item\b[\s\S]*?<\/item>/i.test(xml);
-          }
-          if(!newsOk) throw Error('news primary and fallback payload invalid');
-          const page=await get('https://example.com/');const text=await page.text();if(!text.includes('Example Domain')) throw Error('web reader smoke invalid');
-          console.log('PUBLIC_WEB_LIVE_FALLBACK_SMOKE_OK');
+          const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));async function get(url,attempts=3){let last='';for(let i=1;i<=attempts;i++){try{const r=await fetch(url,{signal:AbortSignal.timeout(12000)});if(r.ok)return r;last='HTTP '+r.status}catch(e){last=String(e?.message||e)}if(i<attempts)await sleep(i*750)}throw Error('live adapter smoke failed '+url+' '+last)}const w=await (await get('https://api.open-meteo.com/v1/forecast?latitude=30.0444&longitude=31.2357&current=temperature_2m&timezone=auto')).json();if(typeof w?.current?.temperature_2m!=='number')throw Error('weather payload invalid');let newsOk=false;try{const r=await fetch('https://api.gdeltproject.org/api/v2/doc/doc?query=Egypt&mode=ArtList&maxrecords=3&format=json&sort=HybridRel',{signal:AbortSignal.timeout(10000)});if(r.ok){const n=await r.json();newsOk=Array.isArray(n?.articles)&&n.articles.length>0}}catch{}if(!newsOk){const rss=await get('https://news.google.com/rss/search?q=Egypt&hl=en&gl=US&ceid=US:en');const xml=await rss.text();newsOk=/<item\b[\s\S]*?<\/item>/i.test(xml)}if(!newsOk)throw Error('news primary and fallback payload invalid');const page=await get('https://example.com/');const text=await page.text();if(!text.includes('Example Domain'))throw Error('web reader smoke invalid');console.log('PUBLIC_WEB_LIVE_FALLBACK_SMOKE_OK');
           NODE
 
       - name: Optional Google Search and Places live proof
         run: |
           set -euo pipefail
-          if [ -n "$GSEARCH_KEY" ] && [ -n "$GSEARCH_CX" ]; then
-            node - <<'NODE'
-          const p=new URLSearchParams({key:process.env.GSEARCH_KEY,cx:process.env.GSEARCH_CX,q:'OpenAI',num:'1',safe:'active'});
-          const r=await fetch('https://www.googleapis.com/customsearch/v1?'+p,{signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Google Search HTTP '+r.status);const x=await r.json();if(!Array.isArray(x.items))throw Error('Google Search payload invalid');console.log('GOOGLE_SEARCH_LIVE_OK');
+          if [ -n "$GSEARCH_KEY" ] && [ -n "$GSEARCH_CX" ]; then node - <<'NODE'
+          const p=new URLSearchParams({key:process.env.GSEARCH_KEY,cx:process.env.GSEARCH_CX,q:'OpenAI',num:'1',safe:'active'});const r=await fetch('https://www.googleapis.com/customsearch/v1?'+p,{signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Google Search HTTP '+r.status);const x=await r.json();if(!Array.isArray(x.items))throw Error('Google Search payload invalid');console.log('GOOGLE_SEARCH_LIVE_OK');
           NODE
-          else
-            echo 'GOOGLE_SEARCH_LIVE_SKIPPED_NO_STAGING_SECRET'
-          fi
-          if [ -n "$GMAPS_KEY" ]; then
-            node - <<'NODE'
+          else echo 'GOOGLE_SEARCH_LIVE_SKIPPED_NO_STAGING_SECRET'; fi
+          if [ -n "$GMAPS_KEY" ]; then node - <<'NODE'
           const r=await fetch('https://places.googleapis.com/v1/places:searchText',{method:'POST',headers:{'content-type':'application/json','X-Goog-Api-Key':process.env.GMAPS_KEY,'X-Goog-FieldMask':'places.id,places.displayName'},body:JSON.stringify({textQuery:'Cairo Tower',maxResultCount:1,languageCode:'en'}),signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error('Google Places HTTP '+r.status);const x=await r.json();if(!Array.isArray(x.places))throw Error('Google Places payload invalid');console.log('GOOGLE_PLACES_LIVE_OK');
           NODE
-          else
-            echo 'GOOGLE_PLACES_LIVE_SKIPPED_NO_STAGING_SECRET'
-          fi
+          else echo 'GOOGLE_PLACES_LIVE_SKIPPED_NO_STAGING_SECRET'; fi
 
-      - name: Upload exact certified dev4 runtime
+      - name: Upload exact certified runtime
         uses: actions/upload-artifact@v4
         with:
-          name: SAND_ONE_1.0-dev4-certified-source
+          name: ${{ env.SAND_ARTIFACT_NAME }}
           path: SAND_ONE_1.0.js
           if-no-files-found: error
           retention-days: 30
