@@ -1,0 +1,179 @@
+      ON CONFLICT(chat_id,subject,predicate) DO UPDATE SET
+        value_json=excluded.value_json,
+        confidence=excluded.confidence,
+        sensitivity=excluded.sensitivity,
+        expires_at=excluded.expires_at,
+        source_update_id=excluded.source_update_id,
+        status='active',
+        updated_at=excluded.updated_at`)
+      .bind(
+        id,
+        chatId,
+        action.args.subject,
+        action.args.predicate,
+        JSON.stringify(action.args.value),
+        action.args.confidence,
+        action.args.sensitivity,
+        action.args.expires_at,
+        updateId,
+        at,
+        at,
+      )
+      .run();
+    const verify = await env.DB.prepare(`SELECT value_json,status FROM ${TABLES.memories}
+      WHERE chat_id=? AND subject=? AND predicate=? LIMIT 1`)
+      .bind(chatId, action.args.subject, action.args.predicate)
+      .first();
+    if (!verify || String(verify.status) !== "active") throw new Error("Memory verification failed");
+    return { ok: true, memory: { subject: action.args.subject, predicate: action.args.predicate, value: safeJsonParse(verify.value_json, null) } };
+  }
+
+  if (action.type === "memory.forget") {
+    await env.DB.prepare(`UPDATE ${TABLES.memories} SET status='forgotten',updated_at=?
+      WHERE chat_id=? AND subject=? AND predicate=? AND status='active'`)
+      .bind(nowIso(), chatId, action.args.subject, action.args.predicate)
+      .run();
+    return { ok: true, forgotten: true };
+  }
+
+  throw new Error(`Unsupported executor action: ${action.type}`);
+}
+
+async function currentUserMessage(env, chatId, updateId) {
+  const row = await env.DB.prepare(`SELECT content FROM ${TABLES.messages} WHERE chat_id=? AND update_id=? AND role='user' LIMIT 1`)
+    .bind(chatId, updateId)
+    .first();
+  return compactText(row?.content, 12_000);
+}
+
+async function capabilitySnapshot(env, chatId, family) {
+  if (family === "shopping") {
+    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
+      WHERE chat_id=? AND kind IN ('shopping_item','shopping_session') AND status!='archived'
+      ORDER BY updated_at DESC LIMIT 80`)
+      .bind(chatId).all();
+    let itemNo = 0;
+    return (rows?.results ?? []).map((row) => {
+      const kind = String(row.kind);
+      const ref = kind === "shopping_item" ? `s${++itemNo}` : `session`;
+      return { ref, id: String(row.id), kind, title: String(row.title), status: String(row.status), state: safeJsonParse(row.state_json, {}), updated_at: String(row.updated_at) };
+    });
+  }
+  if (family === "work") {
+    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
+      WHERE chat_id=? AND kind IN ('project','task','waiting','inbox') AND status!='archived'
+      ORDER BY updated_at DESC LIMIT 100`)
+      .bind(chatId).all();
+    let no = 0;
+    return (rows?.results ?? []).map((row) => ({
+      ref: `w${++no}`,
+      id: String(row.id),
+      kind: String(row.kind),
+      parent_id: row.parent_id ? String(row.parent_id) : null,
+      title: String(row.title),
+      status: String(row.status),
+      state: safeJsonParse(row.state_json, {}),
+      updated_at: String(row.updated_at),
+    }));
+  }
+  return [];
+}
+
+function familyPlannerPrompt(family, snapshot, currentText, semanticRequest) {
+  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
+  const publicState = snapshot.map(({ id, ...row }) => row);
+  return [
+    "You are a family-specific planner inside SAND ONE.",
+    "Return exactly one strict JSON object with keys steps and reply_hint. No markdown.",
+    "Use only operations declared in this family contract. Do not invent operations.",
+    "Understand the user's natural language semantically; never depend on trigger phrases or keyword routing.",
+    "For existing items, target ONLY the exposed refs in family_state. Never emit internal IDs.",
+    "For a newly created item needed by a later step in the same plan, use created:N where N is the 1-based earlier step number.",
+    "Preserve user-provided names, item titles, labels and scalar text in the user's original spelling/script.",
+    "Do not add actions the user did not request. Read requests should use read/progress operations; mutation requests should use the smallest complete mutation plan.",
+    `Family: ${family}`,
+    `Contract: ${JSON.stringify(contract)}`,
+    `Family state: ${JSON.stringify(publicState)}`,
+    `Current user text: ${currentText}`,
+    `Semantic request: ${semanticRequest}`,
+    'Output shape: {"steps":[{"op":"...","args":{}}],"reply_hint":""}',
+  ].join("\n");
+}
+
+function familyPlanObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.steps));
+}
+
+function extractFamilyPlan(text) {
+  const raw = String(text ?? "").trim();
+  const direct = safeJsonParse(raw, null);
+  if (familyPlanObject(direct)) return direct;
+  for (let start = 0; start < raw.length; start += 1) {
+    if (raw[start] !== "{") continue;
+    let depth = 0, inString = false, escaped = false;
+    for (let i = start; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = safeJsonParse(raw.slice(start, i + 1), null);
+          if (familyPlanObject(candidate)) return candidate;
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState }) {
+  const failures = [];
+  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
+  const prompt = familyPlannerPrompt(family, familyState, currentText, semanticRequest);
+  for (const model of AI_MODELS) {
+    const remaining = deadline - nowMs();
+    if (remaining < 500) break;
+    const started = nowMs();
+    try {
+      const result = await callOneAiModel(env, model, [{ role: "system", content: prompt }, { role: "user", content: currentText }], Math.min(AI_MODEL_TIMEOUT_MS, remaining), 0, 1300);
+      const plan = extractFamilyPlan(result.text);
+      if (!familyPlanObject(plan)) {
+        failures.push(`${model.id}:invalid_structured_output`);
+        await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: false, httpStatus: result.httpStatus, errorCode: "invalid_structured_output" });
+        continue;
+      }
+      const validated = validateFamilyPlan(family, plan, familyState);
+      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null });
+      return { plan: validated, modelId: model.id };
+    } catch (error) {
+      const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
+      const code = error instanceof SandPlanError ? `invalid_plan_${error.code.toLowerCase()}` : httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
+      failures.push(`${model.id}:${code}`);
+      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: nowMs() - started, ok: false, httpStatus, errorCode: code });
+      if (httpStatus === 401 || httpStatus === 403) break;
+    }
+  }
+  throw new SandAiChainError(/http_429/.test(failures.join("|")) ? "AI_RATE_LIMIT" : "AI_UNAVAILABLE", failures.length ? failures : ["family_planner_budget_exhausted"]);
+}
+
+function familyRefMap(familyState) {
+  return new Map(familyState.map((row) => [String(row.ref), String(row.id)]));
+}
+
+function resolveFamilyRef(value, refs, created = []) {
+  const raw = compactText(value, 120);
+  if (!raw) return null;
+  if (refs.has(raw)) return refs.get(raw);
+  const m = /^created:([1-9][0-9]*)$/.exec(raw);
+  if (m) return created[Number(m[1]) - 1] ?? null;
+  return null;
+}
+
