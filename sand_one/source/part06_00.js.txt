@@ -177,4 +177,3 @@ async function upsertReminderForObject(env, { chatId, objectId, title, remindAtU
     .bind(id, chatId, objectId, title, remindAtUtc, TZ, mode, sourceUpdateId, at, at)
     .run();
   return id;
-}
