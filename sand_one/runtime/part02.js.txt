@@ -1,23 +1,3 @@
-      created_at TEXT NOT NULL,
-      UNIQUE(chat_id, update_id, role)
-    )`),
-
-    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_messages_chat
-      ON ${TABLES.messages}(chat_id, id)`),
-
-    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.aiCalls} (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      chat_id TEXT NOT NULL,
-      update_id INTEGER NOT NULL,
-      phase TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      model_role TEXT NOT NULL,
-      latency_ms INTEGER NOT NULL,
-      ok INTEGER NOT NULL CHECK(ok IN (0,1)),
-      http_status INTEGER,
-      error_code TEXT,
-      created_at TEXT NOT NULL
-    )`),
 
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_ai_calls_chat
       ON ${TABLES.aiCalls}(chat_id, id)`),
@@ -163,6 +143,59 @@
       PRIMARY KEY(operation_id, step_index)
     )`),
 
+
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.scheduleRules} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      object_id TEXT NOT NULL,
+      freq TEXT NOT NULL CHECK(freq IN ('once','daily','weekly','monthly','yearly')),
+      interval_n INTEGER NOT NULL DEFAULT 1,
+      anchor_local TEXT NOT NULL,
+      weekdays_json TEXT NOT NULL DEFAULT '[]',
+      month_days_json TEXT NOT NULL DEFAULT '[]',
+      months_json TEXT NOT NULL DEFAULT '[]',
+      times_json TEXT NOT NULL DEFAULT '[]',
+      start_date_local TEXT,
+      end_date_local TEXT,
+      max_occurrences INTEGER,
+      duration_minutes INTEGER,
+      alert_offsets_json TEXT NOT NULL DEFAULT '[]',
+      shift_minutes INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','cancelled')),
+      paused_until_local TEXT,
+      skip_occurrences_json TEXT NOT NULL DEFAULT '[]',
+      source_update_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(chat_id, object_id)
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_one_schedule_rules_chat
+      ON ${TABLES.scheduleRules}(chat_id, status, updated_at)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.scheduleSignals} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      rule_id TEXT,
+      object_id TEXT NOT NULL,
+      occurrence_local TEXT,
+      offset_minutes INTEGER,
+      fire_at_utc TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','cancelled','uncertain','failed')),
+      telegram_message_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sent_at TEXT
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_one_schedule_signals_due
+      ON ${TABLES.scheduleSignals}(status, fire_at_utc)`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_one_schedule_signals_object
+      ON ${TABLES.scheduleSignals}(chat_id, object_id, status, fire_at_utc)`),
+
     env.DB.prepare(`INSERT INTO ${TABLES.meta}(key,value,updated_at)
       VALUES('schema_version', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
@@ -191,12 +224,3 @@ async function telegramWebhook(request, env, ctx) {
   requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
   requireBinding(env, "OMNIAI_API_KEY");
   if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) {
-    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
-  }
-
-  const presented = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
-  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const update = await request.json().catch((error) => {

@@ -1,108 +1,152 @@
-  if (family === "memory_people") {
-    if (op === "people.create") {
-      const name = compactText(a.name, 240);
-      if (!name) throw new SandPlanError("PERSON_NAME_REQUIRED", "Person name required");
-      return {
-        op,
-        args: {
-          name,
-          relationship_to_user: compactText(a.relationship_to_user, 160) || null,
-          notes: compactText(a.notes, 2000) || null,
-          facts: sanitizeScalarFacts(a.facts),
-        },
-      };
-    }
-    if (op === "people.list") return { op, args: { query: compactText(a.query, 240) || null } };
-    if (op === "people.update") {
-      const target = compactText(a.target, 120);
-      if (!refs.has(target) || !target.startsWith("p")) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person target");
-      const patch = {};
-      if (Object.prototype.hasOwnProperty.call(a, "relationship_to_user")) patch.relationship_to_user = compactText(a.relationship_to_user, 160) || null;
-      if (Object.prototype.hasOwnProperty.call(a, "notes")) patch.notes = compactText(a.notes, 2000) || null;
-      if (Object.prototype.hasOwnProperty.call(a, "facts")) patch.facts = sanitizeScalarFacts(a.facts);
-      if (!Object.keys(patch).length) throw new SandPlanError("EMPTY_PERSON_PATCH", "Person update has no fields");
-      return { op, args: { target, patch } };
-    }
-    if (op === "relations.set") {
-      const subject = compactText(a.subject, 120), object = compactText(a.object, 120), relation = compactText(a.relation, 160);
-      if (!familyPersonRefOrCreated(subject, refs) || !familyPersonRefOrCreated(object, refs) || !relation) {
-        throw new SandPlanError("BAD_RELATION", "Relationship needs valid subject, object and relation");
-      }
-      if (subject === object) throw new SandPlanError("BAD_RELATION", "Relationship endpoints must differ");
-      return { op, args: { subject, object, relation } };
-    }
-    if (op === "relations.list") {
-      const person = compactText(a.person, 120) || null;
-      if (person && (!refs.has(person) || !person.startsWith("p"))) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person filter");
-      return { op, args: { person } };
-    }
+  if (state.open_until > nowMs()) throw new SandHttpError(`${name} circuit is temporarily open`, 503);
+  if (state.open_until && state.open_until <= nowMs()) {
+    state.open_until = 0;
+    state.failures = 0;
   }
-  if (family === "utility") {
-    if (op === "calculator.evaluate") {
-      const expression = compactText(a.expression, 500);
-      if (!expression) throw new SandPlanError("EXPRESSION_REQUIRED", "Calculator expression required");
-      return { op, args: { expression } };
-    }
-    if (op === "unit.convert") {
-      const value = Number(a.value);
-      if (!Number.isFinite(value)) throw new SandPlanError("BAD_UNIT_VALUE", "Unit value must be finite");
-      const from = compactText(a.from, 40).toLowerCase(), to = compactText(a.to, 40).toLowerCase();
-      if (!from || !to) throw new SandPlanError("UNIT_REQUIRED", "Both source and destination units are required");
-      return { op, args: { value, from, to } };
-    }
-    if (op === "datetime.now") return { op, args: { timezone: compactText(a.timezone, 120) || TZ } };
-    if (op === "datetime.diff") {
-      const from = compactText(a.from, 120), to = compactText(a.to, 120), unit = compactText(a.unit, 40) || "hours";
-      if (!from || !to || !["seconds", "minutes", "hours", "days"].includes(unit)) throw new SandPlanError("BAD_DATETIME_DIFF", "Invalid datetime diff args");
-      return { op, args: { from, to, unit } };
-    }
-  }
-  if (family === "web_live") {
-    if (op === "web.search") {
-      const query = compactText(a.query, 700);
-      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Web search query required");
-      return { op, args: { query, limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar", country: compactText(a.country, 8) || "eg" } };
-    }
-    if (op === "web.read") {
-      const url = normalizePublicHttpsUrl(a.url).toString();
-      return { op, args: { url, max_chars: clampInt(a.max_chars, 1000, 12_000, 7000) } };
-    }
-    if (op === "news.search") {
-      const query = compactText(a.query, 700);
-      if (!query) throw new SandPlanError("QUERY_REQUIRED", "News query required");
-      return { op, args: { query, limit: clampInt(a.limit, 1, 12, 8) } };
-    }
-    if (op === "weather.read") {
-      const city = compactText(a.city, 240) || null;
-      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
-      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
-      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
-      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
-      if (!city && latitude === null) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
-      return { op, args: { city, latitude, longitude, forecast_days: clampInt(a.forecast_days, 1, 7, 7) } };
-    }
-    if (op === "places.search") {
-      const query = compactText(a.query, 700);
-      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Places query required");
-      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
-      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
-      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
-      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
-      return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
-    }
-  }
-  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
 }
 
-async function stableCapabilityId(prefix, operationId, stepIndex, itemIndex = 0) {
-  const h = await textHash(`${operationId}:${stepIndex}:${itemIndex}:${prefix}`);
-  return `${prefix}_${h.slice(0, 28)}`;
+async function externalFetch(name, url, options = {}, timeoutMs = EXTERNAL_FETCH_TIMEOUT_MS) {
+  assertExternalCircuitClosed(name);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), clampInt(timeoutMs, 500, 15_000, EXTERNAL_FETCH_TIMEOUT_MS));
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (response.status === 429 || response.status >= 500) recordExternalFailure(name);
+    else recordExternalSuccess(name);
+    return response;
+  } catch (error) {
+    recordExternalFailure(name);
+    if (error instanceof Error && error.name === "AbortError") throw new SandHttpError(`${name} timeout`, 408);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest }) {
-  const existing = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
-    .bind(operationId, stepIndex).first();
-  if (existing) return { plan: safeJsonParse(existing.plan_json, { steps: [] }), modelId: existing.model_id ? String(existing.model_id) : null };
-  const [currentText, familyState] = await Promise.all([currentUserMessage(env, chatId, updateId), capabilitySnapshot(env, chatId, family)]);
-  const planned = await planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState });
-  const at = nowIso();
+function normalizePublicHttpsUrl(value) {
+  const raw = compactText(value, 2000);
+  let url;
+  try { url = new URL(raw); } catch { throw new SandPlanError("BAD_URL", "A valid URL is required"); }
+  if (url.protocol !== "https:") throw new SandPlanError("BAD_URL", "Only HTTPS URLs are allowed");
+  if (url.username || url.password) throw new SandPlanError("BAD_URL", "Credentials in URLs are not allowed");
+  if (url.port && url.port !== "443") throw new SandPlanError("BAD_URL", "Non-standard URL ports are not allowed");
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) throw new SandPlanError("BAD_URL", "Local URLs are not allowed");
+  if (/^(?:10\.|127\.|169\.254\.|192\.168\.|0\.)/.test(host)) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
+  const m = /^(172)\.(\d{1,3})\./.exec(host);
+  if (m && Number(m[2]) >= 16 && Number(m[2]) <= 31) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
+  if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
+  return url;
+}
+
+function decodeHtmlText(html) {
+  return String(html ?? "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const x = Number(n);
+      return Number.isFinite(x) && x > 0 && x <= 0x10ffff ? String.fromCodePoint(x) : " ";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function webReader(urlValue, maxChars) {
+  let current = normalizePublicHttpsUrl(urlValue);
+  let response = null;
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    response = await externalFetch("web_reader", current.toString(), {
+      headers: { accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1", "user-agent": "SAND-ONE/1.0" },
+      redirect: "manual",
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    if (redirects === 5) throw new SandHttpError("Too many web redirects", 508);
+    const location = compactText(response.headers.get("location"), 2000);
+    if (!location) throw new SandHttpError("Web redirect without location", 502);
+    current = normalizePublicHttpsUrl(new URL(location, current).toString());
+  }
+  if (!response) throw new SandHttpError("Web reader returned no response", 502);
+  if (!response.ok) throw new SandHttpError(`Web reader HTTP ${response.status}`, response.status);
+  const finalUrl = normalizePublicHttpsUrl(response.url || current.toString());
+  const type = String(response.headers.get("content-type") ?? "").toLowerCase();
+  if (!(type.includes("text/html") || type.includes("application/xhtml+xml") || type.includes("text/plain"))) throw new SandHttpError(`Unsupported web content type: ${type || "unknown"}`, 415);
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (declared > 1_000_000) throw new SandHttpError("Web page is too large", 413);
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength > 1_000_000) throw new SandHttpError("Web page is too large", 413);
+  const raw = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+  const text = type.includes("text/plain") ? raw.replace(/\s+/g, " ").trim() : decodeHtmlText(raw);
+  return { url: finalUrl.toString(), content_type: type.split(";")[0] || null, text: text.slice(0, maxChars), truncated: text.length > maxChars };
+}
+
+async function googleWebSearch(env, args) {
+  const key = compactText(env?.GOOGLE_SEARCH_API_KEY, 500);
+  const cx = compactText(env?.GOOGLE_SEARCH_CX, 500);
+  if (!key || !cx) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Search is not configured");
+  const params = new URLSearchParams({ key, cx, q: args.query, num: String(args.limit), safe: "active" });
+  if (args.language) params.set("hl", args.language);
+  if (args.country) params.set("gl", args.country);
+  const response = await externalFetch("google_search", `https://www.googleapis.com/customsearch/v1?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Google Search HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  const items = (Array.isArray(data?.items) ? data.items : []).slice(0, args.limit).map((item) => ({
+    title: compactText(item?.title, 500), url: compactText(item?.link, 2000), snippet: compactText(item?.snippet, 1200), domain: compactText(item?.displayLink, 300),
+  })).filter((item) => item.url);
+  return { query: args.query, items };
+}
+
+function decodeXmlText(value) {
+  return String(value ?? "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : " ";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseGoogleNewsRss(xml, limit) {
+  const items = [];
+  const blocks = String(xml ?? "").match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
+  for (const block of blocks.slice(0, limit)) {
+    const title = decodeXmlText(/<title>([\s\S]*?)<\/title>/i.exec(block)?.[1] ?? "");
+    const url = decodeXmlText(/<link>([\s\S]*?)<\/link>/i.exec(block)?.[1] ?? "");
+    const seenAt = decodeXmlText(/<pubDate>([\s\S]*?)<\/pubDate>/i.exec(block)?.[1] ?? "");
+    const sourceMatch = /<source(?:\s[^>]*)?>([\s\S]*?)<\/source>/i.exec(block);
+    const domain = decodeXmlText(sourceMatch?.[1] ?? "");
+    if (url) items.push({ title, url, domain, seen_at: seenAt, language: "ar" });
+  }
+  return items;
+}
+
+async function googleNewsRssSearch(args) {
+  const params = new URLSearchParams({ q: args.query, hl: "ar", gl: "EG", ceid: "EG:ar" });
+  const response = await externalFetch("google_news_rss", `https://news.google.com/rss/search?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Google News RSS HTTP ${response.status}`, response.status);
+  const xml = await response.text();
+  const items = parseGoogleNewsRss(xml, args.limit);
+  if (!items.length) throw new SandHttpError("Google News RSS returned no usable items", 502);
+  return { query: args.query, items, provider: "google_news_rss" };
+}
+
+async function liveNewsSearch(args) {
+  const params = new URLSearchParams({ query: args.query, mode: "ArtList", maxrecords: String(Math.min(20, args.limit)), format: "json", sort: "HybridRel" });
+  try {
+    const response = await externalFetch("gdelt_news", `https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`);
+    if (response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const items = (Array.isArray(data?.articles) ? data.articles : []).slice(0, args.limit).map((item) => ({

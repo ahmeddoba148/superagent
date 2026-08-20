@@ -1,3 +1,11 @@
+    }),
+  }),
+  web_live: Object.freeze({
+    max_steps: 5,
+    operations: Object.freeze({
+      "web.search": "Google web search. args.query required; limit/language/country optional",
+      "web.read": "Read a public HTTPS web page. args.url required; max_chars optional",
+      "news.search": "Live news search. args.query required; limit optional",
       "weather.read": "Current weather + 1..7 day forecast. city or latitude+longitude required",
       "places.search": "Google Places text search. args.query required; optional coordinates/radius/limit/language",
     }),
@@ -87,6 +95,7 @@ export default {
           await ensureSchema(env);
           const chats = await pendingChats(env, 20);
           await Promise.allSettled(chats.map((chatId) => drainChat(env, chatId)));
+          await processDueScheduleSignals(env, 40);
           await deliverDueReminders(env, 30);
           await markStaleDeliveriesUncertain(env);
         } catch (error) {
@@ -249,3 +258,23 @@ async function ensureSchema(env) {
       role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
       content TEXT NOT NULL,
       model_id TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(chat_id, update_id, role)
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_messages_chat
+      ON ${TABLES.messages}(chat_id, id)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.aiCalls} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      update_id INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_role TEXT NOT NULL,
+      latency_ms INTEGER NOT NULL,
+      ok INTEGER NOT NULL CHECK(ok IN (0,1)),
+      http_status INTEGER,
+      error_code TEXT,
+      created_at TEXT NOT NULL
+    )`),

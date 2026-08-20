@@ -1,43 +1,151 @@
-      if (row?.id) { const id=String(row.id); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(updateId,at,id,chatId)); expected.push({ id, status: "done" }); }
+  }
+
+  const created = [];
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    if (plan.steps[i].op === "people.create") created[i] = await stableCapabilityId("person", operationId, mainStepIndex * 100 + i);
+  }
+
+  const statements = [];
+  const expected = [];
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const step = plan.steps[i];
+    const at = nowIso();
+    if (step.op === "people.create") {
+      const id = created[i];
+      const state = {
+        relationship_to_user: step.args.relationship_to_user,
+        notes: step.args.notes,
+        facts: step.args.facts,
+      };
+      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}
+        (id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at)
+        VALUES(?,?,'person',NULL,?,?,'active',?,?,?)`)
+        .bind(id, chatId, step.args.name, JSON.stringify(state), updateId, at, at));
+      expected.push({ id, kind: "person", title: step.args.name, status: "active" });
+    } else if (step.op === "people.update") {
+      const id = refs.get(step.args.target);
+      if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Person target disappeared");
+      const row = await env.DB.prepare(`SELECT title,state_json,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='person' LIMIT 1`).bind(id, chatId).first();
+      if (!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Person target missing");
+      const state = safeJsonParse(row.state_json, {});
+      for (const [key, value] of Object.entries(step.args.patch)) state[key] = value;
+      statements.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='person'`)
+        .bind(JSON.stringify(state), updateId, at, id, chatId));
+      expected.push({ id, kind: "person", title: String(row.title), status: String(row.status) });
+    } else if (step.op === "relations.set") {
+      const subjectId = resolveFamilyRef(step.args.subject, refs, created);
+      const objectId = resolveFamilyRef(step.args.object, refs, created);
+      if (!subjectId || !objectId || subjectId === objectId) throw new SandPlanError("BAD_RELATION", "Relationship endpoints could not be resolved");
+      const pairHash = await textHash(`${chatId}:${subjectId}:${objectId}:relationship`);
+      const id = `relation_${pairHash.slice(0, 28)}`;
+      const state = { object_id: objectId, relation: step.args.relation };
+      statements.push(env.DB.prepare(`INSERT INTO ${TABLES.lifeItems}
+        (id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at)
+        VALUES(?,?,'relationship',?,?,?,'active',?,?,?)
+        ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,title=excluded.title,state_json=excluded.state_json,status='active',source_update_id=excluded.source_update_id,updated_at=excluded.updated_at`)
+        .bind(id, chatId, subjectId, step.args.relation, JSON.stringify(state), updateId, at, at));
+      expected.push({ id, kind: "relationship", title: step.args.relation, status: "active", subjectId, objectId });
     }
   }
-  if (stmts.length) await env.DB.batch(stmts);
+
+  if (statements.length) await env.DB.batch(statements);
   for (const exp of expected) {
-    const row = await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first();
-    if (!row || String(row.status)!==exp.status || (exp.title && String(row.title)!==exp.title)) throw new Error("Shopping capability verification failed");
+    const row = await env.DB.prepare(`SELECT kind,parent_id,title,state_json,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id, chatId).first();
+    if (!row || String(row.kind) !== exp.kind || String(row.title) !== exp.title || String(row.status) !== exp.status) {
+      throw new Error("Memory/People capability verification failed");
+    }
+    if (exp.kind === "relationship") {
+      const state = safeJsonParse(row.state_json, {});
+      if (String(row.parent_id ?? "") !== exp.subjectId || String(state.object_id ?? "") !== exp.objectId) {
+        throw new Error("Relationship verification failed");
+      }
+    }
   }
-  return { steps: plan.steps.map((step,i)=>({ op:step.op, created_id:created[i]||null })), reply: compactText(plan.reply_hint,800) || "تمام، حدّثت المشتريات واتأكدت من النتيجة ✅" };
+  return {
+    steps: plan.steps.map((step, index) => ({ op: step.op, created_id: created[index] || null })),
+    reply: compactText(plan.reply_hint, 800) || "تمام، حدّثت الأشخاص والعلاقات واتأكدت من النتيجة ✅",
+  };
 }
 
+const UTILITY_UNITS = Object.freeze({
+  m: Object.freeze({ dimension: "length", factor: 1 }), km: Object.freeze({ dimension: "length", factor: 1000 }),
+  cm: Object.freeze({ dimension: "length", factor: 0.01 }), mm: Object.freeze({ dimension: "length", factor: 0.001 }),
+  mi: Object.freeze({ dimension: "length", factor: 1609.344 }), yd: Object.freeze({ dimension: "length", factor: 0.9144 }),
+  ft: Object.freeze({ dimension: "length", factor: 0.3048 }), in: Object.freeze({ dimension: "length", factor: 0.0254 }),
+  kg: Object.freeze({ dimension: "mass", factor: 1 }), g: Object.freeze({ dimension: "mass", factor: 0.001 }),
+  mg: Object.freeze({ dimension: "mass", factor: 0.000001 }), lb: Object.freeze({ dimension: "mass", factor: 0.45359237 }),
+  oz: Object.freeze({ dimension: "mass", factor: 0.028349523125 }),
+  l: Object.freeze({ dimension: "volume", factor: 1 }), ml: Object.freeze({ dimension: "volume", factor: 0.001 }),
+  cup_us: Object.freeze({ dimension: "volume", factor: 0.2365882365 }), gal_us: Object.freeze({ dimension: "volume", factor: 3.785411784 }),
+  b: Object.freeze({ dimension: "data", factor: 1 }), kb: Object.freeze({ dimension: "data", factor: 1000 }),
+  mb: Object.freeze({ dimension: "data", factor: 1000000 }), gb: Object.freeze({ dimension: "data", factor: 1000000000 }),
+  kib: Object.freeze({ dimension: "data", factor: 1024 }), mib: Object.freeze({ dimension: "data", factor: 1048576 }),
+  gib: Object.freeze({ dimension: "data", factor: 1073741824 }),
+});
 
-async function executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
-  const readOps = new Set(["project.list","task.list","waiting.list","inbox.list"]);
-  const hasMutation = plan.steps.some((s)=>!readOps.has(s.op));
-  if (!hasMutation) {
-    let reply=""; const outputs=[]; const all=await capabilitySnapshot(env,chatId,"work");
-    for (const step of plan.steps) {
-      if (step.op === "project.list") { const rows=all.filter(x=>x.kind==="project"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"🎯 المشاريع:"); }
-      if (step.op === "task.list") { const projectId=step.args.project?refs.get(step.args.project):null; const rows=all.filter(x=>x.kind==="task"&&(!projectId||x.parent_id===projectId)&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"✅ المهام:"); }
-      if (step.op === "waiting.list") { const rows=all.filter(x=>x.kind==="waiting"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"⏳ المتابعات:"); }
-      if (step.op === "inbox.list") { const rows=all.filter(x=>x.kind==="inbox"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"📥 الوارد:"); }
+function tokenizeArithmetic(expression) {
+  const raw = String(expression ?? "").replace(/\s+/g, "");
+  if (!raw || raw.length > 500) throw new SandPlanError("BAD_EXPRESSION", "Expression is empty or too long");
+  const tokens = [];
+  let i = 0;
+  while (i < raw.length) {
+    const rest = raw.slice(i);
+    const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i.exec(rest);
+    if (number) {
+      const value = Number(number[0]);
+      if (!Number.isFinite(value)) throw new SandPlanError("BAD_EXPRESSION", "Invalid number");
+      tokens.push({ type: "number", value });
+      i += number[0].length;
+      continue;
     }
-    return {steps:outputs,reply:reply||compactText(plan.reply_hint,800)};
+    const ch = raw[i];
+    if ("+-*/%^()".includes(ch)) {
+      tokens.push({ type: ch === "(" || ch === ")" ? "paren" : "op", value: ch });
+      i += 1;
+      continue;
+    }
+    throw new SandPlanError("BAD_EXPRESSION", "Unsupported character in expression");
   }
-  if (plan.steps.some((s)=>readOps.has(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN","Do not mix work reads and mutations in one family plan");
-  const stmts=[], created=[], expected=[];
-  for (let i=0;i<plan.steps.length;i+=1) {
-    const step=plan.steps[i], at=nowIso();
-    if (step.op === "project.create") {
-      const id=await stableCapabilityId("project",operationId,mainStepIndex*100+i); created[i]=id; const state={priority:step.args.priority,deadline:step.args.deadline,notes:step.args.notes,progress:0};
-      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'project',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"active",title:step.args.title});
-    } else if (step.op === "project.update") {
-      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='project' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["progress","priority","deadline","notes"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status});
-    } else if (step.op === "task.create") {
-      const id=await stableCapabilityId("task",operationId,mainStepIndex*100+i); created[i]=id; const parent=step.args.parent?resolveFamilyRef(step.args.parent,refs,created):null; if(step.args.parent&&!parent) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task parent could not be resolved"); const state={due_at:step.args.due_at,priority:step.args.priority}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'task',?,?,?,'pending',?,?,?)`).bind(id,chatId,parent,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"pending",title:step.args.title});
-    } else if (step.op === "task.update") {
-      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='task' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["due_at","priority"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status), title=step.args.title||String(row.title); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET title=?,state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(title,JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status,title});
-    } else if (step.op === "waiting.create") {
-      const id=await stableCapabilityId("waiting",operationId,mainStepIndex*100+i); created[i]=id; const state={waiting_on:step.args.waiting_on,due_at:step.args.due_at}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'waiting',NULL,?,?,'waiting',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"waiting",title:step.args.title});
-    } else if (step.op === "waiting.close") {
-      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Waiting target disappeared"); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='waiting'`).bind(updateId,at,id,chatId)); expected.push({id,status:"done"});
-    } else if (step.op === "inbox.add") {
+  if (tokens.length > 200) throw new SandPlanError("BAD_EXPRESSION", "Expression has too many tokens");
+  return tokens;
+}
+
+function evaluateArithmetic(expression) {
+  const tokens = tokenizeArithmetic(expression);
+  /** @type {Array<{type:string,value:any}>} */ const output = [];
+  /** @type {Array<{type:string,value:any}>} */ const operators = [];
+  const precedence = { "u-": 4, "^": 3, "*": 2, "/": 2, "%": 2, "+": 1, "-": 1 };
+  const rightAssociative = new Set(["u-", "^"]);
+  let previous = "start";
+  for (const token of tokens) {
+    if (token.type === "number") {
+      output.push(token);
+      previous = "value";
+      continue;
+    }
+    if (token.type === "paren" && token.value === "(") {
+      operators.push(token);
+      previous = "open";
+      continue;
+    }
+    if (token.type === "paren" && token.value === ")") {
+      let found = false;
+      while (operators.length) {
+        const top = operators.pop();
+        if (top.type === "paren" && top.value === "(") { found = true; break; }
+        output.push(top);
+      }
+      if (!found) throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
+      previous = "value";
+      continue;
+    }
+    let op = token.value;
+    if (op === "-" && (previous === "start" || previous === "open" || previous === "operator")) op = "u-";
+    if (op === "+" && (previous === "start" || previous === "open" || previous === "operator")) {
+      previous = "operator";
+      continue;
+    }
+    while (operators.length) {
+      const top = operators[operators.length - 1];
+      if (top.type !== "op") break;
+      const pTop = precedence[top.value], pCurrent = precedence[op];

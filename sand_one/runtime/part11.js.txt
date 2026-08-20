@@ -1,156 +1,124 @@
-      id: String(row.id),
-      kind: String(row.kind),
-      parent_id: row.parent_id ? String(row.parent_id) : null,
-      title: String(row.title),
-      status: String(row.status),
-      state: safeJsonParse(row.state_json, {}),
-      updated_at: String(row.updated_at),
-    }));
-  }
-  if (family === "memory_people") {
-    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
-      WHERE chat_id=? AND kind IN ('person','relationship') AND status!='archived'
-      ORDER BY CASE kind WHEN 'person' THEN 0 ELSE 1 END, updated_at DESC LIMIT 120`)
-      .bind(chatId).all();
-    const raw = rows?.results ?? [];
-    const personRefById = new Map();
-    let personNo = 0;
-    for (const row of raw) {
-      if (String(row.kind) === "person") personRefById.set(String(row.id), `p${++personNo}`);
-    }
-    let relationNo = 0;
-    return raw.map((row) => {
-      const kind = String(row.kind);
-      const state = safeJsonParse(row.state_json, {});
-      if (kind === "person") {
-        return {
-          ref: personRefById.get(String(row.id)),
-          id: String(row.id),
-          kind,
-          title: String(row.title),
-          status: String(row.status),
-          state,
-          updated_at: String(row.updated_at),
-        };
-      }
-      return {
-        ref: `r${++relationNo}`,
-        id: String(row.id),
-        kind,
-        title: String(row.title),
-        status: String(row.status),
-        state: {
-          relation: compactText(state.relation, 160) || String(row.title),
-          subject_ref: personRefById.get(String(row.parent_id ?? "")) ?? null,
-          object_ref: personRefById.get(String(state.object_id ?? "")) ?? null,
-        },
-        updated_at: String(row.updated_at),
-      };
-    });
-  }
-  if (family === "utility" || family === "web_live") return [];
-  return [];
+  return Boolean(raw && (refs.has(raw) || /^created:[1-9][0-9]*$/.test(raw)));
 }
 
-function familyPlannerPrompt(family, snapshot, currentText, semanticRequest) {
-  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
-  const publicState = snapshot.map(({ id, ...row }) => row);
-  return [
-    "You are a family-specific planner inside SAND ONE.",
-    "Return exactly one strict JSON object with keys steps and reply_hint. No markdown.",
-    "Use only operations declared in this family contract. Do not invent operations.",
-    "Understand the user's natural language semantically; never depend on trigger phrases or keyword routing.",
-    "For existing items, target ONLY the exposed refs in family_state. Never emit internal IDs.",
-    "For a newly created item needed by a later step in the same plan, use created:N where N is the 1-based earlier step number.",
-    "Preserve user-provided names, item titles, labels and scalar text in the user's original spelling/script.",
-    "Do not add actions the user did not request. Read requests should use read/progress operations; mutation requests should use the smallest complete mutation plan.",
-    `Family: ${family}`,
-    `Contract: ${JSON.stringify(contract)}`,
-    `Family state: ${JSON.stringify(publicState)}`,
-    `Current user text: ${currentText}`,
-    `Semantic request: ${semanticRequest}`,
-    'Output shape: {"steps":[{"op":"...","args":{}}],"reply_hint":""}',
-  ].join("\n");
-}
-
-function familyPlanObject(value) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.steps));
-}
-
-function extractFamilyPlan(text) {
-  const raw = String(text ?? "").trim();
-  const direct = safeJsonParse(raw, null);
-  if (familyPlanObject(direct)) return direct;
-  for (let start = 0; start < raw.length; start += 1) {
-    if (raw[start] !== "{") continue;
-    let depth = 0, inString = false, escaped = false;
-    for (let i = start; i < raw.length; i += 1) {
-      const ch = raw[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === "\\") escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === "{") depth += 1;
-      else if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          const candidate = safeJsonParse(raw.slice(start, i + 1), null);
-          if (familyPlanObject(candidate)) return candidate;
-          break;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-async function planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState }) {
-  const failures = [];
-  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
-  const prompt = familyPlannerPrompt(family, familyState, currentText, semanticRequest);
-  for (const model of AI_MODELS) {
-    const remaining = deadline - nowMs();
-    if (remaining < 500) break;
-    const started = nowMs();
-    try {
-      const result = await callOneAiModel(env, model, [{ role: "system", content: prompt }, { role: "user", content: currentText }], Math.min(AI_MODEL_TIMEOUT_MS, remaining), 0, 1300);
-      const plan = extractFamilyPlan(result.text);
-      if (!familyPlanObject(plan)) {
-        failures.push(`${model.id}:invalid_structured_output`);
-        await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: false, httpStatus: result.httpStatus, errorCode: "invalid_structured_output" });
-        continue;
-      }
-      const validated = validateFamilyPlan(family, plan, familyState);
-      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null });
-      return { plan: validated, modelId: model.id };
-    } catch (error) {
-      const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
-      const code = error instanceof SandPlanError ? `invalid_plan_${error.code.toLowerCase()}` : httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
-      failures.push(`${model.id}:${code}`);
-      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: nowMs() - started, ok: false, httpStatus, errorCode: code });
-      if (httpStatus === 401 || httpStatus === 403) break;
-    }
-  }
-  throw new SandAiChainError(/http_429/.test(failures.join("|")) ? "AI_RATE_LIMIT" : "AI_UNAVAILABLE", failures.length ? failures : ["family_planner_budget_exhausted"]);
-}
-
-function familyRefMap(familyState) {
-  return new Map(familyState.map((row) => [String(row.ref), String(row.id)]));
-}
-
-function resolveFamilyRef(value, refs, created = []) {
+function familyPersonRefOrCreated(value, refs) {
   const raw = compactText(value, 120);
-  if (!raw) return null;
-  if (refs.has(raw)) return refs.get(raw);
-  const m = /^created:([1-9][0-9]*)$/.exec(raw);
-  if (m) return created[Number(m[1]) - 1] ?? null;
-  return null;
+  if (!raw) return false;
+  if (/^created:[1-9][0-9]*$/.test(raw)) return true;
+  return raw.startsWith("p") && refs.has(raw);
 }
 
-function validateFamilyPlan(family, input, familyState) {
-  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
-  if (!contract) throw new SandPlanError("CAPABILITY_NOT_READY", `Family not ready: ${family}`);
-  const rawSteps = Array.isArray(input.steps) ? input.steps : [];
+function validateFamilyStep(family, step, refs, index) {
+  if (!step || typeof step !== "object") throw new SandPlanError("BAD_CAPABILITY_STEP", `Bad family step ${index}`);
+  const op = compactText(step.op, 120);
+  if (!CAPABILITY_FAMILY_CONTRACTS[family]?.operations?.[op]) throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Operation not allowed in ${family}: ${op}`);
+  const a = step.args && typeof step.args === "object" && !Array.isArray(step.args) ? step.args : {};
+  if (family === "schedule") return validateScheduleStep(op, a, refs);
+  if (family === "shopping") {
+    if (op === "shopping.add") {
+      const items = Array.isArray(a.items) ? a.items.slice(0, 30).map((item) => ({ title: compactText(item?.title, 240), quantity: compactText(item?.quantity, 120) || null, category: compactText(item?.category, 120) || null, priority: compactText(item?.priority, 80) || null })).filter((x) => x.title) : [];
+      if (!items.length) throw new SandPlanError("SHOPPING_ITEMS_REQUIRED", "shopping.add requires items");
+      return { op, args: { items } };
+    }
+    if (op === "shopping.list") {
+      const status = compactText(a.status, 40) || "all";
+      if (!["pending","bought","unavailable","skipped","all"].includes(status)) throw new SandPlanError("BAD_SHOPPING_STATUS", "Bad shopping status");
+      return { op, args: { status } };
+    }
+    if (op === "shopping.mark") {
+      const target = compactText(a.target, 120), status = compactText(a.status, 40);
+      if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown shopping target");
+      if (!["pending","bought","unavailable","skipped"].includes(status)) throw new SandPlanError("BAD_SHOPPING_STATUS", "Bad shopping status");
+      return { op, args: { target, status } };
+    }
+    if (op === "shopping.remove") {
+      const target = compactText(a.target, 120);
+      if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown shopping target");
+      return { op, args: { target } };
+    }
+    if (op === "shopping.progress" || op === "shopping.session.finish") return { op, args: {} };
+    if (op === "shopping.session.start") return { op, args: { place_name: compactText(a.place_name, 240) || null } };
+  }
+  if (family === "work") {
+    if (op === "project.create") {
+      const title = compactText(a.title, 240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Project title required");
+      const priority = compactText(a.priority, 40) || "normal"; if (!["low","normal","high"].includes(priority)) throw new SandPlanError("BAD_PRIORITY", "Bad priority");
+      return { op, args: { title, priority, deadline: compactText(a.deadline, 80) || null, notes: compactText(a.notes, 2000) || null } };
+    }
+    if (op === "project.list") return { op, args: { status: compactText(a.status, 40) || "all" } };
+    if (op === "project.update") {
+      const target = compactText(a.target, 120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project target");
+      return { op, args: { target, status: compactText(a.status, 40) || null, progress: a.progress === undefined ? null : clampInt(a.progress,0,100,0), priority: compactText(a.priority,40) || null, deadline: compactText(a.deadline,80) || null, notes: compactText(a.notes,2000) || null } };
+    }
+    if (op === "task.create") {
+      const title = compactText(a.title, 240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Task title required");
+      const parent = compactText(a.parent,120) || null;
+      if (parent && !refs.has(parent) && !/^created:[1-9][0-9]*$/.test(parent)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project parent");
+      return { op, args: { title, parent, due_at: compactText(a.due_at,80) || null, priority: compactText(a.priority,40) || "normal" } };
+    }
+    if (op === "task.list") {
+      const project = compactText(a.project,120) || null;
+      if (project && !refs.has(project)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown project filter");
+      return { op, args: { project, status: compactText(a.status,40) || "all" } };
+    }
+    if (op === "task.update") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown task target");
+      return { op, args: { target, title: compactText(a.title,240) || null, status: compactText(a.status,40) || null, due_at: compactText(a.due_at,80) || null, priority: compactText(a.priority,40) || null } };
+    }
+    if (op === "waiting.create") {
+      const title = compactText(a.title,240); if (!title) throw new SandPlanError("TITLE_REQUIRED", "Waiting title required");
+      return { op, args: { title, waiting_on: compactText(a.waiting_on,240) || null, due_at: compactText(a.due_at,80) || null } };
+    }
+    if (op === "waiting.list") return { op, args: { status: compactText(a.status,40) || "all" } };
+    if (op === "waiting.close") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown waiting target");
+      return { op, args: { target } };
+    }
+    if (op === "inbox.add") {
+      const text = compactText(a.text,2000); if (!text) throw new SandPlanError("TEXT_REQUIRED", "Inbox text required");
+      return { op, args: { text, classified_as: compactText(a.classified_as,120) || null } };
+    }
+    if (op === "inbox.list") return { op, args: { status: compactText(a.status,40) || "all" } };
+    if (op === "inbox.classify") {
+      const target = compactText(a.target,120), classified_as = compactText(a.classified_as,120);
+      if (!refs.has(target) || !classified_as) throw new SandPlanError("BAD_INBOX_CLASSIFY", "Inbox classify target and class required");
+      return { op, args: { target, classified_as } };
+    }
+    if (op === "inbox.close") {
+      const target = compactText(a.target,120); if (!refs.has(target)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown inbox target");
+      return { op, args: { target } };
+    }
+  }
+
+  if (family === "memory_people") {
+    if (op === "people.create") {
+      const name = compactText(a.name, 240);
+      if (!name) throw new SandPlanError("PERSON_NAME_REQUIRED", "Person name required");
+      return {
+        op,
+        args: {
+          name,
+          relationship_to_user: compactText(a.relationship_to_user, 160) || null,
+          notes: compactText(a.notes, 2000) || null,
+          facts: sanitizeScalarFacts(a.facts),
+        },
+      };
+    }
+    if (op === "people.list") return { op, args: { query: compactText(a.query, 240) || null } };
+    if (op === "people.update") {
+      const target = compactText(a.target, 120);
+      if (!refs.has(target) || !target.startsWith("p")) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person target");
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(a, "relationship_to_user")) patch.relationship_to_user = compactText(a.relationship_to_user, 160) || null;
+      if (Object.prototype.hasOwnProperty.call(a, "notes")) patch.notes = compactText(a.notes, 2000) || null;
+      if (Object.prototype.hasOwnProperty.call(a, "facts")) patch.facts = sanitizeScalarFacts(a.facts);
+      if (!Object.keys(patch).length) throw new SandPlanError("EMPTY_PERSON_PATCH", "Person update has no fields");
+      return { op, args: { target, patch } };
+    }
+    if (op === "relations.set") {
+      const subject = compactText(a.subject, 120), object = compactText(a.object, 120), relation = compactText(a.relation, 160);
+      if (!familyPersonRefOrCreated(subject, refs) || !familyPersonRefOrCreated(object, refs) || !relation) {
+        throw new SandPlanError("BAD_RELATION", "Relationship needs valid subject, object and relation");
+      }
+      if (subject === object) throw new SandPlanError("BAD_RELATION", "Relationship endpoints must differ");
+      return { op, args: { subject, object, relation } };

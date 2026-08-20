@@ -1,169 +1,95 @@
-// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
-
-function normalizeLocalMinute(value) {
-  const s = compactText(value, 40);
-  if (!s) return null;
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
-  if (!m) return null;
-  const [, y, mo, d, h, mi] = m;
-  const yy = Number(y), mm = Number(mo), dd = Number(d), hh = Number(h), mn = Number(mi);
-  if (yy < 2020 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh < 0 || hh > 23 || mn < 0 || mn > 59) return null;
-  return `${y}-${mo}-${d}T${h}:${mi}`;
+    return { op, args: { query, ...scheduleOptionalRange(a) } };
+  }
+  if (op === "schedule.free_time") {
+    const from = scheduleLocalMinute(a.from_local), to = scheduleLocalMinute(a.to_local);
+    if (!from || !to || to <= from) throw new SandPlanError("BAD_SCHEDULE_RANGE", "Free-time requires a valid from_local/to_local range");
+    return { op, args: { from_local: from, to_local: to, min_minutes: clampInt(a.min_minutes, 1, 1440, 30) } };
+  }
+  if (op === "schedule.conflicts") {
+    const target = compactText(a.target,120) || null;
+    if (target && !scheduleTargetValid(target, refs, false)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    return { op, args: { target, ...scheduleOptionalRange(a) } };
+  }
+  if (op === "schedule.shift") {
+    const target = compactText(a.target,120);
+    if (!scheduleTargetValid(target, refs)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    const hasDelta = a.delta_minutes !== undefined && a.delta_minutes !== null && a.delta_minutes !== "";
+    const start = a.start_local === undefined || a.start_local === null || a.start_local === "" ? null : scheduleLocalMinute(a.start_local);
+    if (a.start_local && !start) throw new SandPlanError("BAD_SCHEDULE_TIME", "Invalid new schedule start");
+    if (hasDelta === Boolean(start)) throw new SandPlanError("SCHEDULE_SHIFT_MODE", "Use exactly one of delta_minutes or start_local");
+    const delta = hasDelta ? clampInt(a.delta_minutes, -525_600, 525_600, 0) : null;
+    if (hasDelta && delta === 0) throw new SandPlanError("SCHEDULE_SHIFT_ZERO", "Shift delta cannot be zero");
+    return { op, args: { target, delta_minutes: delta, start_local: start } };
+  }
+  if (op === "schedule.bulk_shift") {
+    const targets = Array.isArray(a.targets) ? [...new Set(a.targets.map((v) => compactText(v,120)).filter(Boolean))].slice(0,20) : [];
+    if (!targets.length || targets.some((v) => !scheduleTargetValid(v,refs,false))) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Bulk shift needs valid existing schedule targets");
+    const delta = clampInt(a.delta_minutes, -525_600, 525_600, 0);
+    if (!delta) throw new SandPlanError("SCHEDULE_SHIFT_ZERO", "Bulk shift delta cannot be zero");
+    return { op, args: { targets, delta_minutes: delta } };
+  }
+  if (["schedule.cancel","schedule.alerts.clear","schedule.recurrence.pause","schedule.recurrence.resume","schedule.recurrence.cancel"].includes(op)) {
+    const target = compactText(a.target,120);
+    if (!scheduleTargetValid(target,refs,false)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    if (op === "schedule.recurrence.pause") {
+      const until_local = a.until_local === undefined || a.until_local === null || a.until_local === "" ? null : scheduleLocalMinute(a.until_local);
+      if (a.until_local && !until_local) throw new SandPlanError("BAD_SCHEDULE_TIME", "Invalid pause-until time");
+      return { op, args: { target, until_local } };
+    }
+    return { op, args: { target } };
+  }
+  if (op === "schedule.snooze") {
+    const target = compactText(a.target,120);
+    if (!scheduleTargetValid(target,refs,false)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    const minutes = clampInt(a.minutes, 1, 1440, 10);
+    return { op, args: { target, minutes } };
+  }
+  if (op === "schedule.alerts.set") {
+    const target = compactText(a.target,120);
+    if (!scheduleTargetValid(target,refs)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    return { op, args: { target, offsets_minutes: scheduleOffsets(a.offsets_minutes) } };
+  }
+  if (op === "schedule.recurrence.set") {
+    const target = compactText(a.target,120), freq = compactText(a.freq,30).toLowerCase();
+    if (!scheduleTargetValid(target,refs)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    if (!["daily","weekly","monthly","yearly"].includes(freq)) throw new SandPlanError("BAD_RECURRENCE_FREQ", "Bad recurrence frequency");
+    const start_date = a.start_date === undefined || a.start_date === null || a.start_date === "" ? null : scheduleDate(a.start_date);
+    const end_date = a.end_date === undefined || a.end_date === null || a.end_date === "" ? null : scheduleDate(a.end_date);
+    if (a.start_date && !start_date || a.end_date && !end_date) throw new SandPlanError("BAD_RECURRENCE_DATE", "Invalid recurrence date");
+    if (start_date && end_date && end_date < start_date) throw new SandPlanError("BAD_RECURRENCE_DATE", "Recurrence end is before start");
+    const max_occurrences = a.max_occurrences === undefined || a.max_occurrences === null || a.max_occurrences === "" ? null : clampInt(a.max_occurrences,1,10_000,1);
+    const duration_minutes = a.duration_minutes === undefined || a.duration_minutes === null || a.duration_minutes === "" ? null : clampInt(a.duration_minutes,1,10_080,60);
+    const alert_offsets_minutes = Object.prototype.hasOwnProperty.call(a,"alert_offsets_minutes") ? scheduleOffsets(a.alert_offsets_minutes) : null;
+    return { op, args: {
+      target, freq, interval: clampInt(a.interval,1,365,1), weekdays: scheduleWeekdays(a.weekdays), month_days: scheduleUniqueInts(a.month_days,1,31,31), months: scheduleUniqueInts(a.months,1,12,12), times: scheduleTimes(a.times),
+      start_date, end_date, max_occurrences, duration_minutes, alert_offsets_minutes,
+    } };
+  }
+  if (op === "schedule.recurrence.skip") {
+    const target = compactText(a.target,120), occurrenceRaw = compactText(a.occurrence,40);
+    if (!scheduleTargetValid(target,refs,false)) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown schedule target");
+    const occurrence = scheduleDate(occurrenceRaw) || scheduleLocalMinute(occurrenceRaw);
+    if (!occurrence) throw new SandPlanError("BAD_OCCURRENCE", "Skip needs YYYY-MM-DD or YYYY-MM-DDTHH:mm");
+    return { op, args: { target, occurrence } };
+  }
+  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled schedule operation: ${op}`);
 }
 
-function mergeObjectState(currentState, patch, fallbackTitle) {
-  const current = currentState && typeof currentState === "object" && !Array.isArray(currentState) ? structuredClone(currentState) : {};
-  const out = {
-    title: compactText(current.title || fallbackTitle || "موضوع", 240),
-    description: current.description ?? null,
-    start_local: normalizeLocalMinute(current.start_local) ?? null,
-    end_local: normalizeLocalMinute(current.end_local) ?? null,
-    timezone: TZ,
-    location: current.location ?? null,
-    people: Array.isArray(current.people) ? current.people : [],
-    details: current.details && typeof current.details === "object" ? current.details : {},
-    status: current.status ?? "open",
-  };
-
-  if (Object.hasOwn(patch, "title") && patch.title !== null) out.title = compactText(patch.title, 240) || out.title;
-  if (Object.hasOwn(patch, "description")) out.description = patch.description === null ? null : compactText(patch.description, 3000);
-  if (Object.hasOwn(patch, "location")) out.location = patch.location === null ? null : compactText(patch.location, 300);
-  if (Object.hasOwn(patch, "people")) out.people = Array.isArray(patch.people) ? patch.people.slice(0, 20) : [];
-  if (Object.hasOwn(patch, "details")) out.details = patch.details && typeof patch.details === "object" ? sanitizeJsonValue(patch.details, 4) : {};
-  if (Object.hasOwn(patch, "status") && patch.status !== null) out.status = compactText(patch.status, 80) || out.status;
-
-  if (Object.hasOwn(patch, "start_local")) out.start_local = patch.start_local === null ? null : normalizeLocalMinute(patch.start_local);
-  if (Object.hasOwn(patch, "end_local")) out.end_local = patch.end_local === null ? null : normalizeLocalMinute(patch.end_local);
-
-  const oldStart = out.start_local;
-  if (Object.hasOwn(patch, "start_date_local") && patch.start_date_local) {
-    const date = compactText(patch.start_date_local, 20);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Invalid start_date_local");
-    const time = oldStart?.slice(11, 16) || "09:00";
-    out.start_local = normalizeLocalMinute(`${date}T${time}`);
-  }
-  if (Object.hasOwn(patch, "start_time_local") && patch.start_time_local) {
-    const time = compactText(patch.start_time_local, 20);
-    if (!/^\d{2}:\d{2}$/.test(time)) throw new Error("Invalid start_time_local");
-    const date = out.start_local?.slice(0, 10);
-    if (!date) throw new Error("Cannot set only a time when target has no known date");
-    out.start_local = normalizeLocalMinute(`${date}T${time}`);
-  }
-
-  if (out.start_local === null && (patch.start_local || patch.start_date_local || patch.start_time_local)) {
-    throw new Error("Invalid start time");
-  }
-  if (out.end_local && out.start_local && out.end_local < out.start_local) throw new Error("End time cannot be before start time");
-  return out;
-}
-
-async function objectById(env, chatId, id) {
-  const row = await env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects}
-    WHERE id=? AND chat_id=? LIMIT 1`)
-    .bind(id, chatId)
-    .first();
+function scheduleRuleFromRow(row) {
   if (!row) return null;
   return {
-    id: String(row.id),
-    kind: String(row.kind),
-    title: String(row.title),
-    state: safeJsonParse(row.state_json, {}),
-    status: String(row.status),
-    updated_at: String(row.updated_at),
+    id: String(row.id), object_id: String(row.object_id), freq: String(row.freq), interval_n: Math.max(1, Number(row.interval_n) || 1),
+    anchor_local: scheduleLocalMinute(row.anchor_local), weekdays: safeJsonParse(row.weekdays_json, []), month_days: safeJsonParse(row.month_days_json, []), months: safeJsonParse(row.months_json, []), times: safeJsonParse(row.times_json, []),
+    start_date_local: row.start_date_local ? String(row.start_date_local) : null, end_date_local: row.end_date_local ? String(row.end_date_local) : null,
+    max_occurrences: row.max_occurrences === null || row.max_occurrences === undefined ? null : Number(row.max_occurrences), duration_minutes: row.duration_minutes === null || row.duration_minutes === undefined ? null : Number(row.duration_minutes),
+    alert_offsets: safeJsonParse(row.alert_offsets_json, []), shift_minutes: Number(row.shift_minutes) || 0, status: String(row.status), paused_until_local: row.paused_until_local ? String(row.paused_until_local) : null,
+    skip_occurrences: safeJsonParse(row.skip_occurrences_json, []), updated_at: row.updated_at ? String(row.updated_at) : null,
   };
 }
 
-function tzOffsetMinutesAt(date, timeZone) {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(date)
-      .filter((x) => x.type !== "literal")
-      .map((x) => [x.type, x.value]),
-  );
-  const localAsUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  return Math.round((localAsUtc - date.getTime()) / 60000);
-}
-
-function cairoLocalToUtc(localMinute) {
-  const s = normalizeLocalMinute(localMinute);
-  if (!s) return null;
-  const [datePart, timePart] = s.split("T");
-  const [y, mo, d] = datePart.split("-").map(Number);
-  const [h, mi] = timePart.split(":").map(Number);
-  const wallUtc = Date.UTC(y, mo - 1, d, h, mi, 0);
-  let guess = new Date(wallUtc);
-  for (let i = 0; i < 3; i += 1) {
-    const offset = tzOffsetMinutesAt(guess, TZ);
-    guess = new Date(wallUtc - offset * 60000);
-  }
-  const verify = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(guess).replace(", ", "T");
-  if (!verify.startsWith(`${datePart}T${timePart}`)) return null;
-  return guess.toISOString();
-}
-
-async function upsertReminderForObject(env, { chatId, objectId, title, remindAtUtc, mode, sourceUpdateId }) {
-  const existing = await env.DB.prepare(`SELECT id FROM ${TABLES.reminders}
-    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain') LIMIT 1`)
-    .bind(chatId, objectId)
-    .first();
-  const at = nowIso();
-  if (existing?.id) {
-    await env.DB.prepare(`UPDATE ${TABLES.reminders}
-      SET title=?,remind_at_utc=?,timezone=?,mode=?,status='pending',source_update_id=?,telegram_message_id=NULL,updated_at=?,sent_at=NULL
-      WHERE id=?`)
-      .bind(title, remindAtUtc, TZ, mode, sourceUpdateId, at, existing.id)
-      .run();
-    return String(existing.id);
-  }
-  const id = randomId("rem");
-  await env.DB.prepare(`INSERT INTO ${TABLES.reminders}
-    (id,chat_id,object_id,title,remind_at_utc,timezone,mode,status,source_update_id,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,'pending',?,?,?)`)
-    .bind(id, chatId, objectId, title, remindAtUtc, TZ, mode, sourceUpdateId, at, at)
-    .run();
-  return id;
-}
-
-async function cancelReminderForObject(env, chatId, objectId) {
-  await env.DB.prepare(`UPDATE ${TABLES.reminders}
-    SET status='cancelled',updated_at=?
-    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
-    .bind(nowIso(), chatId, objectId)
-    .run();
-}
-
-async function syncAnchoredReminderForObject(env, chatId, objectId, startLocal, sourceUpdateId) {
-  const local = normalizeLocalMinute(startLocal);
-  if (!local) return;
-  const utc = cairoLocalToUtc(local);
-  if (!utc) throw new Error("Could not resolve updated reminder time");
-  await env.DB.prepare(`UPDATE ${TABLES.reminders}
-    SET remind_at_utc=?,source_update_id=?,status='pending',telegram_message_id=NULL,updated_at=?,sent_at=NULL
-    WHERE chat_id=? AND object_id=? AND mode='at_start' AND status IN ('pending','sending','uncertain')`)
-    .bind(utc, sourceUpdateId, nowIso(), chatId, objectId)
-    .run();
-}
+async function scheduleCapabilitySnapshot(env, chatId) {
+  const [objectsResult, rulesResult, remindersResult, signalsResult] = await Promise.all([
+    env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects} WHERE chat_id=? AND status='active' ORDER BY updated_at DESC LIMIT 160`).bind(chatId).all(),
+    env.DB.prepare(`SELECT * FROM ${TABLES.scheduleRules} WHERE chat_id=? AND status!='cancelled' ORDER BY updated_at DESC LIMIT 120`).bind(chatId).all(),
+    env.DB.prepare(`SELECT object_id,remind_at_utc,mode,status FROM ${TABLES.reminders} WHERE chat_id=? AND status IN ('pending','sending','uncertain') ORDER BY remind_at_utc ASC LIMIT 120`).bind(chatId).all(),
+    env.DB.prepare(`SELECT object_id,occurrence_local,fire_at_utc,status FROM ${TABLES.scheduleSignals} WHERE chat_id=? AND status IN ('pending','sending','uncertain') ORDER BY fire_at_utc ASC LIMIT 160`).bind(chatId).all(),

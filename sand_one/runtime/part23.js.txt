@@ -1,142 +1,126 @@
-// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
-
-async function telegramApi(env, method, payload) {
-  requireBinding(env, "TELEGRAM_BOT_TOKEN");
-  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+  ]);
+  const rules = new Map((rulesResult?.results ?? []).map((row) => [String(row.object_id), scheduleRuleFromRow(row)]));
+  const coreReminder = new Map();
+  for (const row of remindersResult?.results ?? []) if (row.object_id && !coreReminder.has(String(row.object_id))) coreReminder.set(String(row.object_id), { remind_at_utc: String(row.remind_at_utc), mode: String(row.mode), status: String(row.status) });
+  const signalCounts = new Map();
+  for (const row of signalsResult?.results ?? []) signalCounts.set(String(row.object_id), (signalCounts.get(String(row.object_id)) ?? 0) + 1);
+  const objects = (objectsResult?.results ?? []).map((row) => ({ id: String(row.id), kind: String(row.kind), title: String(row.title), status: String(row.status), state: safeJsonParse(row.state_json,{}), updated_at: String(row.updated_at) }))
+    .filter((row) => scheduleLocalMinute(row.state.start_local))
+    .sort((a,b) => String(a.state.start_local).localeCompare(String(b.state.start_local)));
+  return objects.map((row,index) => {
+    const rule = rules.get(row.id);
+    return {
+      ref: `e${index+1}`, id: row.id, kind: "event", object_kind: row.kind, title: row.title, status: row.status,
+      state: {
+        start_local: scheduleLocalMinute(row.state.start_local), end_local: scheduleLocalMinute(row.state.end_local), location: row.state.location ?? null, description: row.state.description ?? null,
+        recurrence: rule ? { freq: rule.freq, interval: rule.interval_n, weekdays: rule.weekdays, month_days: rule.month_days, months: rule.months, times: rule.times, start_date: rule.start_date_local, end_date: rule.end_date_local, max_occurrences: rule.max_occurrences, duration_minutes: rule.duration_minutes, status: rule.status, paused_until_local: rule.paused_until_local, alert_offsets_minutes: rule.alert_offsets, shift_minutes: rule.shift_minutes } : null,
+        core_reminder: coreReminder.get(row.id) ?? null, pending_schedule_alerts: signalCounts.get(row.id) ?? 0,
+      }, updated_at: row.updated_at,
+    };
   });
-  const data = await response.json().catch(() => null);
-  if (!response.ok || !data?.ok) {
-    throw new SandHttpError(`Telegram ${method} failed (${response.status}): ${JSON.stringify(data).slice(0, 500)}`, response.status);
+}
+
+function scheduleRuleMatchesDate(rule, date, anchorDate) {
+  const days = scheduleDaysDiff(anchorDate,date);
+  if (!Number.isFinite(days) || days < 0) return false;
+  const interval = Math.max(1, Number(rule.interval_n) || 1);
+  if (rule.freq === "once") return date === anchorDate;
+  if (rule.freq === "daily") return days % interval === 0;
+  if (rule.freq === "weekly") {
+    const weeks = Math.floor(days / 7);
+    const weekdays = Array.isArray(rule.weekdays) && rule.weekdays.length ? rule.weekdays : [scheduleWeekday(anchorDate)];
+    return weeks % interval === 0 && weekdays.includes(scheduleWeekday(date));
   }
-  return data;
-}
-
-async function deliverTextOnce(env, chatId, sourceKind, sourceId, text) {
-  const content = String(text).slice(0, 3900);
-  const hash = await textHash(content);
-  const existing = await env.DB.prepare(`SELECT id,status,text_hash,telegram_message_id,updated_at FROM ${TABLES.deliveries}
-    WHERE chat_id=? AND source_kind=? AND source_id=? LIMIT 1`)
-    .bind(chatId, sourceKind, sourceId)
-    .first();
-
-  if (existing) {
-    if (String(existing.text_hash) !== hash) throw new Error("Delivery idempotency payload mismatch");
-    const status = String(existing.status);
-    if (status === "sent" || status === "uncertain" || status === "sending") return { skipped: true, status };
+  if (rule.freq === "monthly") {
+    const months = scheduleMonthsDiff(anchorDate,date);
+    const monthDays = Array.isArray(rule.month_days) && rule.month_days.length ? rule.month_days : [Number(anchorDate.slice(8,10))];
+    return months >= 0 && months % interval === 0 && monthDays.includes(Number(date.slice(8,10)));
   }
-
-  const id = existing?.id ? String(existing.id) : randomId("delivery");
-  const at = nowIso();
-  if (!existing) {
-    await env.DB.prepare(`INSERT INTO ${TABLES.deliveries}
-      (id,chat_id,source_kind,source_id,text_hash,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,'pending',?,?)`)
-      .bind(id, chatId, sourceKind, sourceId, hash, at, at)
-      .run();
+  if (rule.freq === "yearly") {
+    const yearDiff = Number(date.slice(0,4)) - Number(anchorDate.slice(0,4));
+    const months = Array.isArray(rule.months) && rule.months.length ? rule.months : [Number(anchorDate.slice(5,7))];
+    const monthDays = Array.isArray(rule.month_days) && rule.month_days.length ? rule.month_days : [Number(anchorDate.slice(8,10))];
+    return yearDiff >= 0 && yearDiff % interval === 0 && months.includes(Number(date.slice(5,7))) && monthDays.includes(Number(date.slice(8,10)));
   }
-
-  const claim = await env.DB.prepare(`UPDATE ${TABLES.deliveries}
-    SET status='sending',updated_at=?,last_error=NULL
-    WHERE id=? AND status IN ('pending','failed') RETURNING id`)
-    .bind(nowIso(), id)
-    .first();
-  if (!claim) return { skipped: true, status: "busy_or_terminal" };
-
-  try {
-    const data = await telegramApi(env, "sendMessage", { chat_id: chatId, text: content });
-    const messageId = Number(data?.result?.message_id ?? 0) || null;
-    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
-      SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
-      .bind(messageId, nowIso(), nowIso(), id)
-      .run();
-    return { skipped: false, status: "sent", message_id: messageId };
-  } catch (error) {
-    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
-      SET status='uncertain',last_error=?,updated_at=? WHERE id=?`)
-      .bind(safeError(error), nowIso(), id)
-      .run();
-    throw error;
-  }
+  return false;
 }
 
-function buildVerifiedReply(plan, execution) {
-  if (plan.clarification) return plan.clarification.question;
-  if (!execution.ok) return "حصلت مشكلة وأنا بنفذ آخر خطوة، فمش هأكدلك إن التعديل تم. حاول تاني بعد شوية.";
-  const capabilityReply = [...execution.steps].reverse().map((step) => compactText(step?.reply, AI_MAX_REPLY_CHARS)).find(Boolean);
-  if (capabilityReply) return capabilityReply;
-  const reply = compactText(plan.reply, AI_MAX_REPLY_CHARS);
-  return reply || "تمام، اتعملت ✅";
+function scheduleRuleIsSkipped(rule, local) {
+  const skips = Array.isArray(rule.skip_occurrences) ? rule.skip_occurrences : [];
+  return skips.includes(local) || skips.includes(local.slice(0,10));
 }
 
-async function persistWorkspace(env, chatId, { goal, thread_summary, focus_object_id, open_questions }) {
-  const at = nowIso();
-  await env.DB.prepare(`INSERT INTO ${TABLES.workspaces}
-    (chat_id,goal,thread_summary,focus_object_id,open_questions_json,context_version,updated_at)
-    VALUES(?,?,?,?,?,1,?)
-    ON CONFLICT(chat_id) DO UPDATE SET
-      goal=excluded.goal,
-      thread_summary=excluded.thread_summary,
-      focus_object_id=excluded.focus_object_id,
-      open_questions_json=excluded.open_questions_json,
-      context_version=${TABLES.workspaces}.context_version+1,
-      updated_at=excluded.updated_at`)
-    .bind(chatId, goal || null, thread_summary || null, focus_object_id || null, JSON.stringify(open_questions ?? []), at)
-    .run();
-}
-
-async function pendingChats(env, limit = 20) {
-  const now = nowMs();
-  const rows = await env.DB.prepare(`SELECT DISTINCT chat_id FROM ${TABLES.inbox}
-    WHERE (status='pending' AND COALESCE(process_lease_until,0) <= ?)
-       OR (status='retry' AND COALESCE(retry_after_ms,0) <= ? AND COALESCE(process_lease_until,0) <= ?)
-       OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
-    ORDER BY chat_id LIMIT ?`)
-    .bind(now, now, now, now, clampInt(limit, 1, 100, 20))
-    .all();
-  return (rows?.results ?? []).map((row) => String(row.chat_id));
-}
-
-async function deliverDueReminders(env, limit) {
-  const rows = await env.DB.prepare(`SELECT id,chat_id,object_id,title,remind_at_utc,mode,status
-    FROM ${TABLES.reminders}
-    WHERE status='pending' AND remind_at_utc<=?
-    ORDER BY remind_at_utc ASC LIMIT ?`)
-    .bind(nowIso(), clampInt(limit, 1, 100, 30))
-    .all();
-
-  for (const row of rows?.results ?? []) {
-    const id = String(row.id);
-    const claim = await env.DB.prepare(`UPDATE ${TABLES.reminders}
-      SET status='sending',updated_at=? WHERE id=? AND status='pending' RETURNING id`)
-      .bind(nowIso(), id)
-      .first();
-    if (!claim) continue;
-    try {
-      const data = await telegramApi(env, "sendMessage", {
-        chat_id: String(row.chat_id),
-        text: `⏰ ${String(row.title)}`.slice(0, 3900),
-      });
-      await env.DB.prepare(`UPDATE ${TABLES.reminders}
-        SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
-        .bind(Number(data?.result?.message_id ?? 0) || null, nowIso(), nowIso(), id)
-        .run();
-    } catch (error) {
-      await env.DB.prepare(`UPDATE ${TABLES.reminders} SET status='uncertain',updated_at=? WHERE id=?`)
-        .bind(nowIso(), id)
-        .run();
-      logError("reminder_delivery_uncertain", error, { reminderId: id });
+function scheduleProjectRule(rule, title, fromLocal, toLocal, limit = SCHEDULE_READ_LIMIT) {
+  const from = scheduleLocalMinute(fromLocal), to = scheduleLocalMinute(toLocal), anchor = scheduleLocalMinute(rule.anchor_local);
+  if (!from || !to || !anchor || to <= from || rule.status === "cancelled") return [];
+  if (rule.status === "paused" && !rule.paused_until_local) return [];
+  const anchorDate = scheduleDate(rule.start_date_local || anchor.slice(0,10)) || anchor.slice(0,10);
+  const endDate = rule.end_date_local ? scheduleDate(rule.end_date_local) : null;
+  const times = Array.isArray(rule.times) && rule.times.length ? rule.times.filter(scheduleTime) : [anchor.slice(11,16)];
+  const shift = Number(rule.shift_minutes) || 0;
+  const duration = Number.isInteger(rule.duration_minutes) && rule.duration_minutes > 0 ? rule.duration_minutes : null;
+  const maxOccurrences = Number.isInteger(rule.max_occurrences) && rule.max_occurrences > 0 ? rule.max_occurrences : null;
+  const hardStart = anchorDate;
+  const hardEnd = endDate && endDate < to.slice(0,10) ? endDate : to.slice(0,10);
+  let date = hardStart, ordinal = 0;
+  const out = [];
+  let guard = 0;
+  while (date && date <= hardEnd && guard < 40_000 && out.length < Math.max(1,limit)) {
+    guard += 1;
+    if (scheduleRuleMatchesDate(rule,date,anchorDate)) {
+      for (const time of times) {
+        const rawLocal = scheduleLocalMinute(`${date}T${time}`);
+        if (!rawLocal) continue;
+        ordinal += 1;
+        if (maxOccurrences && ordinal > maxOccurrences) return out;
+        const shifted = scheduleShiftLocalMinute(rawLocal,shift);
+        if (!shifted || scheduleRuleIsSkipped(rule,shifted) || scheduleRuleIsSkipped(rule,rawLocal)) continue;
+        if (rule.status === "paused" && rule.paused_until_local && shifted < rule.paused_until_local) continue;
+        if (shifted >= from && shifted < to) {
+          out.push({ event_id: String(rule.object_id), rule_id: String(rule.id), recurring: rule.freq !== "once", title, start_local: shifted, end_local: duration ? scheduleShiftLocalMinute(shifted,duration) : null, occurrence_local: shifted });
+          if (out.length >= limit) return out;
+        }
+      }
     }
+    date = scheduleAddDays(date,1);
   }
+  return out;
 }
 
-async function markStaleDeliveriesUncertain(env) {
-  const cutoff = new Date(nowMs() - DELIVERY_UNCERTAIN_AFTER_MS).toISOString();
-  await env.DB.prepare(`UPDATE ${TABLES.deliveries}
-    SET status='uncertain',updated_at=?
-    WHERE status='sending' AND updated_at<?`)
-    .bind(nowIso(), cutoff)
-    .run();
+function scheduleDirectOccurrence(object) {
+  const start = scheduleLocalMinute(object.state?.start_local);
+  if (!start) return null;
+  const end = scheduleLocalMinute(object.state?.end_local);
+  return { event_id: object.id, rule_id: null, recurring: false, title: object.title, start_local: start, end_local: end, occurrence_local: start };
 }
+
+async function scheduleDomain(env, chatId) {
+  const [objectsResult,rulesResult] = await Promise.all([
+    env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects} WHERE chat_id=? AND status='active' ORDER BY updated_at DESC LIMIT 200`).bind(chatId).all(),
+    env.DB.prepare(`SELECT * FROM ${TABLES.scheduleRules} WHERE chat_id=? ORDER BY updated_at DESC LIMIT 200`).bind(chatId).all(),
+  ]);
+  const objects=(objectsResult?.results??[]).map((row)=>({id:String(row.id),kind:String(row.kind),title:String(row.title),state:safeJsonParse(row.state_json,{}),status:String(row.status),updated_at:String(row.updated_at)})).filter((o)=>scheduleLocalMinute(o.state.start_local));
+  const rules=(rulesResult?.results??[]).map(scheduleRuleFromRow).filter(Boolean);
+  return { objects, rules, ruleByObject:new Map(rules.map((r)=>[r.object_id,r])) };
+}
+
+function scheduleResolveWindow(fromLocal,toLocal) {
+  const now=scheduleNowLocalMinute();
+  const from=scheduleLocalMinute(fromLocal)||now;
+  const to=scheduleLocalMinute(toLocal)||scheduleShiftLocalMinute(from,7*24*60);
+  if (!from||!to||to<=from) throw new SandPlanError("BAD_SCHEDULE_RANGE","Invalid schedule window");
+  return {from,to};
+}
+
+async function scheduleOccurrences(env,chatId,fromLocal,toLocal) {
+  const {from,to}=scheduleResolveWindow(fromLocal,toLocal);
+  const domain=await scheduleDomain(env,chatId);
+  const out=[];
+  for(const obj of domain.objects){
+    const rule=domain.ruleByObject.get(obj.id);
+    if(rule && rule.status!=="cancelled" && rule.freq!=="once") out.push(...scheduleProjectRule(rule,obj.title,from,to,SCHEDULE_READ_LIMIT-out.length));
+    else {
+      const occ=scheduleDirectOccurrence(obj);
+      if(occ && occ.start_local>=from && occ.start_local<to) out.push(occ);
+    }
+    if(out.length>=SCHEDULE_READ_LIMIT) break;

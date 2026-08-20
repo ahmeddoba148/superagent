@@ -1,143 +1,73 @@
-  const declared = Number(response.headers.get("content-length") ?? 0);
-  if (declared > 1_000_000) throw new SandHttpError("Web page is too large", 413);
-  const buffer = await response.arrayBuffer();
-  if (buffer.byteLength > 1_000_000) throw new SandHttpError("Web page is too large", 413);
-  const raw = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
-  const text = type.includes("text/plain") ? raw.replace(/\s+/g, " ").trim() : decodeHtmlText(raw);
-  return { url: finalUrl.toString(), content_type: type.split(";")[0] || null, text: text.slice(0, maxChars), truncated: text.length > maxChars };
-}
-
-async function googleWebSearch(env, args) {
-  const key = compactText(env?.GOOGLE_SEARCH_API_KEY, 500);
-  const cx = compactText(env?.GOOGLE_SEARCH_CX, 500);
-  if (!key || !cx) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Search is not configured");
-  const params = new URLSearchParams({ key, cx, q: args.query, num: String(args.limit), safe: "active" });
-  if (args.language) params.set("hl", args.language);
-  if (args.country) params.set("gl", args.country);
-  const response = await externalFetch("google_search", `https://www.googleapis.com/customsearch/v1?${params.toString()}`);
-  if (!response.ok) throw new SandHttpError(`Google Search HTTP ${response.status}`, response.status);
-  const data = await response.json().catch(() => ({}));
-  const items = (Array.isArray(data?.items) ? data.items : []).slice(0, args.limit).map((item) => ({
-    title: compactText(item?.title, 500), url: compactText(item?.link, 2000), snippet: compactText(item?.snippet, 1200), domain: compactText(item?.displayLink, 300),
-  })).filter((item) => item.url);
-  return { query: args.query, items };
-}
-
-function decodeXmlText(value) {
-  return String(value ?? "")
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => {
-      const code = Number(n);
-      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : " ";
-    })
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseGoogleNewsRss(xml, limit) {
-  const items = [];
-  const blocks = String(xml ?? "").match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
-  for (const block of blocks.slice(0, limit)) {
-    const title = decodeXmlText(/<title>([\s\S]*?)<\/title>/i.exec(block)?.[1] ?? "");
-    const url = decodeXmlText(/<link>([\s\S]*?)<\/link>/i.exec(block)?.[1] ?? "");
-    const seenAt = decodeXmlText(/<pubDate>([\s\S]*?)<\/pubDate>/i.exec(block)?.[1] ?? "");
-    const sourceMatch = /<source(?:\s[^>]*)?>([\s\S]*?)<\/source>/i.exec(block);
-    const domain = decodeXmlText(sourceMatch?.[1] ?? "");
-    if (url) items.push({ title, url, domain, seen_at: seenAt, language: "ar" });
-  }
-  return items;
-}
-
-async function googleNewsRssSearch(args) {
-  const params = new URLSearchParams({ q: args.query, hl: "ar", gl: "EG", ceid: "EG:ar" });
-  const response = await externalFetch("google_news_rss", `https://news.google.com/rss/search?${params.toString()}`);
-  if (!response.ok) throw new SandHttpError(`Google News RSS HTTP ${response.status}`, response.status);
-  const xml = await response.text();
-  const items = parseGoogleNewsRss(xml, args.limit);
-  if (!items.length) throw new SandHttpError("Google News RSS returned no usable items", 502);
-  return { query: args.query, items, provider: "google_news_rss" };
-}
-
-async function liveNewsSearch(args) {
-  const params = new URLSearchParams({ query: args.query, mode: "ArtList", maxrecords: String(Math.min(20, args.limit)), format: "json", sort: "HybridRel" });
-  try {
-    const response = await externalFetch("gdelt_news", `https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`);
-    if (response.ok) {
-      const data = await response.json().catch(() => ({}));
-      const items = (Array.isArray(data?.articles) ? data.articles : []).slice(0, args.limit).map((item) => ({
-        title: compactText(item?.title, 700), url: compactText(item?.url, 2000), domain: compactText(item?.domain, 300), seen_at: compactText(item?.seendate, 80), language: compactText(item?.language, 80),
-      })).filter((item) => item.url);
-      if (items.length) return { query: args.query, items, provider: "gdelt" };
+  if (!hasMutation) {
+    let reply = ""; const outputs = [];
+    for (const step of plan.steps) {
+      if (step.op === "shopping.list") {
+        const all = await capabilitySnapshot(env, chatId, "shopping");
+        const rows = all.filter((x) => x.kind === "shopping_item" && (step.args.status === "all" || x.status === step.args.status));
+        outputs.push({ op: step.op, rows: rows.map(({ id, ...x }) => x) }); reply = renderShoppingList(rows);
+      } else if (step.op === "shopping.progress") {
+        const all = (await capabilitySnapshot(env, chatId, "shopping")).filter((x) => x.kind === "shopping_item");
+        const counts = Object.fromEntries(["pending","bought","unavailable","skipped"].map((status) => [status, all.filter((x) => x.status === status).length]));
+        outputs.push({ op: step.op, counts, total: all.length }); reply = `🛒 الإجمالي ${all.length} — باقي ${counts.pending} — اتجاب ${counts.bought} — مش متاح ${counts.unavailable} — متخطّي ${counts.skipped}`;
+      }
     }
-  } catch (error) {
-    logError("news_primary_transient", error, { provider: "gdelt" });
+    return { steps: outputs, reply: reply || compactText(plan.reply_hint,800) };
   }
-  return googleNewsRssSearch(args);
+  if (plan.steps.some((s) => ["shopping.list","shopping.progress"].includes(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN", "Do not mix shopping reads and mutations in one family plan");
+  const stmts = [], created = [], expected = [];
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const step = plan.steps[i], at = nowIso();
+    if (step.op === "shopping.add") {
+      for (let j = 0; j < step.args.items.length; j += 1) {
+        const item = step.args.items[j], id = await stableCapabilityId("shop", operationId, mainStepIndex * 100 + i, j);
+        created[i] = created[i] || id;
+        const state = { quantity: item.quantity, category: item.category, priority: item.priority };
+        stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_item',NULL,?,?,'pending',?,?,?)`).bind(id,chatId,item.title,JSON.stringify(state),updateId,at,at));
+        expected.push({ id, status: "pending", title: item.title });
+      }
+    } else if (step.op === "shopping.mark") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(step.args.status,updateId,at,id,chatId)); expected.push({ id, status: step.args.status });
+    } else if (step.op === "shopping.remove") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='archived',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(updateId,at,id,chatId)); expected.push({ id, status: "archived" });
+    } else if (step.op === "shopping.session.start") {
+      const id = await stableCapabilityId("shopsession", operationId, mainStepIndex * 100 + i, 0); created[i] = id;
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',updated_at=? WHERE chat_id=? AND kind='shopping_session' AND status='active'`).bind(at,chatId));
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_session',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.place_name || "جلسة تسوق",JSON.stringify({ place_name: step.args.place_name, started_at: at }),updateId,at,at)); expected.push({ id, status: "active" });
+    } else if (step.op === "shopping.session.finish") {
+      const row = await env.DB.prepare(`SELECT id FROM ${TABLES.lifeItems} WHERE chat_id=? AND kind='shopping_session' AND status='active' ORDER BY updated_at DESC LIMIT 1`).bind(chatId).first();
+      if (row?.id) { const id=String(row.id); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(updateId,at,id,chatId)); expected.push({ id, status: "done" }); }
+    }
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  for (const exp of expected) {
+    const row = await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first();
+    if (!row || String(row.status)!==exp.status || (exp.title && String(row.title)!==exp.title)) throw new Error("Shopping capability verification failed");
+  }
+  return { steps: plan.steps.map((step,i)=>({ op:step.op, created_id:created[i]||null })), reply: compactText(plan.reply_hint,800) || "تمام، حدّثت المشتريات واتأكدت من النتيجة ✅" };
 }
 
-async function openMeteoWeather(args) {
-  let latitude = args.latitude;
-  let longitude = args.longitude;
-  let city = args.city;
-  if (latitude === null || longitude === null) {
-    if (!city) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
-    const params = new URLSearchParams({ name: city, count: "1", language: "ar", format: "json" });
-    const geo = await externalFetch("open_meteo_geocoding", `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`);
-    if (!geo.ok) throw new SandHttpError(`Weather geocoding HTTP ${geo.status}`, geo.status);
-    const data = await geo.json().catch(() => ({}));
-    const first = Array.isArray(data?.results) ? data.results[0] : null;
-    if (!first) throw new SandPlanError("WEATHER_LOCATION_NOT_FOUND", "Weather location was not found");
-    latitude = Number(first.latitude);
-    longitude = Number(first.longitude);
-    city = compactText(first.name, 240) || city;
-  }
-  const params = new URLSearchParams({
-    latitude: String(latitude), longitude: String(longitude), current: "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
-    daily: "temperature_2m_max,temperature_2m_min,precipitation_probability_max", timezone: "auto", forecast_days: String(args.forecast_days),
-  });
-  const response = await externalFetch("open_meteo_weather", `https://api.open-meteo.com/v1/forecast?${params.toString()}`);
-  if (!response.ok) throw new SandHttpError(`Weather HTTP ${response.status}`, response.status);
-  const data = await response.json().catch(() => ({}));
-  return { city: city || null, latitude, longitude, timezone: data?.timezone ?? null, current: data?.current ?? null, daily: data?.daily ?? null };
-}
 
-async function googlePlacesSearch(env, args) {
-  const key = compactText(env?.GOOGLE_MAPS_API_KEY, 500);
-  if (!key) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Places is not configured");
-  const body = { textQuery: args.query, languageCode: args.language || "ar", maxResultCount: args.limit };
-  if (args.latitude !== null && args.longitude !== null) body.locationBias = { circle: { center: { latitude: args.latitude, longitude: args.longitude }, radius: args.radius_m } };
-  const response = await externalFetch("google_places", "https://places.googleapis.com/v1/places:searchText", {
-    method: "POST",
-    headers: { "content-type": "application/json", "X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryTypeDisplayName" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new SandHttpError(`Google Places HTTP ${response.status}`, response.status);
-  const data = await response.json().catch(() => ({}));
-  const items = (Array.isArray(data?.places) ? data.places : []).slice(0, args.limit).map((place) => ({
-    id: compactText(place?.id, 300), name: compactText(place?.displayName?.text, 500), address: compactText(place?.formattedAddress, 800), category: compactText(place?.primaryTypeDisplayName?.text, 300),
-    latitude: Number.isFinite(Number(place?.location?.latitude)) ? Number(place.location.latitude) : null,
-    longitude: Number.isFinite(Number(place?.location?.longitude)) ? Number(place.location.longitude) : null,
-    rating: Number.isFinite(Number(place?.rating)) ? Number(place.rating) : null,
-    user_rating_count: Number.isFinite(Number(place?.userRatingCount)) ? Number(place.userRatingCount) : null,
-    maps_url: compactText(place?.googleMapsUri, 2000),
-  }));
-  return { query: args.query, items };
-}
-
-function renderWebLiveResult(step, result) {
-  if (step.op === "web.search") {
-    const items = result.items ?? [];
-    if (!items.length) return "ملقتش نتائج مناسبة في Google Search.";
-    return ["🔎 نتائج البحث:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || item.domain || "نتيجة"}\n${item.url}${item.snippet ? `\n${item.snippet}` : ""}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+async function executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const readOps = new Set(["project.list","task.list","waiting.list","inbox.list"]);
+  const hasMutation = plan.steps.some((s)=>!readOps.has(s.op));
+  if (!hasMutation) {
+    let reply=""; const outputs=[]; const all=await capabilitySnapshot(env,chatId,"work");
+    for (const step of plan.steps) {
+      if (step.op === "project.list") { const rows=all.filter(x=>x.kind==="project"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"🎯 المشاريع:"); }
+      if (step.op === "task.list") { const projectId=step.args.project?refs.get(step.args.project):null; const rows=all.filter(x=>x.kind==="task"&&(!projectId||x.parent_id===projectId)&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"✅ المهام:"); }
+      if (step.op === "waiting.list") { const rows=all.filter(x=>x.kind==="waiting"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"⏳ المتابعات:"); }
+      if (step.op === "inbox.list") { const rows=all.filter(x=>x.kind==="inbox"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"📥 الوارد:"); }
+    }
+    return {steps:outputs,reply:reply||compactText(plan.reply_hint,800)};
   }
-  if (step.op === "web.read") return `📄 قرأت الصفحة:\n${result.text || "مفيش نص قابل للقراءة."}`.slice(0, AI_MAX_REPLY_CHARS);
-  if (step.op === "news.search") {
-    const items = result.items ?? [];
-    if (!items.length) return "ملقتش أخبار حديثة مناسبة للبحث.";
-    return ["📰 الأخبار:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || "خبر"}\n${item.url}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
-  }
+  if (plan.steps.some((s)=>readOps.has(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN","Do not mix work reads and mutations in one family plan");
+  const stmts=[], created=[], expected=[];
+  for (let i=0;i<plan.steps.length;i+=1) {
+    const step=plan.steps[i], at=nowIso();
+    if (step.op === "project.create") {
+      const id=await stableCapabilityId("project",operationId,mainStepIndex*100+i); created[i]=id; const state={priority:step.args.priority,deadline:step.args.deadline,notes:step.args.notes,progress:0};
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'project',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"active",title:step.args.title});
+    } else if (step.op === "project.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='project' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["progress","priority","deadline","notes"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status});

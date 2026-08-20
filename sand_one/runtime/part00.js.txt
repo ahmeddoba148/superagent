@@ -13,8 +13,8 @@
  */
 
 const APP_NAME = "SAND ONE";
-const APP_VERSION = "1.0.0-dev.4";
-const DATA_SCHEMA_VERSION = "1";
+const APP_VERSION = "1.0.0-dev.5";
+const DATA_SCHEMA_VERSION = "2";
 const ARCHITECTURE_NAME = "semantic-conversation-workspace+capability-layer";
 const VOICE_MAX_BYTES = 25 * 1024 * 1024;
 const VOICE_TOTAL_BUDGET_MS = 16_000;
@@ -58,10 +58,12 @@ const TABLES = Object.freeze({
   deliveries: "sand_v2_deliveries",
   lifeItems: "sand_one_life_items",
   capabilityPlans: "sand_one_capability_plans",
+  scheduleRules: "sand_one_schedule_rules",
+  scheduleSignals: "sand_one_schedule_signals",
 });
 
 const CAPABILITY_FAMILIES = Object.freeze({
-  schedule: Object.freeze({ label: "Schedule", role: "appointments, reminders, recurrence, free time and conflicts", state: "core" }),
+  schedule: Object.freeze({ label: "Schedule", role: "appointments, reminders, recurrence, free time and conflicts", state: "active" }),
   work: Object.freeze({ label: "Work", role: "tasks, projects, waiting and life inbox", state: "active" }),
   shopping: Object.freeze({ label: "Shopping", role: "shopping lists, sessions, status and progress", state: "active" }),
   memory_people: Object.freeze({ label: "Memory & People", role: "memory, people, relationships and contacts", state: "active" }),
@@ -77,6 +79,27 @@ const CAPABILITY_FAMILIES = Object.freeze({
 const CAPABILITY_FAMILY_IDS = Object.freeze(Object.keys(CAPABILITY_FAMILIES));
 
 const CAPABILITY_FAMILY_CONTRACTS = Object.freeze({
+  schedule: Object.freeze({
+    max_steps: 8,
+    operations: Object.freeze({
+      "schedule.create": "args.title and args.start_local required; end_local/location/description optional",
+      "schedule.list": "args.from_local/to_local optional; defaults to the next 7 days",
+      "schedule.search": "args.query required; from_local/to_local optional",
+      "schedule.free_time": "args.from_local and args.to_local required; min_minutes optional",
+      "schedule.conflicts": "args.from_local/to_local optional; target optional",
+      "schedule.shift": "args.target required; use delta_minutes or start_local",
+      "schedule.bulk_shift": "args.targets array and delta_minutes required",
+      "schedule.cancel": "args.target required",
+      "schedule.snooze": "args.target and minutes required",
+      "schedule.alerts.set": "args.target and offsets_minutes array required; 0 means at start",
+      "schedule.alerts.clear": "args.target required",
+      "schedule.recurrence.set": "args.target and freq=daily|weekly|monthly|yearly; interval/weekdays/month_days/months/times/start_date/end_date/max_occurrences/duration_minutes/alert_offsets_minutes optional",
+      "schedule.recurrence.pause": "args.target required; until_local optional",
+      "schedule.recurrence.resume": "args.target required",
+      "schedule.recurrence.skip": "args.target and occurrence required (YYYY-MM-DD or YYYY-MM-DDTHH:mm)",
+      "schedule.recurrence.cancel": "args.target required",
+    }),
+  }),
   shopping: Object.freeze({
     max_steps: 8,
     operations: Object.freeze({
@@ -124,11 +147,3 @@ const CAPABILITY_FAMILY_CONTRACTS = Object.freeze({
       "unit.convert": "args.value number; args.from/to one of c,f,k,m,km,cm,mm,mi,yd,ft,in,kg,g,mg,lb,oz,l,ml,cup_us,gal_us,b,kb,mb,gb,kib,mib,gib",
       "datetime.now": "args.timezone optional IANA timezone; defaults Africa/Cairo",
       "datetime.diff": "args.from and args.to ISO datetime; args.unit = seconds|minutes|hours|days optional",
-    }),
-  }),
-  web_live: Object.freeze({
-    max_steps: 5,
-    operations: Object.freeze({
-      "web.search": "Google web search. args.query required; limit/language/country optional",
-      "web.read": "Read a public HTTPS web page. args.url required; max_chars optional",
-      "news.search": "Live news search. args.query required; limit optional",

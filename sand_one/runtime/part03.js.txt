@@ -1,3 +1,12 @@
+    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
+  }
+
+  const presented = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const update = await request.json().catch((error) => {
     logError("telegram_json", error);
     return null;
   });
@@ -180,3 +189,21 @@ async function hasRecoverableUpdate(env, chatId) {
 async function triggerDrainContinuation(env, chatId, origin) {
   if (!origin || !env?.TELEGRAM_WEBHOOK_SECRET) return false;
   try {
+    const response = await fetch(`${String(origin).replace(/\/$/, "")}/internal/drain`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Sand-Internal": env.TELEGRAM_WEBHOOK_SECRET },
+      body: JSON.stringify({ chat_id: String(chatId) }),
+    });
+    if (response.body) await response.body.cancel().catch(() => {});
+    if (response.status !== 202) throw new Error(`Continuation failed (${response.status})`);
+    return true;
+  } catch (error) {
+    logError("drain_continuation", error, { chatId });
+    return false;
+  }
+}
+
+async function drainChat(env, chatId, origin = "") {
+  await ensureSchema(env);
+  const owner = randomId("lease");
+  const acquired = await acquireChatLeaseWithWait(env, chatId, owner);

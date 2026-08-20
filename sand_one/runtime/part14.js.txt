@@ -1,141 +1,122 @@
-  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.capabilityPlans}
-    (operation_id,step_index,family,request_text,plan_json,model_id,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,'planned',?,?)`)
-    .bind(operationId, stepIndex, family, semanticRequest, JSON.stringify(planned.plan), planned.modelId, at, at).run();
-  const stored = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
-    .bind(operationId, stepIndex).first();
-  return { plan: safeJsonParse(stored?.plan_json, planned.plan), modelId: stored?.model_id ? String(stored.model_id) : planned.modelId };
-}
-
-function renderShoppingList(rows) {
-  if (!rows.length) return "قائمة المشتريات فاضية حاليًا.";
-  return ["🛒 المشتريات:", ...rows.map((r, i) => `${i + 1}) ${r.title}${r.state.quantity ? ` — ${r.state.quantity}` : ""} [${r.status}]`)].join("\n");
-}
-
-function renderWorkList(rows, label) {
-  if (!rows.length) return `${label} مفيهاش عناصر حاليًا.`;
-  return [label, ...rows.map((r, i) => `${i + 1}) ${r.title} [${r.status}]`)].join("\n");
-}
-
-async function executeCapabilityRequest(env, { chatId, updateId, operationId, stepIndex, request }) {
-  if (!operationId) throw new Error("Capability execution requires operation id");
-  const family = request.family;
-  const familyState = await capabilitySnapshot(env, chatId, family);
-  const refs = familyRefMap(familyState);
-  const planned = await loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest: request.request });
-  const plan = validateFamilyPlan(family, planned.plan, familyState);
-  const result = await executeFamilyPlan(env, { chatId, updateId, operationId, mainStepIndex: stepIndex, family, plan, refs });
-  await env.DB.prepare(`UPDATE ${TABLES.capabilityPlans} SET status='done',result_json=?,updated_at=? WHERE operation_id=? AND step_index=?`)
-    .bind(JSON.stringify(result), nowIso(), operationId, stepIndex).run();
-  return { ok: true, family, ...result };
-}
-
-const EXTERNAL_ADAPTER_BREAKERS = new Map();
-const EXTERNAL_ADAPTER_FAILURE_THRESHOLD = 3;
-const EXTERNAL_ADAPTER_OPEN_MS = 60_000;
-const EXTERNAL_FETCH_TIMEOUT_MS = 8_000;
-
-function externalBreakerState(name) {
-  const key = compactText(name, 80);
-  let state = EXTERNAL_ADAPTER_BREAKERS.get(key);
-  if (!state) {
-    state = { failures: 0, open_until: 0 };
-    EXTERNAL_ADAPTER_BREAKERS.set(key, state);
-  }
-  return state;
-}
-
-function recordExternalSuccess(name) {
-  const state = externalBreakerState(name);
-  state.failures = 0;
-  state.open_until = 0;
-}
-
-function recordExternalFailure(name) {
-  const state = externalBreakerState(name);
-  state.failures += 1;
-  if (state.failures >= EXTERNAL_ADAPTER_FAILURE_THRESHOLD) state.open_until = nowMs() + EXTERNAL_ADAPTER_OPEN_MS;
-}
-
-function assertExternalCircuitClosed(name) {
-  const state = externalBreakerState(name);
-  if (state.open_until > nowMs()) throw new SandHttpError(`${name} circuit is temporarily open`, 503);
-  if (state.open_until && state.open_until <= nowMs()) {
-    state.open_until = 0;
-    state.failures = 0;
-  }
-}
-
-async function externalFetch(name, url, options = {}, timeoutMs = EXTERNAL_FETCH_TIMEOUT_MS) {
-  assertExternalCircuitClosed(name);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), clampInt(timeoutMs, 500, 15_000, EXTERNAL_FETCH_TIMEOUT_MS));
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    if (response.status === 429 || response.status >= 500) recordExternalFailure(name);
-    else recordExternalSuccess(name);
-    return response;
+        title: compactText(item?.title, 700), url: compactText(item?.url, 2000), domain: compactText(item?.domain, 300), seen_at: compactText(item?.seendate, 80), language: compactText(item?.language, 80),
+      })).filter((item) => item.url);
+      if (items.length) return { query: args.query, items, provider: "gdelt" };
+    }
   } catch (error) {
-    recordExternalFailure(name);
-    if (error instanceof Error && error.name === "AbortError") throw new SandHttpError(`${name} timeout`, 408);
-    throw error;
-  } finally {
-    clearTimeout(timer);
+    logError("news_primary_transient", error, { provider: "gdelt" });
   }
+  return googleNewsRssSearch(args);
 }
 
-function normalizePublicHttpsUrl(value) {
-  const raw = compactText(value, 2000);
-  let url;
-  try { url = new URL(raw); } catch { throw new SandPlanError("BAD_URL", "A valid URL is required"); }
-  if (url.protocol !== "https:") throw new SandPlanError("BAD_URL", "Only HTTPS URLs are allowed");
-  if (url.username || url.password) throw new SandPlanError("BAD_URL", "Credentials in URLs are not allowed");
-  if (url.port && url.port !== "443") throw new SandPlanError("BAD_URL", "Non-standard URL ports are not allowed");
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) throw new SandPlanError("BAD_URL", "Local URLs are not allowed");
-  if (/^(?:10\.|127\.|169\.254\.|192\.168\.|0\.)/.test(host)) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
-  const m = /^(172)\.(\d{1,3})\./.exec(host);
-  if (m && Number(m[2]) >= 16 && Number(m[2]) <= 31) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
-  if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) throw new SandPlanError("BAD_URL", "Private network URLs are not allowed");
-  return url;
-}
-
-function decodeHtmlText(html) {
-  return String(html ?? "")
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n) => {
-      const x = Number(n);
-      return Number.isFinite(x) && x > 0 && x <= 0x10ffff ? String.fromCodePoint(x) : " ";
-    })
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-async function webReader(urlValue, maxChars) {
-  let current = normalizePublicHttpsUrl(urlValue);
-  let response = null;
-  for (let redirects = 0; redirects <= 5; redirects += 1) {
-    response = await externalFetch("web_reader", current.toString(), {
-      headers: { accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1", "user-agent": "SAND-ONE/1.0" },
-      redirect: "manual",
-    });
-    if (![301, 302, 303, 307, 308].includes(response.status)) break;
-    if (redirects === 5) throw new SandHttpError("Too many web redirects", 508);
-    const location = compactText(response.headers.get("location"), 2000);
-    if (!location) throw new SandHttpError("Web redirect without location", 502);
-    current = normalizePublicHttpsUrl(new URL(location, current).toString());
+async function openMeteoWeather(args) {
+  let latitude = args.latitude;
+  let longitude = args.longitude;
+  let city = args.city;
+  if (latitude === null || longitude === null) {
+    if (!city) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
+    const params = new URLSearchParams({ name: city, count: "1", language: "ar", format: "json" });
+    const geo = await externalFetch("open_meteo_geocoding", `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`);
+    if (!geo.ok) throw new SandHttpError(`Weather geocoding HTTP ${geo.status}`, geo.status);
+    const data = await geo.json().catch(() => ({}));
+    const first = Array.isArray(data?.results) ? data.results[0] : null;
+    if (!first) throw new SandPlanError("WEATHER_LOCATION_NOT_FOUND", "Weather location was not found");
+    latitude = Number(first.latitude);
+    longitude = Number(first.longitude);
+    city = compactText(first.name, 240) || city;
   }
-  if (!response) throw new SandHttpError("Web reader returned no response", 502);
-  if (!response.ok) throw new SandHttpError(`Web reader HTTP ${response.status}`, response.status);
-  const finalUrl = normalizePublicHttpsUrl(response.url || current.toString());
-  const type = String(response.headers.get("content-type") ?? "").toLowerCase();
-  if (!(type.includes("text/html") || type.includes("application/xhtml+xml") || type.includes("text/plain"))) throw new SandHttpError(`Unsupported web content type: ${type || "unknown"}`, 415);
+  const params = new URLSearchParams({
+    latitude: String(latitude), longitude: String(longitude), current: "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+    daily: "temperature_2m_max,temperature_2m_min,precipitation_probability_max", timezone: "auto", forecast_days: String(args.forecast_days),
+  });
+  const response = await externalFetch("open_meteo_weather", `https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Weather HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  return { city: city || null, latitude, longitude, timezone: data?.timezone ?? null, current: data?.current ?? null, daily: data?.daily ?? null };
+}
+
+async function googlePlacesSearch(env, args) {
+  const key = compactText(env?.GOOGLE_MAPS_API_KEY, 500);
+  if (!key) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Places is not configured");
+  const body = { textQuery: args.query, languageCode: args.language || "ar", maxResultCount: args.limit };
+  if (args.latitude !== null && args.longitude !== null) body.locationBias = { circle: { center: { latitude: args.latitude, longitude: args.longitude }, radius: args.radius_m } };
+  const response = await externalFetch("google_places", "https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryTypeDisplayName" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new SandHttpError(`Google Places HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  const items = (Array.isArray(data?.places) ? data.places : []).slice(0, args.limit).map((place) => ({
+    id: compactText(place?.id, 300), name: compactText(place?.displayName?.text, 500), address: compactText(place?.formattedAddress, 800), category: compactText(place?.primaryTypeDisplayName?.text, 300),
+    latitude: Number.isFinite(Number(place?.location?.latitude)) ? Number(place.location.latitude) : null,
+    longitude: Number.isFinite(Number(place?.location?.longitude)) ? Number(place.location.longitude) : null,
+    rating: Number.isFinite(Number(place?.rating)) ? Number(place.rating) : null,
+    user_rating_count: Number.isFinite(Number(place?.userRatingCount)) ? Number(place.userRatingCount) : null,
+    maps_url: compactText(place?.googleMapsUri, 2000),
+  }));
+  return { query: args.query, items };
+}
+
+function renderWebLiveResult(step, result) {
+  if (step.op === "web.search") {
+    const items = result.items ?? [];
+    if (!items.length) return "ملقتش نتائج مناسبة في Google Search.";
+    return ["🔎 نتائج البحث:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || item.domain || "نتيجة"}\n${item.url}${item.snippet ? `\n${item.snippet}` : ""}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  if (step.op === "web.read") return `📄 قرأت الصفحة:\n${result.text || "مفيش نص قابل للقراءة."}`.slice(0, AI_MAX_REPLY_CHARS);
+  if (step.op === "news.search") {
+    const items = result.items ?? [];
+    if (!items.length) return "ملقتش أخبار حديثة مناسبة للبحث.";
+    return ["📰 الأخبار:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || "خبر"}\n${item.url}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  if (step.op === "weather.read") {
+    const c = result.current ?? {};
+    return `🌤️ ${result.city || "الطقس"}: ${c.temperature_2m ?? "-"}° — المحسوسة ${c.apparent_temperature ?? "-"}° — رياح ${c.wind_speed_10m ?? "-"}`;
+  }
+  if (step.op === "places.search") {
+    const items = result.items ?? [];
+    if (!items.length) return "ملقتش أماكن مناسبة للبحث.";
+    return ["📍 الأماكن:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.name || "مكان"}${item.rating !== null ? ` ⭐ ${item.rating}` : ""}\n${item.address || ""}${item.maps_url ? `\n${item.maps_url}` : ""}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  return "";
+}
+
+async function executeWebLivePlan(env, { plan }) {
+  const outputs = [];
+  let reply = "";
+  for (const step of plan.steps) {
+    try {
+      let result;
+      if (step.op === "web.search") result = await googleWebSearch(env, step.args);
+      else if (step.op === "web.read") result = await webReader(step.args.url, step.args.max_chars);
+      else if (step.op === "news.search") result = await liveNewsSearch(step.args);
+      else if (step.op === "weather.read") result = await openMeteoWeather(step.args);
+      else if (step.op === "places.search") result = await googlePlacesSearch(env, step.args);
+      else throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Web & Live operation: ${step.op}`);
+      outputs.push({ op: step.op, result });
+      reply = renderWebLiveResult(step, result) || reply;
+    } catch (error) {
+      if (error instanceof SandPlanError && error.code === "CAPABILITY_BINDING_MISSING") {
+        const unavailable = step.op === "web.search" ? "Google Search" : step.op === "places.search" ? "Google Places" : "الخدمة المطلوبة";
+        outputs.push({ op: step.op, unavailable: true, error: error.code });
+        reply = `${unavailable} مش متوصل بمفتاح API في البيئة الحالية، فمش هخمن نتيجة بدل الخدمة الحية.`;
+        continue;
+      }
+      throw error;
+    }
+  }
+  return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) };
+}
+
+async function executeFamilyPlan(env, { chatId, updateId, operationId, mainStepIndex, family, plan, refs }) {
+  if (family === "schedule") return executeSchedulePlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  if (family === "shopping") return executeShoppingPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  if (family === "work") return executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  if (family === "memory_people") return executeMemoryPeoplePlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
+  if (family === "utility") return executeUtilityPlan(env, { plan });
+  if (family === "web_live") return executeWebLivePlan(env, { plan });
+  throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);
+}
+
+async function executeShoppingPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const hasMutation = plan.steps.some((s) => !["shopping.list","shopping.progress"].includes(s.op));

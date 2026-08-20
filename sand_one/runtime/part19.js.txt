@@ -1,134 +1,192 @@
-      for (const [key, value] of Object.entries(step.args.patch)) state[key] = value;
-      statements.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='person'`)
-        .bind(JSON.stringify(state), updateId, at, id, chatId));
-      expected.push({ id, kind: "person", title: String(row.title), status: String(row.status) });
-    } else if (step.op === "relations.set") {
-      const subjectId = resolveFamilyRef(step.args.subject, refs, created);
-      const objectId = resolveFamilyRef(step.args.object, refs, created);
-      if (!subjectId || !objectId || subjectId === objectId) throw new SandPlanError("BAD_RELATION", "Relationship endpoints could not be resolved");
-      const pairHash = await textHash(`${chatId}:${subjectId}:${objectId}:relationship`);
-      const id = `relation_${pairHash.slice(0, 28)}`;
-      const state = { object_id: objectId, relation: step.args.relation };
-      statements.push(env.DB.prepare(`INSERT INTO ${TABLES.lifeItems}
-        (id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at)
-        VALUES(?,?,'relationship',?,?,?,'active',?,?,?)
-        ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,title=excluded.title,state_json=excluded.state_json,status='active',source_update_id=excluded.source_update_id,updated_at=excluded.updated_at`)
-        .bind(id, chatId, subjectId, step.args.relation, JSON.stringify(state), updateId, at, at));
-      expected.push({ id, kind: "relationship", title: step.args.relation, status: "active", subjectId, objectId });
+  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) throw new Error("Missing OmniAI route");
+  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
+  const failures = [];
+
+  for (const model of AI_MODELS) {
+    const remaining = deadline - nowMs();
+    if (remaining < 500) break;
+    const timeoutMs = Math.min(AI_MODEL_TIMEOUT_MS, remaining);
+    const started = nowMs();
+    try {
+      const result = await callOneAiModel(env, model, messages, timeoutMs, temperature, maxTokens);
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        phase,
+        modelId: model.id,
+        modelRole: model.role,
+        latencyMs: result.latencyMs,
+        ok: true,
+        httpStatus: result.httpStatus,
+        errorCode: null,
+      });
+      return { text: result.text, modelId: model.id };
+    } catch (error) {
+      const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
+      const code = httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        phase,
+        modelId: model.id,
+        modelRole: model.role,
+        latencyMs: nowMs() - started,
+        ok: false,
+        httpStatus,
+        errorCode: code,
+      });
+      failures.push(`${model.id}:${code}`);
+      logError("ai_model_failed", error, { model: model.id, role: model.role, code, phase });
+      if (httpStatus === 401 || httpStatus === 403) break;
     }
   }
 
-  if (statements.length) await env.DB.batch(statements);
-  for (const exp of expected) {
-    const row = await env.DB.prepare(`SELECT kind,parent_id,title,state_json,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id, chatId).first();
-    if (!row || String(row.kind) !== exp.kind || String(row.title) !== exp.title || String(row.status) !== exp.status) {
-      throw new Error("Memory/People capability verification failed");
+  const joined = failures.join(" | ");
+  let code = "AI_UNAVAILABLE";
+  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
+  else if (/http_404/.test(joined)) code = "AI_ROUTE_OR_MODEL";
+  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";
+  else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM";
+  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";
+  throw new SandAiChainError(code, failures.length ? failures : ["budget_exhausted"]);
+}
+
+async function callOneAiModel(env, model, messages, timeoutMs, temperature, maxTokens) {
+  requireBinding(env, "OMNIAI_API_KEY");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = nowMs();
+  try {
+    const request = new Request(omniChatUrl(env), {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.OMNIAI_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: model.id,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+    const response = env?.OMNIAI_SERVICE?.fetch ? await env.OMNIAI_SERVICE.fetch(request) : await fetch(request);
+    const httpStatus = response.status;
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = String(data?.error?.message ?? data?.message ?? `HTTP ${httpStatus}`).slice(0, 400);
+      throw new SandHttpError(`OmniAI ${model.id} failed: ${detail}`, httpStatus);
     }
-    if (exp.kind === "relationship") {
-      const state = safeJsonParse(row.state_json, {});
-      if (String(row.parent_id ?? "") !== exp.subjectId || String(state.object_id ?? "") !== exp.objectId) {
-        throw new Error("Relationship verification failed");
-      }
-    }
+    const content = aiContent(data);
+    if (!content) throw new SandHttpError(`OmniAI ${model.id} returned empty content`, httpStatus);
+    return { text: content, latencyMs: nowMs() - started, httpStatus };
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function recordAiCallSafe(env, record) {
+  try {
+    await env.DB.prepare(`INSERT INTO ${TABLES.aiCalls}
+      (chat_id,update_id,phase,model_id,model_role,latency_ms,ok,http_status,error_code,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .bind(
+        record.chatId,
+        record.updateId,
+        record.phase,
+        record.modelId,
+        record.modelRole,
+        Math.max(0, Number(record.latencyMs) || 0),
+        record.ok ? 1 : 0,
+        record.httpStatus ?? null,
+        record.errorCode ?? null,
+        nowIso(),
+      )
+      .run();
+  } catch (error) {
+    logError("ai_call_log_noncritical", error, { modelId: record.modelId });
+  }
+}
+
+async function textHash(text) {
+  const data = new TextEncoder().encode(String(text));
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(buf)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
+
+function normalizeLocalMinute(value) {
+  const s = compactText(value, 40);
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const yy = Number(y), mm = Number(mo), dd = Number(d), hh = Number(h), mn = Number(mi);
+  if (yy < 2020 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh < 0 || hh > 23 || mn < 0 || mn > 59) return null;
+  return `${y}-${mo}-${d}T${h}:${mi}`;
+}
+
+function mergeObjectState(currentState, patch, fallbackTitle) {
+  const current = currentState && typeof currentState === "object" && !Array.isArray(currentState) ? structuredClone(currentState) : {};
+  const out = {
+    title: compactText(current.title || fallbackTitle || "موضوع", 240),
+    description: current.description ?? null,
+    start_local: normalizeLocalMinute(current.start_local) ?? null,
+    end_local: normalizeLocalMinute(current.end_local) ?? null,
+    timezone: TZ,
+    location: current.location ?? null,
+    people: Array.isArray(current.people) ? current.people : [],
+    details: current.details && typeof current.details === "object" ? current.details : {},
+    status: current.status ?? "open",
+  };
+
+  if (Object.hasOwn(patch, "title") && patch.title !== null) out.title = compactText(patch.title, 240) || out.title;
+  if (Object.hasOwn(patch, "description")) out.description = patch.description === null ? null : compactText(patch.description, 3000);
+  if (Object.hasOwn(patch, "location")) out.location = patch.location === null ? null : compactText(patch.location, 300);
+  if (Object.hasOwn(patch, "people")) out.people = Array.isArray(patch.people) ? patch.people.slice(0, 20) : [];
+  if (Object.hasOwn(patch, "details")) out.details = patch.details && typeof patch.details === "object" ? sanitizeJsonValue(patch.details, 4) : {};
+  if (Object.hasOwn(patch, "status") && patch.status !== null) out.status = compactText(patch.status, 80) || out.status;
+
+  if (Object.hasOwn(patch, "start_local")) out.start_local = patch.start_local === null ? null : normalizeLocalMinute(patch.start_local);
+  if (Object.hasOwn(patch, "end_local")) out.end_local = patch.end_local === null ? null : normalizeLocalMinute(patch.end_local);
+
+  const oldStart = out.start_local;
+  if (Object.hasOwn(patch, "start_date_local") && patch.start_date_local) {
+    const date = compactText(patch.start_date_local, 20);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Invalid start_date_local");
+    const time = oldStart?.slice(11, 16) || "09:00";
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+  if (Object.hasOwn(patch, "start_time_local") && patch.start_time_local) {
+    const time = compactText(patch.start_time_local, 20);
+    if (!/^\d{2}:\d{2}$/.test(time)) throw new Error("Invalid start_time_local");
+    const date = out.start_local?.slice(0, 10);
+    if (!date) throw new Error("Cannot set only a time when target has no known date");
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+
+  if (out.start_local === null && (patch.start_local || patch.start_date_local || patch.start_time_local)) {
+    throw new Error("Invalid start time");
+  }
+  if (out.end_local && out.start_local && out.end_local < out.start_local) throw new Error("End time cannot be before start time");
+  return out;
+}
+
+async function objectById(env, chatId, id) {
+  const row = await env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects}
+    WHERE id=? AND chat_id=? LIMIT 1`)
+    .bind(id, chatId)
+    .first();
+  if (!row) return null;
   return {
-    steps: plan.steps.map((step, index) => ({ op: step.op, created_id: created[index] || null })),
-    reply: compactText(plan.reply_hint, 800) || "تمام، حدّثت الأشخاص والعلاقات واتأكدت من النتيجة ✅",
+    id: String(row.id),
+    kind: String(row.kind),
+    title: String(row.title),
+    state: safeJsonParse(row.state_json, {}),
+    status: String(row.status),
+    updated_at: String(row.updated_at),
   };
 }
 
-const UTILITY_UNITS = Object.freeze({
-  m: Object.freeze({ dimension: "length", factor: 1 }), km: Object.freeze({ dimension: "length", factor: 1000 }),
-  cm: Object.freeze({ dimension: "length", factor: 0.01 }), mm: Object.freeze({ dimension: "length", factor: 0.001 }),
-  mi: Object.freeze({ dimension: "length", factor: 1609.344 }), yd: Object.freeze({ dimension: "length", factor: 0.9144 }),
-  ft: Object.freeze({ dimension: "length", factor: 0.3048 }), in: Object.freeze({ dimension: "length", factor: 0.0254 }),
-  kg: Object.freeze({ dimension: "mass", factor: 1 }), g: Object.freeze({ dimension: "mass", factor: 0.001 }),
-  mg: Object.freeze({ dimension: "mass", factor: 0.000001 }), lb: Object.freeze({ dimension: "mass", factor: 0.45359237 }),
-  oz: Object.freeze({ dimension: "mass", factor: 0.028349523125 }),
-  l: Object.freeze({ dimension: "volume", factor: 1 }), ml: Object.freeze({ dimension: "volume", factor: 0.001 }),
-  cup_us: Object.freeze({ dimension: "volume", factor: 0.2365882365 }), gal_us: Object.freeze({ dimension: "volume", factor: 3.785411784 }),
-  b: Object.freeze({ dimension: "data", factor: 1 }), kb: Object.freeze({ dimension: "data", factor: 1000 }),
-  mb: Object.freeze({ dimension: "data", factor: 1000000 }), gb: Object.freeze({ dimension: "data", factor: 1000000000 }),
-  kib: Object.freeze({ dimension: "data", factor: 1024 }), mib: Object.freeze({ dimension: "data", factor: 1048576 }),
-  gib: Object.freeze({ dimension: "data", factor: 1073741824 }),
-});
-
-function tokenizeArithmetic(expression) {
-  const raw = String(expression ?? "").replace(/\s+/g, "");
-  if (!raw || raw.length > 500) throw new SandPlanError("BAD_EXPRESSION", "Expression is empty or too long");
-  const tokens = [];
-  let i = 0;
-  while (i < raw.length) {
-    const rest = raw.slice(i);
-    const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i.exec(rest);
-    if (number) {
-      const value = Number(number[0]);
-      if (!Number.isFinite(value)) throw new SandPlanError("BAD_EXPRESSION", "Invalid number");
-      tokens.push({ type: "number", value });
-      i += number[0].length;
-      continue;
-    }
-    const ch = raw[i];
-    if ("+-*/%^()".includes(ch)) {
-      tokens.push({ type: ch === "(" || ch === ")" ? "paren" : "op", value: ch });
-      i += 1;
-      continue;
-    }
-    throw new SandPlanError("BAD_EXPRESSION", "Unsupported character in expression");
-  }
-  if (tokens.length > 200) throw new SandPlanError("BAD_EXPRESSION", "Expression has too many tokens");
-  return tokens;
-}
-
-function evaluateArithmetic(expression) {
-  const tokens = tokenizeArithmetic(expression);
-  /** @type {Array<{type:string,value:any}>} */ const output = [];
-  /** @type {Array<{type:string,value:any}>} */ const operators = [];
-  const precedence = { "u-": 4, "^": 3, "*": 2, "/": 2, "%": 2, "+": 1, "-": 1 };
-  const rightAssociative = new Set(["u-", "^"]);
-  let previous = "start";
-  for (const token of tokens) {
-    if (token.type === "number") {
-      output.push(token);
-      previous = "value";
-      continue;
-    }
-    if (token.type === "paren" && token.value === "(") {
-      operators.push(token);
-      previous = "open";
-      continue;
-    }
-    if (token.type === "paren" && token.value === ")") {
-      let found = false;
-      while (operators.length) {
-        const top = operators.pop();
-        if (top.type === "paren" && top.value === "(") { found = true; break; }
-        output.push(top);
-      }
-      if (!found) throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
-      previous = "value";
-      continue;
-    }
-    let op = token.value;
-    if (op === "-" && (previous === "start" || previous === "open" || previous === "operator")) op = "u-";
-    if (op === "+" && (previous === "start" || previous === "open" || previous === "operator")) {
-      previous = "operator";
-      continue;
-    }
-    while (operators.length) {
-      const top = operators[operators.length - 1];
-      if (top.type !== "op") break;
-      const pTop = precedence[top.value], pCurrent = precedence[op];
-      if (pTop > pCurrent || (pTop === pCurrent && !rightAssociative.has(String(op)))) output.push(operators.pop());
-      else break;
-    }
-    operators.push({ type: "op", value: op });
-    previous = "operator";
-  }
-  while (operators.length) {
-    const top = operators.pop();
-    if (top.type === "paren") throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
-    output.push(top);
-  }
-  /** @type {number[]} */ const stack = [];
-  for (const token of output) {
+function tzOffsetMinutesAt(date, timeZone) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {

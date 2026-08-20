@@ -1,99 +1,180 @@
-      const id=await stableCapabilityId("inbox",operationId,mainStepIndex*100+i); created[i]=id; const state={classified_as:step.args.classified_as}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'inbox',NULL,?,?,'open',?,?,?)`).bind(id,chatId,step.args.text,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"open",title:step.args.text});
-    } else if (step.op === "inbox.classify") {
-      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target disappeared"); const row=await env.DB.prepare(`SELECT state_json FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='inbox' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target missing"); const state=safeJsonParse(row.state_json,{}); state.classified_as=step.args.classified_as; stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),updateId,at,id,chatId)); expected.push({id,status:null});
-    } else if (step.op === "inbox.close") {
-      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target disappeared"); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='closed',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='inbox'`).bind(updateId,at,id,chatId)); expected.push({id,status:"closed"});
+      if (pTop > pCurrent || (pTop === pCurrent && !rightAssociative.has(String(op)))) output.push(operators.pop());
+      else break;
     }
+    operators.push({ type: "op", value: op });
+    previous = "operator";
   }
-  if(stmts.length) await env.DB.batch(stmts);
-  for(const exp of expected){const row=await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first(); if(!row||(exp.status&&String(row.status)!==exp.status)||(exp.title&&String(row.title)!==exp.title)) throw new Error("Work capability verification failed");}
-  return {steps:plan.steps.map((step,i)=>({op:step.op,created_id:created[i]||null})),reply:compactText(plan.reply_hint,800)||"تمام، نفذت المطلوب واتأكدت من بيانات الشغل ✅"};
-}
-
-
-function renderPeopleList(rows) {
-  const people = rows.filter((row) => row.kind === "person");
-  if (!people.length) return "مفيش أشخاص محفوظين حاليًا.";
-  return ["👥 الأشخاص:", ...people.map((row, index) => {
-    const relation = compactText(row.state?.relationship_to_user, 160);
-    return `${index + 1}) ${row.title}${relation ? ` — ${relation}` : ""}`;
-  })].join("\n");
-}
-
-function renderRelationsList(rows, personId = null) {
-  const peopleById = new Map(rows.filter((row) => row.kind === "person").map((row) => [String(row.id), String(row.title)]));
-  const relations = rows.filter((row) => {
-    if (row.kind !== "relationship") return false;
-    if (!personId) return true;
-    const state = row._raw_state || row.state || {};
-    return String(row.parent_id ?? "") === personId || String(state.object_id ?? "") === personId;
-  });
-  if (!relations.length) return "مفيش علاقات محفوظة حاليًا.";
-  return ["🔗 العلاقات:", ...relations.map((row, index) => {
-    const state = row._raw_state || row.state || {};
-    const subject = peopleById.get(String(row.parent_id ?? "")) || row.state?.subject_ref || "شخص";
-    const object = peopleById.get(String(state.object_id ?? "")) || row.state?.object_ref || "شخص";
-    const relation = compactText(state.relation, 160) || row.title;
-    return `${index + 1}) ${subject} — ${relation} → ${object}`;
-  })].join("\n");
-}
-
-async function executeMemoryPeoplePlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
-  const readOps = new Set(["people.list", "relations.list"]);
-  const hasMutation = plan.steps.some((step) => !readOps.has(step.op));
-  if (!hasMutation) {
-    const state = await capabilitySnapshot(env, chatId, "memory_people");
-    let reply = compactText(plan.reply_hint, 800);
-    const outputs = [];
-    for (const step of plan.steps) {
-      if (step.op === "people.list") {
-        const q = String(step.args.query ?? "").trim().toLocaleLowerCase("ar");
-        const rows = state.filter((row) => row.kind === "person" && (!q || `${row.title} ${JSON.stringify(row.state)}`.toLocaleLowerCase("ar").includes(q)));
-        outputs.push({ op: step.op, rows: rows.map(({ id, ...row }) => row) });
-        reply = renderPeopleList(rows);
-      } else if (step.op === "relations.list") {
-        const personId = step.args.person ? refs.get(step.args.person) ?? null : null;
-        const rawRowsResult = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,updated_at FROM ${TABLES.lifeItems}
-          WHERE chat_id=? AND kind IN ('person','relationship') AND status!='archived' ORDER BY updated_at DESC LIMIT 120`).bind(chatId).all();
-        const rawRows = (rawRowsResult?.results ?? []).map((row) => ({
-          id: String(row.id), kind: String(row.kind), parent_id: row.parent_id ? String(row.parent_id) : null,
-          title: String(row.title), status: String(row.status), _raw_state: safeJsonParse(row.state_json, {}), updated_at: String(row.updated_at),
-        }));
-        outputs.push({ op: step.op, count: rawRows.filter((row) => row.kind === "relationship").length });
-        reply = renderRelationsList(rawRows, personId);
-      }
+  while (operators.length) {
+    const top = operators.pop();
+    if (top.type === "paren") throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
+    output.push(top);
+  }
+  /** @type {number[]} */ const stack = [];
+  for (const token of output) {
+    if (token.type === "number") {
+      stack.push(Number(token.value));
+      continue;
     }
-    return { steps: outputs, reply: reply || "تمام." };
+    const op = String(token.value ?? "");
+    if (op === "u-") {
+      if (stack.length < 1) throw new SandPlanError("BAD_EXPRESSION", "Unary operator is missing an operand");
+      const value = Number(stack.pop());
+      const result = -value;
+      if (!Number.isFinite(result)) throw new SandPlanError("BAD_EXPRESSION", "Expression result is not finite");
+      stack.push(result);
+      continue;
+    }
+    if (stack.length < 2) throw new SandPlanError("BAD_EXPRESSION", "Operator is missing an operand");
+    const right = Number(stack.pop());
+    const left = Number(stack.pop());
+    let result;
+    if (op === "+") result = left + right;
+    else if (op === "-") result = left - right;
+    else if (op === "*") result = left * right;
+    else if (op === "/") {
+      if (right === 0) throw new SandPlanError("DIVISION_BY_ZERO", "Division by zero is not allowed");
+      result = left / right;
+    } else if (op === "%") {
+      if (right === 0) throw new SandPlanError("DIVISION_BY_ZERO", "Modulo by zero is not allowed");
+      result = left % right;
+    } else if (op === "^") result = left ** right;
+    else throw new SandPlanError("BAD_EXPRESSION", "Unsupported arithmetic operator");
+    if (!Number.isFinite(result)) throw new SandPlanError("BAD_EXPRESSION", "Expression result is not finite");
+    stack.push(result);
   }
-  if (plan.steps.some((step) => readOps.has(step.op))) {
-    throw new SandPlanError("MIXED_FAMILY_PLAN", "Do not mix Memory/People reads and mutations in one family plan");
-  }
+  if (stack.length !== 1 || !Number.isFinite(stack[0])) throw new SandPlanError("BAD_EXPRESSION", "Expression could not be reduced to one result");
+  return stack[0];
+}
 
-  const created = [];
-  for (let i = 0; i < plan.steps.length; i += 1) {
-    if (plan.steps[i].op === "people.create") created[i] = await stableCapabilityId("person", operationId, mainStepIndex * 100 + i);
-  }
+function normalizeUtilityNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new SandPlanError("UTILITY_NON_FINITE", "Utility result is not finite");
+  if (Object.is(n, -0)) return 0;
+  return Number.parseFloat(n.toPrecision(12));
+}
 
-  const statements = [];
-  const expected = [];
-  for (let i = 0; i < plan.steps.length; i += 1) {
-    const step = plan.steps[i];
-    const at = nowIso();
-    if (step.op === "people.create") {
-      const id = created[i];
-      const state = {
-        relationship_to_user: step.args.relationship_to_user,
-        notes: step.args.notes,
-        facts: step.args.facts,
-      };
-      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}
-        (id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at)
-        VALUES(?,?,'person',NULL,?,?,'active',?,?,?)`)
-        .bind(id, chatId, step.args.name, JSON.stringify(state), updateId, at, at));
-      expected.push({ id, kind: "person", title: step.args.name, status: "active" });
-    } else if (step.op === "people.update") {
-      const id = refs.get(step.args.target);
-      if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Person target disappeared");
-      const row = await env.DB.prepare(`SELECT title,state_json,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='person' LIMIT 1`).bind(id, chatId).first();
-      if (!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Person target missing");
-      const state = safeJsonParse(row.state_json, {});
+function convertTemperature(value, from, to) {
+  const temperatureUnits = new Set(["c", "f", "k"]);
+  if (!temperatureUnits.has(from) || !temperatureUnits.has(to)) throw new SandPlanError("UNIT_DIMENSION_MISMATCH", "Temperature can only be converted to another temperature unit");
+  let celsius;
+  if (from === "c") celsius = value;
+  else if (from === "f") celsius = (value - 32) * 5 / 9;
+  else celsius = value - 273.15;
+  let result;
+  if (to === "c") result = celsius;
+  else if (to === "f") result = celsius * 9 / 5 + 32;
+  else result = celsius + 273.15;
+  if (to === "k" && result < 0) throw new SandPlanError("BAD_TEMPERATURE", "Temperature cannot be below absolute zero");
+  return normalizeUtilityNumber(result);
+}
+
+function convertUtilityUnit(value, from, to) {
+  const temperatureUnits = new Set(["c", "f", "k"]);
+  if (temperatureUnits.has(from) || temperatureUnits.has(to)) return convertTemperature(value, from, to);
+  const units = /** @type {any} */ (UTILITY_UNITS);
+  const source = units[from];
+  const destination = units[to];
+  if (!source || !destination) throw new SandPlanError("UNKNOWN_UNIT", `Unsupported unit conversion: ${from} -> ${to}`);
+  if (source.dimension !== destination.dimension) throw new SandPlanError("UNIT_DIMENSION_MISMATCH", "Source and destination units measure different dimensions");
+  return normalizeUtilityNumber((value * Number(source.factor)) / Number(destination.factor));
+}
+
+function utilityZonedNow(timeZone) {
+  const zone = compactText(timeZone, 120) || TZ;
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    });
+  } catch {
+    throw new SandPlanError("BAD_TIMEZONE", "Unknown IANA timezone");
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(new Date()).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return {
+    timezone: zone,
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday ?? ""),
+    utc: nowIso(),
+  };
+}
+
+function utilityDateDiff(fromValue, toValue, unit) {
+  const fromMs = Date.parse(String(fromValue));
+  const toMs = Date.parse(String(toValue));
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw new SandPlanError("BAD_DATETIME_DIFF", "Both datetime values must be valid ISO datetimes");
+  const divisors = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 };
+  const divisor = /** @type {any} */ (divisors)[unit];
+  if (!divisor) throw new SandPlanError("BAD_DATETIME_DIFF", "Unsupported datetime difference unit");
+  return normalizeUtilityNumber((toMs - fromMs) / divisor);
+}
+
+function renderUtilityResult(step, result) {
+  if (step.op === "calculator.evaluate") return `🧮 النتيجة: ${result.value}`;
+  if (step.op === "unit.convert") return `🔢 ${result.input} ${result.from} = ${result.value} ${result.to}`;
+  if (step.op === "datetime.now") return `🕒 ${result.date} ${result.time} — ${result.timezone}`;
+  if (step.op === "datetime.diff") return `⏱️ الفرق: ${result.value} ${result.unit}`;
+  return "";
+}
+
+async function executeUtilityPlan(_env, { plan }) {
+  const outputs = [];
+  let reply = "";
+  for (const step of plan.steps) {
+    let result;
+    if (step.op === "calculator.evaluate") {
+      result = { expression: step.args.expression, value: normalizeUtilityNumber(evaluateArithmetic(step.args.expression)) };
+    } else if (step.op === "unit.convert") {
+      result = { input: step.args.value, from: step.args.from, to: step.args.to, value: convertUtilityUnit(step.args.value, step.args.from, step.args.to) };
+    } else if (step.op === "datetime.now") {
+      result = utilityZonedNow(step.args.timezone);
+    } else if (step.op === "datetime.diff") {
+      result = { from: step.args.from, to: step.args.to, unit: step.args.unit, value: utilityDateDiff(step.args.from, step.args.to, step.args.unit) };
+    } else {
+      throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Utility operation: ${step.op}`);
+    }
+    outputs.push({ op: step.op, result });
+    reply = renderUtilityResult(step, result) || reply;
+  }
+  return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) || "تمام." };
+}
+// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
+
+function omniChatUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/chat/completions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+  if (/\/v1\/chat\/completions$/i.test(configured)) return configured;
+  if (/\/v1$/i.test(configured)) return `${configured}/chat/completions`;
+  return `${configured}/v1/chat/completions`;
+}
+
+function aiContent(data) {
+  const direct = data?.choices?.[0]?.message?.content;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const output = data?.output_text ?? data?.text;
+  if (typeof output === "string" && output.trim()) return output.trim();
+  return "";
+}
+
+function aiErrorCode(error) {
+  if (error?.name === "AbortError") return "timeout";
+  const message = safeError(error).toLowerCase();
+  if (message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("empty")) return "empty_response";
+  return "network_or_runtime";
+}
+
+async function callAiChain(env, { chatId, updateId, phase, messages, temperature = 0.2, maxTokens = 1200 }) {
+  requireBinding(env, "OMNIAI_API_KEY");

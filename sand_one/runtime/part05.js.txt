@@ -1,43 +1,3 @@
-    const response = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`, { signal: controller.signal });
-    if (!response.ok) throw new SandHttpError(`Telegram file download failed (${response.status})`, response.status);
-    const blob = await response.blob();
-    if (blob.size > VOICE_MAX_BYTES) throw new Error("voice_too_large");
-    return blob;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function transcribeTelegramAudio(env, media, { chatId, updateId }) {
-  requireBinding(env, "OMNIAI_API_KEY");
-  const deadline = nowMs() + VOICE_TOTAL_BUDGET_MS;
-  const blob = await fetchTelegramMediaBlob(env, media, deadline);
-  const failures = [];
-  const attempts = [
-    { id: compactText(env?.VOICE_MODEL, 120) || "auto", provider: "omniai" },
-    ...(env?.GROQ_API_KEY ? [{ id: "whisper-large-v3-turbo", provider: "groq" }] : []),
-  ];
-  for (const attempt of attempts) {
-    if (nowMs() >= deadline - 300) break;
-    const controller = new AbortController();
-    const timeout = Math.max(250, Math.min(VOICE_STAGE_TIMEOUT_MS, deadline - nowMs()));
-    const timer = setTimeout(() => controller.abort(), timeout);
-    const form = new FormData();
-    form.append("file", blob, "telegram-audio.ogg");
-    form.append("model", attempt.id);
-    form.append("language", "ar");
-    form.append("response_format", "json");
-    const started = nowMs();
-    try {
-      let response;
-      if (attempt.provider === "omniai") {
-        const request = new Request(omniAudioUrl(env), {
-          method: "POST",
-          headers: { authorization: `Bearer ${env.OMNIAI_API_KEY}` },
-          body: form,
-          signal: controller.signal,
-        });
-        response = env?.OMNIAI_SERVICE?.fetch ? await env.OMNIAI_SERVICE.fetch(request) : await fetch(request);
       } else {
         response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
           method: "POST",
@@ -187,3 +147,69 @@ function cairoNowParts(date = new Date()) {
       .map((part) => [part.type, part.value]),
   );
   return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday ?? ""),
+  };
+}
+
+function plannerSnapshotView(snapshot) {
+  const refById = new Map();
+  const activeObjects = snapshot.objects.map((object, index) => {
+    const ref = `o${index + 1}`;
+    refById.set(object.id, ref);
+    return {
+      ref,
+      kind: object.kind,
+      title: object.title,
+      state: object.state,
+      status: object.status,
+      updated_at: object.updated_at,
+    };
+  });
+  const focusRef = snapshot.workspace.focus_object_id
+    ? refById.get(snapshot.workspace.focus_object_id) ?? null
+    : null;
+  const focus = focusRef
+    ? activeObjects.find((object) => object.ref === focusRef) ?? null
+    : null;
+  return {
+    workspace: {
+      goal: snapshot.workspace.goal,
+      thread_summary: snapshot.workspace.thread_summary,
+      focus_ref: focusRef,
+      open_questions: snapshot.workspace.open_questions,
+      context_version: snapshot.workspace.context_version,
+    },
+    focus,
+    active_objects: activeObjects,
+    memories: snapshot.memories.map((memory) => ({
+      subject: memory.subject,
+      predicate: memory.predicate,
+      value: memory.value,
+      confidence: memory.confidence,
+      sensitivity: memory.sensitivity,
+      expires_at: memory.expires_at,
+      updated_at: memory.updated_at,
+    })),
+    pending_reminders: snapshot.reminders.map((reminder) => ({
+      object_ref: refById.get(String(reminder.object_id ?? "")) ?? null,
+      title: reminder.title ?? null,
+      remind_at_utc: reminder.remind_at_utc ?? null,
+      timezone: reminder.timezone ?? null,
+      mode: reminder.mode ?? null,
+      status: reminder.status ?? null,
+    })),
+  };
+}
+
+function plannerSystemPrompt(snapshot) {
+  const local = cairoNowParts();
+  return [
+    "You are the semantic conversation brain for SAND, an Egyptian personal secretary agent.",
+    "Return exactly ONE strict JSON object. Use double quotes for every JSON key and string. No markdown, comments, trailing commas, or prose outside JSON.",
+    "Interpret meaning and conversational reference from the whole workspace. Never route by literal phrases or keyword matching.",
+    "The application owns state and execution. You may only request actions from the declared action contract.",
+    "Treat the current focus object as the default referent only when the new turn semantically continues it. If the user clearly changes subject, do not force the old focus.",
+    "When more than one active object exists, every object-targeting mutation must use the exposed ref of the intended object (such as o1 or o2), even when that object is currently focused. Resolve explicit semantic references by object identity and meaning, never by recency alone.",
+    "A user correction or refinement should update the existing intended object rather than create a duplicate when continuity is clear.",

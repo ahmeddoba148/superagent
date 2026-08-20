@@ -1,8 +1,8 @@
 {
-  "version": "1.0.0-dev.4",
-  "parts": 25,
+  "version": "1.0.0-dev.5",
+  "parts": 29,
   "required_family_states": {
-    "schedule": "core",
+    "schedule": "active",
     "work": "active",
     "shopping": "active",
     "memory_people": "active",
@@ -12,11 +12,16 @@
   },
   "required_selftests": [
     "voice_adapter_contract",
-    "capability_family_contract"
+    "capability_family_contract",
+    "schedule_conflict_contract",
+    "schedule_recurrence_contract",
+    "schedule_family_verified_write"
   ],
   "required_functions": [
     "normalizeLocalMinute",
     "health",
-    "callOneAiModel"
+    "callOneAiModel",
+    "executeSchedulePlan",
+    "processDueScheduleSignals"
   ]
 }
