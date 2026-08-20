@@ -1,0 +1,43 @@
+      if (row?.id) { const id=String(row.id); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(updateId,at,id,chatId)); expected.push({ id, status: "done" }); }
+    }
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  for (const exp of expected) {
+    const row = await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first();
+    if (!row || String(row.status)!==exp.status || (exp.title && String(row.title)!==exp.title)) throw new Error("Shopping capability verification failed");
+  }
+  return { steps: plan.steps.map((step,i)=>({ op:step.op, created_id:created[i]||null })), reply: compactText(plan.reply_hint,800) || "تمام، حدّثت المشتريات واتأكدت من النتيجة ✅" };
+}
+
+
+async function executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const readOps = new Set(["project.list","task.list","waiting.list","inbox.list"]);
+  const hasMutation = plan.steps.some((s)=>!readOps.has(s.op));
+  if (!hasMutation) {
+    let reply=""; const outputs=[]; const all=await capabilitySnapshot(env,chatId,"work");
+    for (const step of plan.steps) {
+      if (step.op === "project.list") { const rows=all.filter(x=>x.kind==="project"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"🎯 المشاريع:"); }
+      if (step.op === "task.list") { const projectId=step.args.project?refs.get(step.args.project):null; const rows=all.filter(x=>x.kind==="task"&&(!projectId||x.parent_id===projectId)&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"✅ المهام:"); }
+      if (step.op === "waiting.list") { const rows=all.filter(x=>x.kind==="waiting"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"⏳ المتابعات:"); }
+      if (step.op === "inbox.list") { const rows=all.filter(x=>x.kind==="inbox"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"📥 الوارد:"); }
+    }
+    return {steps:outputs,reply:reply||compactText(plan.reply_hint,800)};
+  }
+  if (plan.steps.some((s)=>readOps.has(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN","Do not mix work reads and mutations in one family plan");
+  const stmts=[], created=[], expected=[];
+  for (let i=0;i<plan.steps.length;i+=1) {
+    const step=plan.steps[i], at=nowIso();
+    if (step.op === "project.create") {
+      const id=await stableCapabilityId("project",operationId,mainStepIndex*100+i); created[i]=id; const state={priority:step.args.priority,deadline:step.args.deadline,notes:step.args.notes,progress:0};
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'project',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"active",title:step.args.title});
+    } else if (step.op === "project.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='project' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["progress","priority","deadline","notes"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status});
+    } else if (step.op === "task.create") {
+      const id=await stableCapabilityId("task",operationId,mainStepIndex*100+i); created[i]=id; const parent=step.args.parent?resolveFamilyRef(step.args.parent,refs,created):null; if(step.args.parent&&!parent) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task parent could not be resolved"); const state={due_at:step.args.due_at,priority:step.args.priority}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'task',?,?,?,'pending',?,?,?)`).bind(id,chatId,parent,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"pending",title:step.args.title});
+    } else if (step.op === "task.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='task' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["due_at","priority"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status), title=step.args.title||String(row.title); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET title=?,state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(title,JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status,title});
+    } else if (step.op === "waiting.create") {
+      const id=await stableCapabilityId("waiting",operationId,mainStepIndex*100+i); created[i]=id; const state={waiting_on:step.args.waiting_on,due_at:step.args.due_at}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'waiting',NULL,?,?,'waiting',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"waiting",title:step.args.title});
+    } else if (step.op === "waiting.close") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Waiting target disappeared"); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='waiting'`).bind(updateId,at,id,chatId)); expected.push({id,status:"done"});
+    } else if (step.op === "inbox.add") {
