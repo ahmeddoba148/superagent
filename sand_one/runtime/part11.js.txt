@@ -1,0 +1,156 @@
+      id: String(row.id),
+      kind: String(row.kind),
+      parent_id: row.parent_id ? String(row.parent_id) : null,
+      title: String(row.title),
+      status: String(row.status),
+      state: safeJsonParse(row.state_json, {}),
+      updated_at: String(row.updated_at),
+    }));
+  }
+  if (family === "memory_people") {
+    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
+      WHERE chat_id=? AND kind IN ('person','relationship') AND status!='archived'
+      ORDER BY CASE kind WHEN 'person' THEN 0 ELSE 1 END, updated_at DESC LIMIT 120`)
+      .bind(chatId).all();
+    const raw = rows?.results ?? [];
+    const personRefById = new Map();
+    let personNo = 0;
+    for (const row of raw) {
+      if (String(row.kind) === "person") personRefById.set(String(row.id), `p${++personNo}`);
+    }
+    let relationNo = 0;
+    return raw.map((row) => {
+      const kind = String(row.kind);
+      const state = safeJsonParse(row.state_json, {});
+      if (kind === "person") {
+        return {
+          ref: personRefById.get(String(row.id)),
+          id: String(row.id),
+          kind,
+          title: String(row.title),
+          status: String(row.status),
+          state,
+          updated_at: String(row.updated_at),
+        };
+      }
+      return {
+        ref: `r${++relationNo}`,
+        id: String(row.id),
+        kind,
+        title: String(row.title),
+        status: String(row.status),
+        state: {
+          relation: compactText(state.relation, 160) || String(row.title),
+          subject_ref: personRefById.get(String(row.parent_id ?? "")) ?? null,
+          object_ref: personRefById.get(String(state.object_id ?? "")) ?? null,
+        },
+        updated_at: String(row.updated_at),
+      };
+    });
+  }
+  if (family === "utility" || family === "web_live") return [];
+  return [];
+}
+
+function familyPlannerPrompt(family, snapshot, currentText, semanticRequest) {
+  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
+  const publicState = snapshot.map(({ id, ...row }) => row);
+  return [
+    "You are a family-specific planner inside SAND ONE.",
+    "Return exactly one strict JSON object with keys steps and reply_hint. No markdown.",
+    "Use only operations declared in this family contract. Do not invent operations.",
+    "Understand the user's natural language semantically; never depend on trigger phrases or keyword routing.",
+    "For existing items, target ONLY the exposed refs in family_state. Never emit internal IDs.",
+    "For a newly created item needed by a later step in the same plan, use created:N where N is the 1-based earlier step number.",
+    "Preserve user-provided names, item titles, labels and scalar text in the user's original spelling/script.",
+    "Do not add actions the user did not request. Read requests should use read/progress operations; mutation requests should use the smallest complete mutation plan.",
+    `Family: ${family}`,
+    `Contract: ${JSON.stringify(contract)}`,
+    `Family state: ${JSON.stringify(publicState)}`,
+    `Current user text: ${currentText}`,
+    `Semantic request: ${semanticRequest}`,
+    'Output shape: {"steps":[{"op":"...","args":{}}],"reply_hint":""}',
+  ].join("\n");
+}
+
+function familyPlanObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.steps));
+}
+
+function extractFamilyPlan(text) {
+  const raw = String(text ?? "").trim();
+  const direct = safeJsonParse(raw, null);
+  if (familyPlanObject(direct)) return direct;
+  for (let start = 0; start < raw.length; start += 1) {
+    if (raw[start] !== "{") continue;
+    let depth = 0, inString = false, escaped = false;
+    for (let i = start; i < raw.length; i += 1) {
+      const ch = raw[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = safeJsonParse(raw.slice(start, i + 1), null);
+          if (familyPlanObject(candidate)) return candidate;
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState }) {
+  const failures = [];
+  const deadline = nowMs() + AI_TOTAL_BUDGET_MS;
+  const prompt = familyPlannerPrompt(family, familyState, currentText, semanticRequest);
+  for (const model of AI_MODELS) {
+    const remaining = deadline - nowMs();
+    if (remaining < 500) break;
+    const started = nowMs();
+    try {
+      const result = await callOneAiModel(env, model, [{ role: "system", content: prompt }, { role: "user", content: currentText }], Math.min(AI_MODEL_TIMEOUT_MS, remaining), 0, 1300);
+      const plan = extractFamilyPlan(result.text);
+      if (!familyPlanObject(plan)) {
+        failures.push(`${model.id}:invalid_structured_output`);
+        await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: false, httpStatus: result.httpStatus, errorCode: "invalid_structured_output" });
+        continue;
+      }
+      const validated = validateFamilyPlan(family, plan, familyState);
+      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: result.latencyMs, ok: true, httpStatus: result.httpStatus, errorCode: null });
+      return { plan: validated, modelId: model.id };
+    } catch (error) {
+      const httpStatus = error instanceof SandHttpError ? error.httpStatus : null;
+      const code = error instanceof SandPlanError ? `invalid_plan_${error.code.toLowerCase()}` : httpStatus ? `http_${httpStatus}` : aiErrorCode(error);
+      failures.push(`${model.id}:${code}`);
+      await recordAiCallSafe(env, { chatId, updateId, phase: `family_${family}`, modelId: model.id, modelRole: model.role, latencyMs: nowMs() - started, ok: false, httpStatus, errorCode: code });
+      if (httpStatus === 401 || httpStatus === 403) break;
+    }
+  }
+  throw new SandAiChainError(/http_429/.test(failures.join("|")) ? "AI_RATE_LIMIT" : "AI_UNAVAILABLE", failures.length ? failures : ["family_planner_budget_exhausted"]);
+}
+
+function familyRefMap(familyState) {
+  return new Map(familyState.map((row) => [String(row.ref), String(row.id)]));
+}
+
+function resolveFamilyRef(value, refs, created = []) {
+  const raw = compactText(value, 120);
+  if (!raw) return null;
+  if (refs.has(raw)) return refs.get(raw);
+  const m = /^created:([1-9][0-9]*)$/.exec(raw);
+  if (m) return created[Number(m[1]) - 1] ?? null;
+  return null;
+}
+
+function validateFamilyPlan(family, input, familyState) {
+  const contract = CAPABILITY_FAMILY_CONTRACTS[family];
+  if (!contract) throw new SandPlanError("CAPABILITY_NOT_READY", `Family not ready: ${family}`);
+  const rawSteps = Array.isArray(input.steps) ? input.steps : [];
