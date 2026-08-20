@@ -19,7 +19,7 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: sand-one-capability-live
+  group: sand-one-capability-live-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
   live:
