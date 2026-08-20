@@ -1,0 +1,270 @@
+name: SAND ONE dev6 Local Life Promotion
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sand-one-local-life-promotion.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'sand-one-1.0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sand-one-1.0
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify exact dev5 base and patch dev6 seams
+        run: |
+          set -euo pipefail
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").version')" = '1.0.0-dev.5' ]
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").parts')" = '29' ]
+          [ "$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')" = '29' ]
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          def replace_once(path, old, new):
+              p=Path(path); s=p.read_text()
+              if s.count(old)!=1:
+                  raise SystemExit(f'{path}: expected exactly one patch anchor, found {s.count(old)}')
+              p.write_text(s.replace(old,new,1))
+
+          replace_once('sand_one/runtime/part00.js.txt', 'const APP_VERSION = "1.0.0-dev.5";', 'const APP_VERSION = "1.0.0-dev.6";')
+          replace_once('sand_one/runtime/part00.js.txt', '  local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "planned" }),', '  local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "active" }),')
+          local_contract='''  local_life: Object.freeze({\n    max_steps: 4,\n    operations: Object.freeze({\n      "prayer.times": "Prayer times for a Gregorian date. city/country or latitude+longitude optional; defaults Cairo, EG; method defaults 5 Egyptian General Authority of Survey",\n      "hijri.date": "Convert Gregorian date to Hijri Umm al-Qura. args.date YYYY-MM-DD optional; defaults current Cairo date",\n      "egypt.holidays": "Egypt public holidays for args.year optional; defaults current Cairo year",\n    }),\n  }),\n'''
+          replace_once('sand_one/runtime/part00.js.txt', '  utility: Object.freeze({\n', local_contract+'  utility: Object.freeze({\n')
+          replace_once('sand_one/runtime/part06.js.txt', '    "Capability families: " + JSON.stringify(CAPABILITY_FAMILY_CATALOG),', '    "Prayer times, Hijri calendar dates, and Egypt public holidays belong to the local_life family. Prefer coordinates when the user supplied them; otherwise preserve the city/country they named and default to Cairo, Egypt only when no location was supplied.",\n    "Capability families: " + JSON.stringify(CAPABILITY_FAMILY_CATALOG),')
+          replace_once('sand_one/runtime/part12.js.txt', '  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);', '  if (family === "local_life") return validateLocalLifeStep(op, a);\n  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);')
+          replace_once('sand_one/runtime/part14.js.txt', '  if (family === "web_live") return executeWebLivePlan(env, { plan });\n  throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);', '  if (family === "web_live") return executeWebLivePlan(env, { plan });\n  if (family === "local_life") return executeLocalLifePlan(env, { plan });\n  throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);')
+
+          m=json.loads(Path('sand_one/runtime/manifest.json').read_text())
+          m['version']='1.0.0-dev.6'
+          m['parts']=30
+          m['required_family_states']['local_life']='active'
+          for fn in ['validateLocalLifeStep','executeLocalLifePlan','localLifePrayerTimes','localLifeHijriDate','egyptPublicHolidays']:
+              if fn not in m['required_functions']: m['required_functions'].append(fn)
+          Path('sand_one/runtime/manifest.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Add Local Life capability module
+        run: |
+          set -euo pipefail
+          cat > sand_one/runtime/part29.js.txt <<'JS'
+          // SAND ONE Local Life capability — live prayer times, Hijri date, and Egypt public holidays.
+
+          function localLifeGregorianDate(value) {
+            const raw = compactText(value, 20);
+            if (!raw) return cairoNowParts().date;
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+            if (!m) throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Date must be YYYY-MM-DD");
+            const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+            const check = new Date(Date.UTC(y, mo - 1, d));
+            if (y < 2020 || y > 2100 || check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) {
+              throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Invalid Gregorian date");
+            }
+            return raw;
+          }
+
+          function localLifeCoordinates(a) {
+            const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+            const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+            if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+            if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
+              throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+            }
+            return { latitude, longitude };
+          }
+
+          function validateLocalLifeStep(op, a) {
+            if (op === "prayer.times") {
+              const date = localLifeGregorianDate(a.date);
+              const { latitude, longitude } = localLifeCoordinates(a);
+              const city = compactText(a.city, 240) || (latitude === null ? "Cairo" : null);
+              const country = compactText(a.country, 80) || "EG";
+              const method = a.method === undefined || a.method === null || a.method === "" ? 5 : Number(a.method);
+              const school = a.school === undefined || a.school === null || a.school === "" ? 0 : Number(a.school);
+              if (!Number.isInteger(method) || !((method >= 0 && method <= 23) || method === 99)) throw new SandPlanError("BAD_PRAYER_METHOD", "Invalid prayer calculation method");
+              if (![0,1].includes(school)) throw new SandPlanError("BAD_PRAYER_SCHOOL", "Prayer school must be 0 or 1");
+              return { op, args: { date, city, country, latitude, longitude, method, school } };
+            }
+            if (op === "hijri.date") return { op, args: { date: localLifeGregorianDate(a.date) } };
+            if (op === "egypt.holidays") {
+              const year = a.year === undefined || a.year === null || a.year === "" ? Number(cairoNowParts().date.slice(0,4)) : Number(a.year);
+              if (!Number.isInteger(year) || year < 2020 || year > 2100) throw new SandPlanError("BAD_HOLIDAY_YEAR", "Holiday year must be 2020..2100");
+              return { op, args: { year } };
+            }
+            throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Local Life operation: ${op}`);
+          }
+
+          function localLifeApiDate(date) {
+            return `${date.slice(8,10)}-${date.slice(5,7)}-${date.slice(0,4)}`;
+          }
+
+          function cleanPrayerTime(value) {
+            const raw = compactText(value, 40);
+            const m = /^(\d{1,2}):(\d{2})/.exec(raw);
+            if (!m) return null;
+            return `${String(Number(m[1])).padStart(2,"0")}:${m[2]}`;
+          }
+
+          async function localLifePrayerTimes(args) {
+            const date = localLifeApiDate(args.date);
+            const params = new URLSearchParams({ method: String(args.method), school: String(args.school), calendarMethod: "UAQ" });
+            let endpoint;
+            let location;
+            if (args.latitude !== null && args.longitude !== null) {
+              params.set("latitude", String(args.latitude));
+              params.set("longitude", String(args.longitude));
+              endpoint = `https://api.aladhan.com/v1/timings/${date}?${params.toString()}`;
+              location = { city: null, country: null, latitude: args.latitude, longitude: args.longitude };
+            } else {
+              params.set("city", args.city || "Cairo");
+              params.set("country", args.country || "EG");
+              endpoint = `https://api.aladhan.com/v1/timingsByCity/${date}?${params.toString()}`;
+              location = { city: args.city || "Cairo", country: args.country || "EG", latitude: null, longitude: null };
+            }
+            const response = await externalFetch("aladhan_prayer", endpoint, { headers: { accept: "application/json" } });
+            if (!response.ok) throw new SandHttpError(`Prayer times HTTP ${response.status}`, response.status);
+            const data = await response.json().catch(() => ({}));
+            if (Number(data?.code) !== 200 || !data?.data?.timings) throw new SandHttpError("Prayer times payload invalid", 502);
+            const t = data.data.timings;
+            const prayers = {
+              fajr: cleanPrayerTime(t.Fajr), sunrise: cleanPrayerTime(t.Sunrise), dhuhr: cleanPrayerTime(t.Dhuhr),
+              asr: cleanPrayerTime(t.Asr), maghrib: cleanPrayerTime(t.Maghrib), isha: cleanPrayerTime(t.Isha),
+            };
+            if (Object.values(prayers).some((v) => !v)) throw new SandHttpError("Prayer times missing required fields", 502);
+            return {
+              date: args.date,
+              location,
+              timezone: compactText(data?.data?.meta?.timezone, 120) || null,
+              calculation_method: compactText(data?.data?.meta?.method?.name, 240) || (args.method === 5 ? "Egyptian General Authority of Survey" : `method ${args.method}`),
+              method_id: args.method,
+              prayers,
+              hijri: data?.data?.date?.hijri ? {
+                date: compactText(data.data.date.hijri.date, 40),
+                weekday: compactText(data.data.date.hijri.weekday?.ar, 80) || compactText(data.data.date.hijri.weekday?.en, 80),
+                month: compactText(data.data.date.hijri.month?.ar, 80) || compactText(data.data.date.hijri.month?.en, 80),
+                year: compactText(data.data.date.hijri.year, 20),
+              } : null,
+              provider: "aladhan",
+              note: "Prayer times are calculated; a local mosque or official authority may publish tuned times.",
+            };
+          }
+
+          function localLifeHijriDate(args) {
+            const d = new Date(`${args.date}T12:00:00Z`);
+            if (!Number.isFinite(d.getTime())) throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Invalid Gregorian date");
+            const fmt = new Intl.DateTimeFormat("ar-SA-u-ca-islamic-umalqura", { timeZone: TZ, weekday: "long", year: "numeric", month: "long", day: "numeric" });
+            const numeric = new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+            const parts = Object.fromEntries(numeric.formatToParts(d).filter((x) => x.type !== "literal" && x.type !== "era").map((x) => [x.type, x.value]));
+            return {
+              gregorian: args.date,
+              hijri: `${parts.year}-${parts.month}-${parts.day}`,
+              formatted_ar: fmt.format(d),
+              calendar: "islamic-umalqura",
+              note: "Hijri calendar is computed with Umm al-Qura and may differ by one day from official moon-sighting announcements in Egypt.",
+            };
+          }
+
+          async function egyptPublicHolidays(args) {
+            const response = await externalFetch("nager_egypt_holidays", `https://date.nager.at/api/v3/PublicHolidays/${args.year}/EG`, { headers: { accept: "application/json", "user-agent": "SAND-ONE/1.0" } });
+            if (!response.ok) throw new SandHttpError(`Egypt holidays HTTP ${response.status}`, response.status);
+            const data = await response.json().catch(() => null);
+            if (!Array.isArray(data)) throw new SandHttpError("Egypt holidays payload invalid", 502);
+            const holidays = data.map((h) => ({
+              date: compactText(h?.date, 20),
+              local_name: compactText(h?.localName, 240),
+              english_name: compactText(h?.name, 240),
+              types: Array.isArray(h?.types) ? h.types.map((x) => compactText(x, 80)).filter(Boolean) : [],
+              global: Boolean(h?.global),
+            })).filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.date)).sort((a,b) => a.date.localeCompare(b.date));
+            if (!holidays.length) throw new SandHttpError("Egypt holidays returned no usable dates", 502);
+            return { year: args.year, country: "EG", holidays, provider: "nager_date", note: "Government substitutions and moon-sighting based dates can change; use the latest official Egyptian announcement for legal certainty." };
+          }
+
+          function renderLocalLifeResult(step, result) {
+            if (step.op === "prayer.times") {
+              const p = result.prayers;
+              const where = result.location?.city || (result.location?.latitude !== null ? `${result.location.latitude}, ${result.location.longitude}` : "Cairo");
+              return [`🕌 مواقيت الصلاة — ${where} — ${result.date}`, `الفجر ${p.fajr}`, `الشروق ${p.sunrise}`, `الظهر ${p.dhuhr}`, `العصر ${p.asr}`, `المغرب ${p.maghrib}`, `العشاء ${p.isha}`].join("\n");
+            }
+            if (step.op === "hijri.date") return `🌙 ${result.formatted_ar}\nالموافق ${result.gregorian}`;
+            if (step.op === "egypt.holidays") {
+              return [`🇪🇬 الإجازات الرسمية في مصر ${result.year}:`, ...result.holidays.slice(0,30).map((h) => `${h.date} — ${h.local_name || h.english_name}`)].join("\n").slice(0, AI_MAX_REPLY_CHARS);
+            }
+            return "";
+          }
+
+          async function executeLocalLifePlan(env, { plan }) {
+            const outputs = [];
+            let reply = "";
+            for (const step of plan.steps) {
+              let result;
+              if (step.op === "prayer.times") result = await localLifePrayerTimes(step.args);
+              else if (step.op === "hijri.date") result = localLifeHijriDate(step.args);
+              else if (step.op === "egypt.holidays") result = await egyptPublicHolidays(step.args);
+              else throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Local Life operation: ${step.op}`);
+              outputs.push({ op: step.op, result });
+              reply = renderLocalLifeResult(step, result) || reply;
+            }
+            return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) };
+          }
+          JS
+
+      - name: Static and deterministic checks
+        run: |
+          set -euo pipefail
+          [ "$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')" = '30' ]
+          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_dev6.js
+          grep -Fq 'const APP_VERSION = "1.0.0-dev.6"' /tmp/SAND_ONE_dev6.js
+          grep -Fq 'local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "active" })' /tmp/SAND_ONE_dev6.js
+          node --check /tmp/SAND_ONE_dev6.js
+          ! grep -q 'text\.includes(' /tmp/SAND_ONE_dev6.js
+          ! grep -Eq '\beval\(' /tmp/SAND_ONE_dev6.js
+          ! grep -q 'Math\.random' /tmp/SAND_ONE_dev6.js
+          ! grep -q '@ts-ignore\|@ts-nocheck' /tmp/SAND_ONE_dev6.js
+          npm install --no-save typescript@5.8.3 >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["/tmp/SAND_ONE_dev6.js"]}' > /tmp/tsconfig-local-life.json
+          npx tsc -p /tmp/tsconfig-local-life.json --pretty false
+          node - <<'NODE'
+          const d=new Date('2026-08-21T12:00:00Z');
+          const s=new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura',{timeZone:'Africa/Cairo',year:'numeric',month:'long',day:'numeric'}).format(d);
+          if(!s || s.length<4) throw Error('Hijri Intl unavailable');
+          console.log('HIJRI_INTL_OK',s);
+          NODE
+
+      - name: Live Local Life provider probes
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          async function get(url){const r=await fetch(url,{headers:{accept:'application/json','user-agent':'SAND-ONE/1.0'},signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error(url+' HTTP '+r.status);return r.json()}
+          const p=await get('https://api.aladhan.com/v1/timingsByCity/21-08-2026?city=Cairo&country=EG&method=5&school=0&calendarMethod=UAQ');
+          if(Number(p?.code)!==200||!p?.data?.timings?.Fajr||!p?.data?.timings?.Maghrib)throw Error('ALADHAN_PAYLOAD_INVALID');
+          console.log('ALADHAN_METHOD5_OK',p.data.timings.Fajr,p.data.timings.Maghrib);
+          const h=await get('https://date.nager.at/api/v3/PublicHolidays/2026/EG');
+          if(!Array.isArray(h)||!h.length||!h.every(x=>/^2026-\d{2}-\d{2}$/.test(String(x.date||''))))throw Error('NAGER_EG_PAYLOAD_INVALID');
+          console.log('NAGER_EG_OK',h.length);
+          NODE
+
+      - name: Commit canonical dev6 source only
+        run: |
+          set -euo pipefail
+          remote_head=$(git ls-remote origin refs/heads/sand-one-1.0 | awk '{print $1}')
+          local_head=$(git rev-parse HEAD)
+          [ "$remote_head" = "$local_head" ] || { echo 'STALE_PROMOTION_REFUSED'; exit 1; }
+          git config user.name 'SAND ONE Local Life Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -- sand_one/runtime/part00.js.txt sand_one/runtime/part06.js.txt sand_one/runtime/part12.js.txt sand_one/runtime/part14.js.txt sand_one/runtime/part29.js.txt sand_one/runtime/manifest.json
+          git diff --cached --check
+          git commit -m 'SAND ONE dev6: activate Local Life family'
+          git push origin HEAD:sand-one-1.0
