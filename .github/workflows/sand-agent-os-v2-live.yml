@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           python sand_agent/build.py
-          test "$(sha256sum SAND_AGENT_OS_V2.js | awk '{print $1}')" = "82ace03c31a40712c44bf18c6c103a1b4c1c3f7f0521c814de8047509b4a5086"
+          test "$(sha256sum SAND_AGENT_OS_V2.js | awk '{print $1}')" = "5fd56637e74816ac4b1a9e9defef7fb09056104ecdc63f82faa155eb506e3840"
           node --check SAND_AGENT_OS_V2.js
           ! grep -q 'text\.includes(' SAND_AGENT_OS_V2.js
           ! grep -Eq '\beval\(' SAND_AGENT_OS_V2.js
