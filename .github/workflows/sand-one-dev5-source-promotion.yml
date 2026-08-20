@@ -1,0 +1,119 @@
+name: SAND ONE dev5 Source Promotion
+
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - 'tools/sand-one-dev5-source-delta.bz2.b64'
+      - '.github/workflows/sand-one-dev5-source-promotion.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sand-one-dev5-source-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sand-one-1.0
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Verify exact certified dev4 base
+        run: |
+          set -euo pipefail
+          test -s sand_one/runtime/manifest.json
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").version')" = '1.0.0-dev.4' ]
+          [ "$(node -p 'require("./sand_one/runtime/manifest.json").parts')" = '25' ]
+          count=$(find sand_one/runtime -maxdepth 1 -type f -name 'part*.js.txt' | wc -l | tr -d ' ')
+          [ "$count" = '25' ]
+          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_dev4.js
+          echo '6acdec8b1cf8c7c61e83770a50bd530f90991956c6b3de516716861cf4097d95  /tmp/SAND_ONE_dev4.js' | sha256sum -c -
+
+      - name: Build exact dev5 candidate from verified source delta
+        run: |
+          set -euo pipefail
+          base64 -d tools/sand-one-dev5-source-delta.bz2.b64 | bunzip2 > /tmp/dev5.diff
+          cp /tmp/SAND_ONE_dev4.js /tmp/SAND_ONE_dev5.js
+          patch --silent /tmp/SAND_ONE_dev5.js < /tmp/dev5.diff
+          echo 'd9c85a3da4b843d455f036ed8b59b2b169bfcd6f73f66608d187be6d39221042  /tmp/SAND_ONE_dev5.js' | sha256sum -c -
+          grep -q 'const APP_VERSION = "1.0.0-dev.5"' /tmp/SAND_ONE_dev5.js
+          node --check /tmp/SAND_ONE_dev5.js
+          [ "$(wc -c < /tmp/SAND_ONE_dev5.js | tr -d ' ')" = '232448' ]
+
+      - name: checkJs zero before source promotion
+        run: |
+          set -euo pipefail
+          npm install --no-save typescript@5.8.3 >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["/tmp/SAND_ONE_dev5.js"]}' > /tmp/tsconfig.json
+          npx tsc -p /tmp/tsconfig.json --pretty false
+
+      - name: Materialize canonical 29-part runtime
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          data=Path('/tmp/SAND_ONE_dev5.js').read_bytes()
+          sizes=[8684,7196,7199,7138,7197,7189,7503,7163,7168,7197,7268,7181,7261,7185,7165,9082,7271,6808,7160,7172,6328,5566,7369,6207,14720,10918,10220,20507,3426]
+          assert len(sizes)==29 and sum(sizes)==len(data)==232448
+          out=Path('/tmp/runtime-dev5');out.mkdir()
+          pos=0
+          for i,size in enumerate(sizes):
+              chunk=data[pos:pos+size];pos+=size
+              chunk.decode('utf-8')
+              (out/f'part{i:02d}.js.txt').write_bytes(chunk)
+          assert b''.join((out/f'part{i:02d}.js.txt').read_bytes() for i in range(29))==data
+          PY
+          rm -f sand_one/runtime/part*.js.txt
+          cp /tmp/runtime-dev5/part*.js.txt sand_one/runtime/
+          cat > sand_one/runtime/manifest.json <<'JSON'
+          {
+            "version": "1.0.0-dev.5",
+            "parts": 29,
+            "required_family_states": {
+              "schedule": "active",
+              "work": "active",
+              "shopping": "active",
+              "memory_people": "active",
+              "web_live": "active",
+              "files_media": "input_adapter",
+              "utility": "active"
+            },
+            "required_selftests": [
+              "voice_adapter_contract",
+              "capability_family_contract",
+              "schedule_conflict_contract",
+              "schedule_recurrence_contract"
+            ],
+            "required_functions": [
+              "normalizeLocalMinute",
+              "health",
+              "callOneAiModel",
+              "executeSchedulePlan",
+              "processDueScheduleSignals"
+            ]
+          }
+          JSON
+          cat sand_one/runtime/part*.js.txt > /tmp/reassembled.js
+          cmp /tmp/reassembled.js /tmp/SAND_ONE_dev5.js
+
+      - name: Commit only canonical dev5 source
+        run: |
+          set -euo pipefail
+          rm -f tools/sand-one-dev5-source-delta.bz2.b64
+          rm -rf tools/sand-one-dev5-package
+          rm -f .github/workflows/sand-one-dev5-source-promotion.yml
+          git config user.name 'SAND ONE Source Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add sand_one/runtime/manifest.json sand_one/runtime/part*.js.txt
+          git add -u tools/sand-one-dev5-source-delta.bz2.b64 tools/sand-one-dev5-package .github/workflows/sand-one-dev5-source-promotion.yml
+          git diff --cached --check
+          git commit -m 'SAND ONE dev5: activate advanced Schedule family'
+          git push origin HEAD:sand-one-1.0
