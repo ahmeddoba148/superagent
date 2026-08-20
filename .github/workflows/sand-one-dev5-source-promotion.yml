@@ -43,10 +43,10 @@ jobs:
           base64 -d tools/sand-one-dev5-source-delta.bz2.b64 | bunzip2 > /tmp/dev5.diff
           cp /tmp/SAND_ONE_dev4.js /tmp/SAND_ONE_dev5.js
           patch --silent /tmp/SAND_ONE_dev5.js < /tmp/dev5.diff
-          echo 'd9c85a3da4b843d455f036ed8b59b2b169bfcd6f73f66608d187be6d39221042  /tmp/SAND_ONE_dev5.js' | sha256sum -c -
+          echo '2287474d353fed8ee315ebd42d854626033123d4d2966b2d99e640f6381a29c1  /tmp/SAND_ONE_dev5.js' | sha256sum -c -
           grep -q 'const APP_VERSION = "1.0.0-dev.5"' /tmp/SAND_ONE_dev5.js
           node --check /tmp/SAND_ONE_dev5.js
-          [ "$(wc -c < /tmp/SAND_ONE_dev5.js | tr -d ' ')" = '232448' ]
+          [ "$(wc -c < /tmp/SAND_ONE_dev5.js | tr -d ' ')" = '238668' ]
 
       - name: checkJs zero before source promotion
         run: |
@@ -61,8 +61,8 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           data=Path('/tmp/SAND_ONE_dev5.js').read_bytes()
-          sizes=[8684,7196,7199,7138,7197,7189,7503,7163,7168,7197,7268,7181,7261,7185,7165,9082,7271,6808,7160,7172,6328,5566,7369,6207,14720,10918,10220,20507,3426]
-          assert len(sizes)==29 and sum(sizes)==len(data)==232448
+          sizes=[8334,8235,8279,8241,8253,8335,8244,8281,8319,8232,8237,8246,8246,8237,8264,8245,8274,8198,8220,8185,8209,8301,8168,8156,8249,8192,8189,8209,7890]
+          assert len(sizes)==29 and sum(sizes)==len(data)==238668
           out=Path('/tmp/runtime-dev5');out.mkdir()
           pos=0
           for i,size in enumerate(sizes):
@@ -90,7 +90,8 @@ jobs:
               "voice_adapter_contract",
               "capability_family_contract",
               "schedule_conflict_contract",
-              "schedule_recurrence_contract"
+              "schedule_recurrence_contract",
+              "schedule_family_verified_write"
             ],
             "required_functions": [
               "normalizeLocalMinute",
@@ -117,5 +118,3 @@ jobs:
           git diff --cached --check
           git commit -m 'SAND ONE dev5: activate advanced Schedule family'
           git push origin HEAD:sand-one-1.0
-
-# retrigger: 2026-08-20T20:58Z
