@@ -1,0 +1,180 @@
+      const id = await stableCapabilityId("shopsession", operationId, mainStepIndex * 100 + i, 0); created[i] = id;
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',updated_at=? WHERE chat_id=? AND kind='shopping_session' AND status='active'`).bind(at,chatId));
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_session',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.place_name || "جلسة تسوق",JSON.stringify({ place_name: step.args.place_name, started_at: at }),updateId,at,at)); expected.push({ id, status: "active" });
+    } else if (step.op === "shopping.session.finish") {
+      const row = await env.DB.prepare(`SELECT id FROM ${TABLES.lifeItems} WHERE chat_id=? AND kind='shopping_session' AND status='active' ORDER BY updated_at DESC LIMIT 1`).bind(chatId).first();
+      if (row?.id) { const id=String(row.id); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(updateId,at,id,chatId)); expected.push({ id, status: "done" }); }
+    }
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  for (const exp of expected) {
+    const row = await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first();
+    if (!row || String(row.status)!==exp.status || (exp.title && String(row.title)!==exp.title)) throw new Error("Shopping capability verification failed");
+  }
+  return { steps: plan.steps.map((step,i)=>({ op:step.op, created_id:created[i]||null })), reply: compactText(plan.reply_hint,800) || "تمام، حدّثت المشتريات واتأكدت من النتيجة ✅" };
+}
+
+
+async function executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const readOps = new Set(["project.list","task.list","waiting.list","inbox.list"]);
+  const hasMutation = plan.steps.some((s)=>!readOps.has(s.op));
+  if (!hasMutation) {
+    let reply=""; const outputs=[]; const all=await capabilitySnapshot(env,chatId,"work");
+    for (const step of plan.steps) {
+      if (step.op === "project.list") { const rows=all.filter(x=>x.kind==="project"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"🎯 المشاريع:"); }
+      if (step.op === "task.list") { const projectId=step.args.project?refs.get(step.args.project):null; const rows=all.filter(x=>x.kind==="task"&&(!projectId||x.parent_id===projectId)&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"✅ المهام:"); }
+      if (step.op === "waiting.list") { const rows=all.filter(x=>x.kind==="waiting"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"⏳ المتابعات:"); }
+      if (step.op === "inbox.list") { const rows=all.filter(x=>x.kind==="inbox"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"📥 الوارد:"); }
+    }
+    return {steps:outputs,reply:reply||compactText(plan.reply_hint,800)};
+  }
+  if (plan.steps.some((s)=>readOps.has(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN","Do not mix work reads and mutations in one family plan");
+  const stmts=[], created=[], expected=[];
+  for (let i=0;i<plan.steps.length;i+=1) {
+    const step=plan.steps[i], at=nowIso();
+    if (step.op === "project.create") {
+      const id=await stableCapabilityId("project",operationId,mainStepIndex*100+i); created[i]=id; const state={priority:step.args.priority,deadline:step.args.deadline,notes:step.args.notes,progress:0};
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'project',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"active",title:step.args.title});
+    } else if (step.op === "project.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='project' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["progress","priority","deadline","notes"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status});
+    } else if (step.op === "task.create") {
+      const id=await stableCapabilityId("task",operationId,mainStepIndex*100+i); created[i]=id; const parent=step.args.parent?resolveFamilyRef(step.args.parent,refs,created):null; if(step.args.parent&&!parent) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task parent could not be resolved"); const state={due_at:step.args.due_at,priority:step.args.priority}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'task',?,?,?,'pending',?,?,?)`).bind(id,chatId,parent,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"pending",title:step.args.title});
+    } else if (step.op === "task.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='task' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Task target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["due_at","priority"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status), title=step.args.title||String(row.title); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET title=?,state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(title,JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status,title});
+    } else if (step.op === "waiting.create") {
+      const id=await stableCapabilityId("waiting",operationId,mainStepIndex*100+i); created[i]=id; const state={waiting_on:step.args.waiting_on,due_at:step.args.due_at}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'waiting',NULL,?,?,'waiting',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"waiting",title:step.args.title});
+    } else if (step.op === "waiting.close") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Waiting target disappeared"); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='waiting'`).bind(updateId,at,id,chatId)); expected.push({id,status:"done"});
+    } else if (step.op === "inbox.add") {
+      const id=await stableCapabilityId("inbox",operationId,mainStepIndex*100+i); created[i]=id; const state={classified_as:step.args.classified_as}; stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'inbox',NULL,?,?,'open',?,?,?)`).bind(id,chatId,step.args.text,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"open",title:step.args.text});
+    } else if (step.op === "inbox.classify") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target disappeared"); const row=await env.DB.prepare(`SELECT state_json FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='inbox' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target missing"); const state=safeJsonParse(row.state_json,{}); state.classified_as=step.args.classified_as; stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),updateId,at,id,chatId)); expected.push({id,status:null});
+    } else if (step.op === "inbox.close") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Inbox target disappeared"); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='closed',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='inbox'`).bind(updateId,at,id,chatId)); expected.push({id,status:"closed"});
+    }
+  }
+  if(stmts.length) await env.DB.batch(stmts);
+  for(const exp of expected){const row=await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first(); if(!row||(exp.status&&String(row.status)!==exp.status)||(exp.title&&String(row.title)!==exp.title)) throw new Error("Work capability verification failed");}
+  return {steps:plan.steps.map((step,i)=>({op:step.op,created_id:created[i]||null})),reply:compactText(plan.reply_hint,800)||"تمام، نفذت المطلوب واتأكدت من بيانات الشغل ✅"};
+}
+
+function normalizeLocalMinute(value) {
+  const s = compactText(value, 40);
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const yy = Number(y), mm = Number(mo), dd = Number(d), hh = Number(h), mn = Number(mi);
+  if (yy < 2020 || yy > 2100 || mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh < 0 || hh > 23 || mn < 0 || mn > 59) return null;
+  return `${y}-${mo}-${d}T${h}:${mi}`;
+}
+
+function mergeObjectState(currentState, patch, fallbackTitle) {
+  const current = currentState && typeof currentState === "object" && !Array.isArray(currentState) ? structuredClone(currentState) : {};
+  const out = {
+    title: compactText(current.title || fallbackTitle || "موضوع", 240),
+    description: current.description ?? null,
+    start_local: normalizeLocalMinute(current.start_local) ?? null,
+    end_local: normalizeLocalMinute(current.end_local) ?? null,
+    timezone: TZ,
+    location: current.location ?? null,
+    people: Array.isArray(current.people) ? current.people : [],
+    details: current.details && typeof current.details === "object" ? current.details : {},
+    status: current.status ?? "open",
+  };
+
+  if (Object.hasOwn(patch, "title") && patch.title !== null) out.title = compactText(patch.title, 240) || out.title;
+  if (Object.hasOwn(patch, "description")) out.description = patch.description === null ? null : compactText(patch.description, 3000);
+  if (Object.hasOwn(patch, "location")) out.location = patch.location === null ? null : compactText(patch.location, 300);
+  if (Object.hasOwn(patch, "people")) out.people = Array.isArray(patch.people) ? patch.people.slice(0, 20) : [];
+  if (Object.hasOwn(patch, "details")) out.details = patch.details && typeof patch.details === "object" ? sanitizeJsonValue(patch.details, 4) : {};
+  if (Object.hasOwn(patch, "status") && patch.status !== null) out.status = compactText(patch.status, 80) || out.status;
+
+  if (Object.hasOwn(patch, "start_local")) out.start_local = patch.start_local === null ? null : normalizeLocalMinute(patch.start_local);
+  if (Object.hasOwn(patch, "end_local")) out.end_local = patch.end_local === null ? null : normalizeLocalMinute(patch.end_local);
+
+  const oldStart = out.start_local;
+  if (Object.hasOwn(patch, "start_date_local") && patch.start_date_local) {
+    const date = compactText(patch.start_date_local, 20);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Invalid start_date_local");
+    const time = oldStart?.slice(11, 16) || "09:00";
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+  if (Object.hasOwn(patch, "start_time_local") && patch.start_time_local) {
+    const time = compactText(patch.start_time_local, 20);
+    if (!/^\d{2}:\d{2}$/.test(time)) throw new Error("Invalid start_time_local");
+    const date = out.start_local?.slice(0, 10);
+    if (!date) throw new Error("Cannot set only a time when target has no known date");
+    out.start_local = normalizeLocalMinute(`${date}T${time}`);
+  }
+
+  if (out.start_local === null && (patch.start_local || patch.start_date_local || patch.start_time_local)) {
+    throw new Error("Invalid start time");
+  }
+  if (out.end_local && out.start_local && out.end_local < out.start_local) throw new Error("End time cannot be before start time");
+  return out;
+}
+
+async function objectById(env, chatId, id) {
+  const row = await env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects}
+    WHERE id=? AND chat_id=? LIMIT 1`)
+    .bind(id, chatId)
+    .first();
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    kind: String(row.kind),
+    title: String(row.title),
+    state: safeJsonParse(row.state_json, {}),
+    status: String(row.status),
+    updated_at: String(row.updated_at),
+  };
+}
+
+async function persistWorkspace(env, chatId, { goal, thread_summary, focus_object_id, open_questions }) {
+  const at = nowIso();
+  await env.DB.prepare(`INSERT INTO ${TABLES.workspaces}
+    (chat_id,goal,thread_summary,focus_object_id,open_questions_json,context_version,updated_at)
+    VALUES(?,?,?,?,?,1,?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      goal=excluded.goal,
+      thread_summary=excluded.thread_summary,
+      focus_object_id=excluded.focus_object_id,
+      open_questions_json=excluded.open_questions_json,
+      context_version=${TABLES.workspaces}.context_version+1,
+      updated_at=excluded.updated_at`)
+    .bind(chatId, goal || null, thread_summary || null, focus_object_id || null, JSON.stringify(open_questions ?? []), at)
+    .run();
+}
+
+function buildVerifiedReply(plan, execution) {
+  if (plan.clarification) return plan.clarification.question;
+  if (!execution.ok) return "حصلت مشكلة وأنا بنفذ آخر خطوة، فمش هأكدلك إن التعديل تم. حاول تاني بعد شوية.";
+  const capabilityReply = [...execution.steps].reverse().map((step) => compactText(step?.reply, AI_MAX_REPLY_CHARS)).find(Boolean);
+  if (capabilityReply) return capabilityReply;
+  const reply = compactText(plan.reply, AI_MAX_REPLY_CHARS);
+  return reply || "تمام، اتعملت ✅";
+}
+
+async function upsertReminderForObject(env, { chatId, objectId, title, remindAtUtc, mode, sourceUpdateId }) {
+  const existing = await env.DB.prepare(`SELECT id FROM ${TABLES.reminders}
+    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain') LIMIT 1`)
+    .bind(chatId, objectId)
+    .first();
+  const at = nowIso();
+  if (existing?.id) {
+    await env.DB.prepare(`UPDATE ${TABLES.reminders}
+      SET title=?,remind_at_utc=?,timezone=?,mode=?,status='pending',source_update_id=?,telegram_message_id=NULL,updated_at=?,sent_at=NULL
+      WHERE id=?`)
+      .bind(title, remindAtUtc, TZ, mode, sourceUpdateId, at, existing.id)
+      .run();
+    return String(existing.id);
+  }
+  const id = randomId("rem");
+  await env.DB.prepare(`INSERT INTO ${TABLES.reminders}
+    (id,chat_id,object_id,title,remind_at_utc,timezone,mode,status,source_update_id,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'pending',?,?,?)`)
+    .bind(id, chatId, objectId, title, remindAtUtc, TZ, mode, sourceUpdateId, at, at)
+    .run();
+  return id;
+}
