@@ -23,15 +23,61 @@ async function googleWebSearch(env, args) {
   return { query: args.query, items };
 }
 
+function decodeXmlText(value) {
+  return String(value ?? "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : " ";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseGoogleNewsRss(xml, limit) {
+  const items = [];
+  const blocks = String(xml ?? "").match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
+  for (const block of blocks.slice(0, limit)) {
+    const title = decodeXmlText(/<title>([\s\S]*?)<\/title>/i.exec(block)?.[1] ?? "");
+    const url = decodeXmlText(/<link>([\s\S]*?)<\/link>/i.exec(block)?.[1] ?? "");
+    const seenAt = decodeXmlText(/<pubDate>([\s\S]*?)<\/pubDate>/i.exec(block)?.[1] ?? "");
+    const sourceMatch = /<source(?:\s[^>]*)?>([\s\S]*?)<\/source>/i.exec(block);
+    const domain = decodeXmlText(sourceMatch?.[1] ?? "");
+    if (url) items.push({ title, url, domain, seen_at: seenAt, language: "ar" });
+  }
+  return items;
+}
+
+async function googleNewsRssSearch(args) {
+  const params = new URLSearchParams({ q: args.query, hl: "ar", gl: "EG", ceid: "EG:ar" });
+  const response = await externalFetch("google_news_rss", `https://news.google.com/rss/search?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Google News RSS HTTP ${response.status}`, response.status);
+  const xml = await response.text();
+  const items = parseGoogleNewsRss(xml, args.limit);
+  if (!items.length) throw new SandHttpError("Google News RSS returned no usable items", 502);
+  return { query: args.query, items, provider: "google_news_rss" };
+}
+
 async function liveNewsSearch(args) {
   const params = new URLSearchParams({ query: args.query, mode: "ArtList", maxrecords: String(Math.min(20, args.limit)), format: "json", sort: "HybridRel" });
-  const response = await externalFetch("gdelt_news", `https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`);
-  if (!response.ok) throw new SandHttpError(`News HTTP ${response.status}`, response.status);
-  const data = await response.json().catch(() => ({}));
-  const items = (Array.isArray(data?.articles) ? data.articles : []).slice(0, args.limit).map((item) => ({
-    title: compactText(item?.title, 700), url: compactText(item?.url, 2000), domain: compactText(item?.domain, 300), seen_at: compactText(item?.seendate, 80), language: compactText(item?.language, 80),
-  })).filter((item) => item.url);
-  return { query: args.query, items };
+  try {
+    const response = await externalFetch("gdelt_news", `https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`);
+    if (response.ok) {
+      const data = await response.json().catch(() => ({}));
+      const items = (Array.isArray(data?.articles) ? data.articles : []).slice(0, args.limit).map((item) => ({
+        title: compactText(item?.title, 700), url: compactText(item?.url, 2000), domain: compactText(item?.domain, 300), seen_at: compactText(item?.seendate, 80), language: compactText(item?.language, 80),
+      })).filter((item) => item.url);
+      if (items.length) return { query: args.query, items, provider: "gdelt" };
+    }
+  } catch (error) {
+    logError("news_primary_transient", error, { provider: "gdelt" });
+  }
+  return googleNewsRssSearch(args);
 }
 
 async function openMeteoWeather(args) {
