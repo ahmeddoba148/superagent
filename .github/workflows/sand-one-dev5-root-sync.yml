@@ -48,3 +48,5 @@ jobs:
           git diff --cached --check
           git commit -m 'SAND ONE: materialize certified dev5 runtime root'
           git push origin HEAD:sand-one-1.0
+
+# retrigger existing workflow: 2026-08-20T21:55Z
