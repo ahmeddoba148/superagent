@@ -19,11 +19,14 @@
   ) {
     throw new SandPlanError("BAD_PLAN", `No model returned a valid executable plan: ${joined}`);
   }
+  const failureCodes = failures.map((failure) => failure.slice(failure.lastIndexOf(":") + 1));
+  const hasFailureCode = (predicate) => failureCodes.some(predicate);
+  const allFailureCodes = (predicate) => failureCodes.length > 0 && failureCodes.every(predicate);
   let code = "AI_UNAVAILABLE";
-  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
-  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";
-  else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM";
-  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";
+  if (hasFailureCode((failureCode) => failureCode === "http_401" || failureCode === "http_403")) code = "AI_AUTH";
+  else if (allFailureCodes((failureCode) => failureCode === "http_429")) code = "AI_RATE_LIMIT";
+  else if (hasFailureCode((failureCode) => failureCode === "timeout")) code = "AI_TIMEOUT";
+  else if (hasFailureCode((failureCode) => /^http_5\d\d$/.test(failureCode))) code = "AI_UPSTREAM";
   throw new SandAiChainError(code, failures.length ? failures : ["planner_budget_exhausted"]);
 }
 

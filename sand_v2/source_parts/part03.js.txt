@@ -219,6 +219,9 @@ function plannerSystemPrompt(snapshot) {
     "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
     "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
     "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",
+    "Durable personal facts that the user explicitly wants remembered belong in memory.upsert, not object.patch, focus changes, notes, or unrelated active objects. Memory is independent from the current object focus.",
+    "When recalling a stored fact, answer from workspace memories with effect answer and no mutation unless the user also asks to change or forget that memory. Do not patch an active object merely because it is focused.",
+    "A request to remember a personal fact must use a real memory.upsert action; a mutate plan that only patches an unrelated object is invalid for that semantic goal.",
     "For user-provided proper names, identifiers, labels, and scalar text facts stored in memory, preserve the user's original spelling and script exactly; never translate or transliterate the value.",
     "Required top-level keys are intent, continuation, goal, thread_summary, focus, actions, clarification, reply, confidence. focus.mode is keep, set, or clear. If focus.mode is set, focus.target uses the same target string contract. actions is always an array. clarification is either null or an object with question and reason.",
     "The reply is the natural Egyptian Arabic response to send AFTER successful verified execution. Do not claim an action succeeded unless the plan actually asks the app to execute it.",
@@ -371,11 +374,14 @@ async function callStructuredPlannerChain(env, { chatId, updateId, messages, sna
   ) {
     throw new SandPlanError("BAD_PLAN", `No model returned a valid executable plan: ${joined}`);
   }
+  const failureCodes = failures.map((failure) => failure.slice(failure.lastIndexOf(":") + 1));
+  const hasFailureCode = (predicate) => failureCodes.some(predicate);
+  const allFailureCodes = (predicate) => failureCodes.length > 0 && failureCodes.every(predicate);
   let code = "AI_UNAVAILABLE";
-  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
-  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";
-  else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM";
-  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";
+  if (hasFailureCode((failureCode) => failureCode === "http_401" || failureCode === "http_403")) code = "AI_AUTH";
+  else if (allFailureCodes((failureCode) => failureCode === "http_429")) code = "AI_RATE_LIMIT";
+  else if (hasFailureCode((failureCode) => failureCode === "timeout")) code = "AI_TIMEOUT";
+  else if (hasFailureCode((failureCode) => /^http_5\d\d$/.test(failureCode))) code = "AI_UPSTREAM";
   throw new SandAiChainError(code, failures.length ? failures : ["planner_budget_exhausted"]);
 }
 
