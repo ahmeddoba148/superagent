@@ -28,58 +28,58 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Apply exact 10-model failover chain
+      - name: Replace dead and deprecated model fallbacks
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          old = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_1" }),\n  Object.freeze({ id: "gemini::gemini-3.5-flash-lite", role: "fallback_2" }),\n]);'''
-          new = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "cerebras::gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "fallback_1" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_2" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_4" }),\n  Object.freeze({ id: "nvidia::qwen/qwen3.5-397b-a17b", role: "fallback_5" }),\n  Object.freeze({ id: "nvidia::moonshotai/kimi-k2.6", role: "fallback_6" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_7" }),\n  Object.freeze({ id: "nvidia::mistralai/mistral-large-3-675b-instruct-2512", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_9" }),\n]);'''
+          old = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "cerebras::gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "fallback_1" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_2" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_4" }),\n  Object.freeze({ id: "nvidia::qwen/qwen3.5-397b-a17b", role: "fallback_5" }),\n  Object.freeze({ id: "nvidia::moonshotai/kimi-k2.6", role: "fallback_6" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_7" }),\n  Object.freeze({ id: "nvidia::mistralai/mistral-large-3-675b-instruct-2512", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_9" }),\n]);'''
+
+          new = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_1" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_2" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_4" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_5" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_6" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_7" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),\n]);'''
 
           for name in ['sand_one/runtime/part00.js.txt', 'sand_v2/source_parts/part00.js.txt']:
               p = Path(name)
               s = p.read_text()
               if s.count(old) != 1:
-                  raise SystemExit(f'{name}: expected old model block once, got {s.count(old)}')
+                  raise SystemExit(f'{name}: expected current model block once, got {s.count(old)}')
               p.write_text(s.replace(old, new))
 
-          p = Path('sand_v2/live_gate.mjs')
-          s = p.read_text()
-          if "import fs from 'node:fs';" not in s:
-              s = s.replace("import { spawnSync } from 'node:child_process';", "import { spawnSync } from 'node:child_process';\nimport fs from 'node:fs';", 1)
-          old_gate = '''  const models = [\n    'groq::openai/gpt-oss-120b',\n    'groq::qwen/qwen3.6-27b',\n    'gemini::gemini-3.5-flash-lite',\n  ];'''
-          new_gate = '''  const source = fs.readFileSync('sand_v2/source_parts/part00.js.txt', 'utf8');\n  const block = source.match(/const AI_MODELS = Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\);/);\n  const models = [...String(block?.[1] ?? '').matchAll(/id:\\s*"([^"]+)"/g)].map((match) => match[1]);\n  if (models.length < 3) return false;'''
-          if s.count(old_gate) != 1:
-              raise SystemExit(f'live_gate model block mismatch: {s.count(old_gate)}')
-          p.write_text(s.replace(old_gate, new_gate))
-
-          probe = '''import fs from 'node:fs';\n\nconst key = String(process.env.OKEY || '');\nif (!key) throw new Error('missing OKEY');\n\nconst endpoint = 'https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';\nconst source = fs.readFileSync('sand_one/runtime/part00.js.txt', 'utf8');\nconst block = source.match(/const AI_MODELS = Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\);/);\nconst models = [...String(block?.[1] ?? '').matchAll(/id:\\s*"([^"]+)"/g)].map((match) => match[1]);\nif (models.length !== 10) throw new Error(`MODEL_CHAIN_EXPECTED_10 got=${models.length}`);\n\nlet live = 0;\nconst liveProviders = new Set();\nconst transient = [];\nconst MIN_LIVE = 3;\nconst MIN_PROVIDERS = 3;\n\nfor (const model of models) {\n  try {\n    const response = await fetch(endpoint, {\n      method: 'POST',\n      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },\n      body: JSON.stringify({\n        model,\n        messages: [{ role: 'user', content: 'رد OK فقط' }],\n        max_tokens: 16,\n        stream: false,\n      }),\n      signal: AbortSignal.timeout(10_000),\n    });\n\n    if (response.ok) {\n      live += 1;\n      liveProviders.add(String(model).split('::', 1)[0]);\n      console.log(`${model} LIVE ${response.status}`);\n      if (live >= MIN_LIVE && liveProviders.size >= MIN_PROVIDERS) break;\n      continue;\n    }\n\n    const body = (await response.text().catch(() => '')).slice(0, 200);\n    transient.push(`${model}:HTTP_${response.status}`);\n    console.log(`${model} TRANSIENT ${response.status} ${body}`);\n  } catch (error) {\n    const message = String(error?.message || error);\n    transient.push(`${model}:${message}`);\n    console.log(`${model} TRANSIENT ${message}`);\n  }\n}\n\nif (live < MIN_LIVE || liveProviders.size < MIN_PROVIDERS) {\n  throw new Error(`MODEL_CHAIN_DIVERSITY_FAILED live=${live} providers=${liveProviders.size}: ${transient.join(' | ')}`);\n}\n\nconsole.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK configured=${models.length} live=${live} providers=${liveProviders.size} transient=${transient.length}`);\n'''
+          probe = '''import fs from 'node:fs';\n\nconst key = String(process.env.OKEY || '');\nif (!key) throw new Error('missing OKEY');\n\nconst endpoint = 'https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';\nconst source = fs.readFileSync('sand_one/runtime/part00.js.txt', 'utf8');\nconst block = source.match(/const AI_MODELS = Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\);/);\nconst models = [...String(block?.[1] ?? '').matchAll(/id:\\s*"([^"]+)"/g)].map((match) => match[1]);\nif (models.length !== 10) throw new Error(`MODEL_CHAIN_EXPECTED_10 got=${models.length}`);\n\nlet live = 0;\nconst liveProviders = new Set();\nconst transient = [];\nconst permanent = [];\nconst MIN_LIVE = 5;\nconst MIN_PROVIDERS = 3;\nconst permanentStatuses = new Set([400, 401, 402, 403, 404, 405, 409, 410, 422]);\n\nfor (const model of models) {\n  const started = Date.now();\n  try {\n    const response = await fetch(endpoint, {\n      method: 'POST',\n      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },\n      body: JSON.stringify({\n        model,\n        messages: [{ role: 'user', content: 'رد OK فقط' }],\n        max_tokens: 16,\n        stream: false,\n      }),\n      signal: AbortSignal.timeout(10_000),\n    });\n    const latency = Date.now() - started;\n\n    if (response.ok) {\n      live += 1;\n      liveProviders.add(String(model).split('::', 1)[0]);\n      console.log(`${model} LIVE ${response.status} ${latency}ms`);\n      continue;\n    }\n\n    const body = (await response.text().catch(() => '')).replace(/\\s+/g, ' ').slice(0, 220);\n    const item = `${model}:HTTP_${response.status}`;\n    if (permanentStatuses.has(response.status)) {\n      permanent.push(item);\n      console.log(`${model} PERMANENT ${response.status} ${latency}ms ${body}`);\n    } else {\n      transient.push(item);\n      console.log(`${model} TRANSIENT ${response.status} ${latency}ms ${body}`);\n    }\n  } catch (error) {\n    const message = String(error?.message || error);\n    transient.push(`${model}:${message}`);\n    console.log(`${model} TRANSIENT ${message}`);\n  }\n}\n\nif (permanent.length) {\n  throw new Error(`MODEL_CHAIN_PERMANENT_FAILURE: ${permanent.join(' | ')}`);\n}\nif (live < MIN_LIVE || liveProviders.size < MIN_PROVIDERS) {\n  throw new Error(`MODEL_CHAIN_DIVERSITY_FAILED live=${live} providers=${liveProviders.size}: ${transient.join(' | ')}`);\n}\n\nconsole.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK configured=${models.length} live=${live} providers=${liveProviders.size} transient=${transient.length} permanent=0`);\n'''
           Path('tools/sand-one-ci/probe-models.mjs').write_text(probe)
           PY
 
       - name: Static and type verification
         run: |
           set -euo pipefail
-          grep -Fq 'cerebras::gpt-oss-120b' sand_one/runtime/part00.js.txt
-          grep -Fq 'openrouter::nvidia/nemotron-3-super-120b-a12b:free' sand_one/runtime/part00.js.txt
-          test "$(grep -o 'Object.freeze({ id:' sand_one/runtime/part00.js.txt | wc -l | tr -d ' ')" -ge 10
+          for dead in \
+            'cerebras::gpt-oss-120b' \
+            'nvidia::qwen/qwen3.5-397b-a17b' \
+            'nvidia::moonshotai/kimi-k2.6' \
+            'nvidia::mistralai/mistral-large-3-675b-instruct-2512'; do
+            ! grep -Fq "$dead" sand_one/runtime/part00.js.txt
+            ! grep -Fq "$dead" sand_v2/source_parts/part00.js.txt
+          done
+          grep -Fq 'groq::openai/gpt-oss-120b' sand_one/runtime/part00.js.txt
+          grep -Fq 'nvidia::nvidia/nemotron-3-super-120b-a12b' sand_one/runtime/part00.js.txt
+          grep -Fq 'nvidia::nvidia/nemotron-3-ultra-550b-a55b' sand_one/runtime/part00.js.txt
+          grep -Fq 'nvidia::nvidia/nemotron-3-nano-30b-a3b' sand_one/runtime/part00.js.txt
+          grep -Fq 'openrouter::google/gemma-4-31b-it:free' sand_one/runtime/part00.js.txt
           node sand_v2/assemble.mjs
           node --check SAND_CORE_V2.js
           cat sand_one/runtime/part*.js.txt > SAND_ONE_CHAIN_TEST.js
           node --check SAND_ONE_CHAIN_TEST.js
           node --check tools/sand-one-ci/probe-models.mjs
-          node --check sand_v2/live_gate.mjs
           npm install --no-save typescript@5.8.3 >/dev/null
           printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","SAND_ONE_CHAIN_TEST.js"]}' > tsconfig.model-chain.json
           npx tsc -p tsconfig.model-chain.json --pretty false
 
-      - name: Commit verified 10-model chain
+      - name: Commit verified replacement chain
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add sand_one/runtime/part00.js.txt sand_v2/source_parts/part00.js.txt sand_v2/live_gate.mjs tools/sand-one-ci/probe-models.mjs
+          git add sand_one/runtime/part00.js.txt sand_v2/source_parts/part00.js.txt tools/sand-one-ci/probe-models.mjs
           git diff --cached --check
-          git commit -m 'SAND Core: diversify failover across 10 models'
+          git commit -m 'SAND Core: replace dead model fallbacks'
           git push origin HEAD:sand-one-1.0
