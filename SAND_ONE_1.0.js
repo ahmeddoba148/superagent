@@ -13,7 +13,7 @@
  */
 
 const APP_NAME = "SAND ONE";
-const APP_VERSION = "1.0.0-dev.5";
+const APP_VERSION = "1.0.0-dev.6";
 const DATA_SCHEMA_VERSION = "2";
 const ARCHITECTURE_NAME = "semantic-conversation-workspace+capability-layer";
 const VOICE_MAX_BYTES = 25 * 1024 * 1024;
@@ -28,7 +28,7 @@ const DRAIN_BUDGET_MS = 27_000;
 const MAX_DRAIN_BATCH = 4;
 const CHAT_SETTLE_MS = 900;
 const CHAT_SETTLE_MAX_WAIT_MS = 6_000;
-const AI_TOTAL_BUDGET_MS = 12_000;
+const AI_TOTAL_BUDGET_MS = 18_000;
 const AI_MODEL_TIMEOUT_MS = 4_000;
 const AI_HISTORY_MESSAGES = 20;
 const AI_MAX_REPLY_CHARS = 3900;
@@ -38,8 +38,15 @@ const PLANNER_MAX_ACTIONS = 8;
 
 const AI_MODELS = Object.freeze([
   Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),
-  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_1" }),
-  Object.freeze({ id: "gemini::gemini-3.5-flash-lite", role: "fallback_2" }),
+  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_1" }),
+  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_2" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_3" }),
+  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_4" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_5" }),
+  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_6" }),
+  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_7" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_8" }),
+  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),
 ]);
 
 const TABLES = Object.freeze({
@@ -71,7 +78,7 @@ const CAPABILITY_FAMILIES = Object.freeze({
   communications: Object.freeze({ label: "Communications", role: "Gmail and controlled outbound communication", state: "planned" }),
   google_workspace: Object.freeze({ label: "Google Workspace", role: "Google Calendar, free-busy and Contacts", state: "planned" }),
   files_media: Object.freeze({ label: "Files & Media", role: "files, OCR, vision and Telegram voice", state: "input_adapter" }),
-  local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "planned" }),
+  local_life: Object.freeze({ label: "Local Life", role: "location, prayer times, Hijri calendar and holidays", state: "active" }),
   utility: Object.freeze({ label: "Utility", role: "calculator, units and deterministic date-time", state: "active" }),
   automation: Object.freeze({ label: "Automation", role: "scheduler, briefs, monitoring and follow-ups", state: "planned" }),
   personal_system: Object.freeze({ label: "Personal/System", role: "profile, settings, global search, audit and undo", state: "planned" }),
@@ -138,6 +145,14 @@ const CAPABILITY_FAMILY_CONTRACTS = Object.freeze({
       "people.update": "args.target = exposed person ref such as p1; patch may contain relationship_to_user, notes, facts",
       "relations.set": "args.subject and args.object = exposed person ref or created:N; args.relation required",
       "relations.list": "args.person = exposed person ref optional",
+    }),
+  }),
+  local_life: Object.freeze({
+    max_steps: 4,
+    operations: Object.freeze({
+      "prayer.times": "Prayer times for a Gregorian date. city/country or latitude+longitude optional; defaults Cairo, EG; method defaults 5 Egyptian General Authority of Survey",
+      "hijri.date": "Convert Gregorian date to Hijri Umm al-Qura. args.date YYYY-MM-DD optional; defaults current Cairo date",
+      "egypt.holidays": "Egypt public holidays for args.year optional; defaults current Cairo year",
     }),
   }),
   utility: Object.freeze({
@@ -812,7 +827,12 @@ function isTransientError(error) {
 async function markUpdateRetryOrFailed(env, updateId, attempts, error) {
   const at = nowIso();
   if (isTransientError(error) && attempts < INBOX_TRANSIENT_MAX_ATTEMPTS) {
-    const delay = Math.min(60_000, 1200 * 2 ** Math.max(0, attempts - 1));
+    const rateLimited =
+      (error instanceof SandAiChainError && error.code === "AI_RATE_LIMIT") ||
+      (error instanceof SandHttpError && error.httpStatus === 429);
+    const delay = rateLimited
+      ? Math.min(120_000, 75_000 + Math.max(0, attempts - 1) * 15_000)
+      : Math.min(30_000, 2500 * 2 ** Math.max(0, attempts - 1));
     await env.DB.prepare(`UPDATE ${TABLES.inbox}
       SET status='retry', process_lease_until=NULL, retry_after_ms=?, last_error=?, updated_at=?
       WHERE update_id=?`)
@@ -1293,12 +1313,16 @@ function plannerSystemPrompt(snapshot) {
     "For a request that belongs to a non-core capability family, emit capability.request with args {family, request, target?}. The top-level brain chooses only the family and semantic request; it does NOT choose the family operation. A second family-specific planner sees only that family contract.",
     "Deterministic arithmetic, unit conversion, and current/difference date-time requests belong to the utility family. Do not calculate them in model prose when the utility family is available.",
     "Recurrence, free-time analysis, conflict checks, snooze, multiple alerts, and bulk schedule changes belong to the schedule family. Basic one-off commitments may remain core.",
+    "Prayer times, Hijri calendar dates, and Egypt public holidays belong to the local_life family. Prefer coordinates when the user supplied them; otherwise preserve the city/country they named and default to Cairo, Egypt only when no location was supplied.",
     "Capability families: " + JSON.stringify(CAPABILITY_FAMILY_CATALOG),
     "Every action object MUST contain a non-empty type from the allowed actions and an args object matching that action contract.",
     "Target contract is intentionally simple: whenever an action or focus needs a target, use target as ONE string: focus for current runtime focus, created for the latest object created earlier in this same plan, or an exposed active_objects ref such as o1 or o2. Never emit or copy internal IDs.",
     "Object create args contain kind, title, and fields. Object patch args contain target and fields. Fields may include title, description, start_local, start_date_local, start_time_local, end_local, location, people, details, status.",
     "Reminder set args contain target, mode (at_start or absolute), optional remind_local in YYYY-MM-DDTHH:mm, and optional title.",
     "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",
+    "Durable personal facts that the user explicitly wants remembered belong in memory.upsert, not object.patch, focus changes, notes, or unrelated active objects. Memory is independent from the current object focus.",
+    "When recalling a stored fact, answer from workspace memories with effect answer and no mutation unless the user also asks to change or forget that memory. Do not patch an active object merely because it is focused.",
+    "A request to remember a personal fact must use a real memory.upsert action; a mutate plan that only patches an unrelated object is invalid for that semantic goal.",
     "For user-provided proper names, identifiers, labels, and scalar text facts stored in memory, preserve the user's original spelling and script exactly; never translate or transliterate the value.",
     "Required top-level keys are effect, intent, continuation, goal, thread_summary, focus, actions, clarification, reply, confidence. effect is exactly answer, mutate, or clarify. Use mutate whenever the user asks to create, change, remove, remember, forget, schedule, cancel, or otherwise alter durable state; answer when no durable state change is requested; clarify only when a genuinely essential ambiguity blocks execution.",
     "A mutate plan MUST contain at least one real domain mutation action; changing focus alone is never enough to satisfy a requested state change.",
@@ -1453,11 +1477,14 @@ async function callStructuredPlannerChain(env, { chatId, updateId, messages, sna
   ) {
     throw new SandPlanError("BAD_PLAN", `No model returned a valid executable plan: ${joined}`);
   }
+  const failureCodes = failures.map((failure) => failure.slice(failure.lastIndexOf(":") + 1));
+  const hasFailureCode = (predicate) => failureCodes.some(predicate);
+  const allFailureCodes = (predicate) => failureCodes.length > 0 && failureCodes.every(predicate);
   let code = "AI_UNAVAILABLE";
-  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";
-  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";
-  else if (/http_5\d\d/.test(joined)) code = "AI_UPSTREAM";
-  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";
+  if (hasFailureCode((failureCode) => failureCode === "http_401" || failureCode === "http_403")) code = "AI_AUTH";
+  else if (allFailureCodes((failureCode) => failureCode === "http_429")) code = "AI_RATE_LIMIT";
+  else if (hasFailureCode((failureCode) => failureCode === "timeout")) code = "AI_TIMEOUT";
+  else if (hasFailureCode((failureCode) => /^http_5\d\d$/.test(failureCode))) code = "AI_UPSTREAM";
   throw new SandAiChainError(code, failures.length ? failures : ["planner_budget_exhausted"]);
 }
 
@@ -2339,6 +2366,7 @@ function validateFamilyStep(family, step, refs, index) {
       return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
     }
   }
+  if (family === "local_life") return validateLocalLifeStep(op, a);
   throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
 }
 
@@ -2684,6 +2712,7 @@ async function executeFamilyPlan(env, { chatId, updateId, operationId, mainStepI
   if (family === "memory_people") return executeMemoryPeoplePlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs });
   if (family === "utility") return executeUtilityPlan(env, { plan });
   if (family === "web_live") return executeWebLivePlan(env, { plan });
+  if (family === "local_life") return executeLocalLifePlan(env, { plan });
   throw new SandPlanError("CAPABILITY_NOT_READY", `Family not executable: ${family}`);
 }
 
@@ -4418,4 +4447,163 @@ async function adminSelftest(request, env) {
   }
 
   return json({ ok: tests.every((x) => x.ok), service: APP_NAME, version: APP_VERSION, tests });
+}
+// SAND ONE Local Life capability — live prayer times, Hijri date, and Egypt public holidays.
+
+function localLifeGregorianDate(value) {
+  const raw = compactText(value, 20);
+  if (!raw) return cairoNowParts().date;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Date must be YYYY-MM-DD");
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const check = new Date(Date.UTC(y, mo - 1, d));
+  if (y < 2020 || y > 2100 || check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) {
+    throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Invalid Gregorian date");
+  }
+  return raw;
+}
+
+function localLifeCoordinates(a) {
+  const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+  const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+  if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+  if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
+    throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+  }
+  return { latitude, longitude };
+}
+
+function validateLocalLifeStep(op, a) {
+  if (op === "prayer.times") {
+    const date = localLifeGregorianDate(a.date);
+    const { latitude, longitude } = localLifeCoordinates(a);
+    const city = compactText(a.city, 240) || (latitude === null ? "Cairo" : null);
+    const country = compactText(a.country, 80) || "EG";
+    const method = a.method === undefined || a.method === null || a.method === "" ? 5 : Number(a.method);
+    const school = a.school === undefined || a.school === null || a.school === "" ? 0 : Number(a.school);
+    if (!Number.isInteger(method) || !((method >= 0 && method <= 23) || method === 99)) throw new SandPlanError("BAD_PRAYER_METHOD", "Invalid prayer calculation method");
+    if (![0,1].includes(school)) throw new SandPlanError("BAD_PRAYER_SCHOOL", "Prayer school must be 0 or 1");
+    return { op, args: { date, city, country, latitude, longitude, method, school } };
+  }
+  if (op === "hijri.date") return { op, args: { date: localLifeGregorianDate(a.date) } };
+  if (op === "egypt.holidays") {
+    const year = a.year === undefined || a.year === null || a.year === "" ? Number(cairoNowParts().date.slice(0,4)) : Number(a.year);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100) throw new SandPlanError("BAD_HOLIDAY_YEAR", "Holiday year must be 2020..2100");
+    return { op, args: { year } };
+  }
+  throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Local Life operation: ${op}`);
+}
+
+function localLifeApiDate(date) {
+  return `${date.slice(8,10)}-${date.slice(5,7)}-${date.slice(0,4)}`;
+}
+
+function cleanPrayerTime(value) {
+  const raw = compactText(value, 40);
+  const m = /^(\d{1,2}):(\d{2})/.exec(raw);
+  if (!m) return null;
+  return `${String(Number(m[1])).padStart(2,"0")}:${m[2]}`;
+}
+
+async function localLifePrayerTimes(args) {
+  const date = localLifeApiDate(args.date);
+  const params = new URLSearchParams({ method: String(args.method), school: String(args.school), calendarMethod: "UAQ" });
+  let endpoint;
+  let location;
+  if (args.latitude !== null && args.longitude !== null) {
+    params.set("latitude", String(args.latitude));
+    params.set("longitude", String(args.longitude));
+    endpoint = `https://api.aladhan.com/v1/timings/${date}?${params.toString()}`;
+    location = { city: null, country: null, latitude: args.latitude, longitude: args.longitude };
+  } else {
+    params.set("city", args.city || "Cairo");
+    params.set("country", args.country || "EG");
+    endpoint = `https://api.aladhan.com/v1/timingsByCity/${date}?${params.toString()}`;
+    location = { city: args.city || "Cairo", country: args.country || "EG", latitude: null, longitude: null };
+  }
+  const response = await externalFetch("aladhan_prayer", endpoint, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new SandHttpError(`Prayer times HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  if (Number(data?.code) !== 200 || !data?.data?.timings) throw new SandHttpError("Prayer times payload invalid", 502);
+  const t = data.data.timings;
+  const prayers = {
+    fajr: cleanPrayerTime(t.Fajr), sunrise: cleanPrayerTime(t.Sunrise), dhuhr: cleanPrayerTime(t.Dhuhr),
+    asr: cleanPrayerTime(t.Asr), maghrib: cleanPrayerTime(t.Maghrib), isha: cleanPrayerTime(t.Isha),
+  };
+  if (Object.values(prayers).some((v) => !v)) throw new SandHttpError("Prayer times missing required fields", 502);
+  return {
+    date: args.date,
+    location,
+    timezone: compactText(data?.data?.meta?.timezone, 120) || null,
+    calculation_method: compactText(data?.data?.meta?.method?.name, 240) || (args.method === 5 ? "Egyptian General Authority of Survey" : `method ${args.method}`),
+    method_id: args.method,
+    prayers,
+    hijri: data?.data?.date?.hijri ? {
+      date: compactText(data.data.date.hijri.date, 40),
+      weekday: compactText(data.data.date.hijri.weekday?.ar, 80) || compactText(data.data.date.hijri.weekday?.en, 80),
+      month: compactText(data.data.date.hijri.month?.ar, 80) || compactText(data.data.date.hijri.month?.en, 80),
+      year: compactText(data.data.date.hijri.year, 20),
+    } : null,
+    provider: "aladhan",
+    note: "Prayer times are calculated; a local mosque or official authority may publish tuned times.",
+  };
+}
+
+function localLifeHijriDate(args) {
+  const d = new Date(`${args.date}T12:00:00Z`);
+  if (!Number.isFinite(d.getTime())) throw new SandPlanError("BAD_LOCAL_LIFE_DATE", "Invalid Gregorian date");
+  const fmt = new Intl.DateTimeFormat("ar-SA-u-ca-islamic-umalqura", { timeZone: TZ, weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const numeric = new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  const parts = Object.fromEntries(numeric.formatToParts(d).filter((x) => x.type !== "literal" && x.type !== "era").map((x) => [x.type, x.value]));
+  return {
+    gregorian: args.date,
+    hijri: `${parts.year}-${parts.month}-${parts.day}`,
+    formatted_ar: fmt.format(d),
+    calendar: "islamic-umalqura",
+    note: "Hijri calendar is computed with Umm al-Qura and may differ by one day from official moon-sighting announcements in Egypt.",
+  };
+}
+
+async function egyptPublicHolidays(args) {
+  const response = await externalFetch("nager_egypt_holidays", `https://date.nager.at/api/v3/PublicHolidays/${args.year}/EG`, { headers: { accept: "application/json", "user-agent": "SAND-ONE/1.0" } });
+  if (!response.ok) throw new SandHttpError(`Egypt holidays HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => null);
+  if (!Array.isArray(data)) throw new SandHttpError("Egypt holidays payload invalid", 502);
+  const holidays = data.map((h) => ({
+    date: compactText(h?.date, 20),
+    local_name: compactText(h?.localName, 240),
+    english_name: compactText(h?.name, 240),
+    types: Array.isArray(h?.types) ? h.types.map((x) => compactText(x, 80)).filter(Boolean) : [],
+    global: Boolean(h?.global),
+  })).filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.date)).sort((a,b) => a.date.localeCompare(b.date));
+  if (!holidays.length) throw new SandHttpError("Egypt holidays returned no usable dates", 502);
+  return { year: args.year, country: "EG", holidays, provider: "nager_date", note: "Government substitutions and moon-sighting based dates can change; use the latest official Egyptian announcement for legal certainty." };
+}
+
+function renderLocalLifeResult(step, result) {
+  if (step.op === "prayer.times") {
+    const p = result.prayers;
+    const where = result.location?.city || (result.location?.latitude !== null ? `${result.location.latitude}, ${result.location.longitude}` : "Cairo");
+    return [`🕌 مواقيت الصلاة — ${where} — ${result.date}`, `الفجر ${p.fajr}`, `الشروق ${p.sunrise}`, `الظهر ${p.dhuhr}`, `العصر ${p.asr}`, `المغرب ${p.maghrib}`, `العشاء ${p.isha}`].join("\n");
+  }
+  if (step.op === "hijri.date") return `🌙 ${result.formatted_ar}\nالموافق ${result.gregorian}`;
+  if (step.op === "egypt.holidays") {
+    return [`🇪🇬 الإجازات الرسمية في مصر ${result.year}:`, ...result.holidays.slice(0,30).map((h) => `${h.date} — ${h.local_name || h.english_name}`)].join("\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  return "";
+}
+
+async function executeLocalLifePlan(env, { plan }) {
+  const outputs = [];
+  let reply = "";
+  for (const step of plan.steps) {
+    let result;
+    if (step.op === "prayer.times") result = await localLifePrayerTimes(step.args);
+    else if (step.op === "hijri.date") result = localLifeHijriDate(step.args);
+    else if (step.op === "egypt.holidays") result = await egyptPublicHolidays(step.args);
+    else throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Local Life operation: ${step.op}`);
+    outputs.push({ op: step.op, result });
+    reply = renderLocalLifeResult(step, result) || reply;
+  }
+  return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) };
 }

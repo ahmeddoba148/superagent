@@ -1,4 +1,0 @@
-READY
-version=1.0.0-dev.6
-bot=@voda2insta_bot
-worker=https://sand-one-dev6-staging.ahmeddoba91.workers.dev
