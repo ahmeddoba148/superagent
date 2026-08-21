@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      OKEY: ${{ secrets.OMNIAI_API_KEY }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +35,8 @@ jobs:
             'nvidia::z-ai/glm-5.2',
             'nvidia::deepseek-ai/deepseek-v4-flash',
             'nvidia::stepfun-ai/step-3.7-flash',
-            'nvidia::mistralai/mistral-large-3-675b-instruct-2512',
+            'nvidia::mistralai/mistral-small-4-119b-2603',
+            'nvidia::nvidia/nemotron-3-nano-30b-a3b',
             'openrouter::nvidia/nemotron-3-super-120b-a12b:free',
             'openrouter::nvidia/nemotron-3-ultra-550b-a55b:free',
             'openrouter::google/gemma-4-31b-it:free',
@@ -82,4 +83,5 @@ jobs:
           git add -- tools/sand-one-ci/model-candidate-probe-result.txt
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'SAND Core: record replacement model probe'
+          git pull --rebase --autostash origin sand-one-1.0
           git push origin HEAD:sand-one-1.0
