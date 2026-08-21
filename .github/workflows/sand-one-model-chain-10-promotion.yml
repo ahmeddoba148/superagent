@@ -1,4 +1,4 @@
-name: SAND ONE 10-Model Chain Promotion
+name: SAND ONE Memory + Failover Reliability Promotion
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: sand-one-model-chain-10-promotion
+  group: sand-one-memory-failover-promotion
   cancel-in-progress: false
 
 jobs:
@@ -27,52 +27,82 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Optimize failover order and budget
+      - name: Patch memory semantics and mixed failover classification
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          old_chain = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_1" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_2" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_4" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_5" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_6" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_7" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),\n]);'''
+          current_chain = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_1" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_2" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_4" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_5" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_6" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_7" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),\n]);'''
 
-          new_chain = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_1" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_2" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_3" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_4" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_5" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_6" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_7" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),\n]);'''
-
-          old_budget = 'const AI_TOTAL_BUDGET_MS = 12_000;'
-          new_budget = 'const AI_TOTAL_BUDGET_MS = 18_000;'
+          improved_chain = '''const AI_MODELS = Object.freeze([\n  Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),\n  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_1" }),\n  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_2" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_3" }),\n  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_4" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_5" }),\n  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_6" }),\n  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_7" }),\n  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_8" }),\n  Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),\n]);'''
 
           for name in ['sand_one/runtime/part00.js.txt', 'sand_v2/source_parts/part00.js.txt']:
               p = Path(name)
               s = p.read_text()
-              if s.count(old_chain) != 1:
-                  raise SystemExit(f'{name}: expected current model chain exactly once, got {s.count(old_chain)}')
-              if s.count(old_budget) != 1:
-                  raise SystemExit(f'{name}: expected 12s AI budget exactly once, got {s.count(old_budget)}')
-              s = s.replace(old_chain, new_chain).replace(old_budget, new_budget)
-              p.write_text(s)
+              if s.count(current_chain) != 1:
+                  raise SystemExit(f'{name}: expected current model chain once, got {s.count(current_chain)}')
+              p.write_text(s.replace(current_chain, improved_chain))
+
+          memory_anchor = '    "Memory upsert args contain subject, predicate, value, and optional confidence, sensitivity, expires_at.",\n'
+          memory_rules = (
+              memory_anchor
+              + '    "Durable personal facts that the user explicitly wants remembered belong in memory.upsert, not object.patch, focus changes, notes, or unrelated active objects. Memory is independent from the current object focus.",\n'
+              + '    "When recalling a stored fact, answer from workspace memories with effect answer and no mutation unless the user also asks to change or forget that memory. Do not patch an active object merely because it is focused.",\n'
+              + '    "A request to remember a personal fact must use a real memory.upsert action; a mutate plan that only patches an unrelated object is invalid for that semantic goal.",\n'
+          )
+          for name in ['sand_one/runtime/part06.js.txt', 'sand_v2/source_parts/part03.js.txt']:
+              p = Path(name)
+              s = p.read_text()
+              if s.count(memory_anchor) != 1:
+                  raise SystemExit(f'{name}: expected memory anchor once, got {s.count(memory_anchor)}')
+              p.write_text(s.replace(memory_anchor, memory_rules))
+
+          old_classifier = '''  let code = "AI_UNAVAILABLE";\n  if (/http_401|http_403/.test(joined)) code = "AI_AUTH";\n  else if (/http_429/.test(joined)) code = "AI_RATE_LIMIT";\n  else if (/http_5\\d\\d/.test(joined)) code = "AI_UPSTREAM";\n  else if (/timeout/.test(joined)) code = "AI_TIMEOUT";'''
+          new_classifier = '''  const failureCodes = failures.map((failure) => failure.slice(failure.lastIndexOf(":") + 1));\n  const hasFailureCode = (predicate) => failureCodes.some(predicate);\n  const allFailureCodes = (predicate) => failureCodes.length > 0 && failureCodes.every(predicate);\n  let code = "AI_UNAVAILABLE";\n  if (hasFailureCode((failureCode) => failureCode === "http_401" || failureCode === "http_403")) code = "AI_AUTH";\n  else if (allFailureCodes((failureCode) => failureCode === "http_429")) code = "AI_RATE_LIMIT";\n  else if (hasFailureCode((failureCode) => failureCode === "timeout")) code = "AI_TIMEOUT";\n  else if (hasFailureCode((failureCode) => /^http_5\\d\\d$/.test(failureCode))) code = "AI_UPSTREAM";'''
+          for name in ['sand_one/runtime/part07.js.txt', 'sand_v2/source_parts/part03.js.txt']:
+              p = Path(name)
+              s = p.read_text()
+              if s.count(old_classifier) != 1:
+                  raise SystemExit(f'{name}: expected old classifier once, got {s.count(old_classifier)}')
+              p.write_text(s.replace(old_classifier, new_classifier))
+
+          gate = Path('sand_v2/live_gate.mjs')
+          s = gate.read_text()
+          old_pace = 'const TURN_PACE_MS = 65_000;'
+          new_pace = 'const TURN_PACE_MS = 30_000;'
+          if s.count(old_pace) != 1:
+              raise SystemExit(f'live_gate: expected old pace once, got {s.count(old_pace)}')
+          gate.write_text(s.replace(old_pace, new_pace))
           PY
 
       - name: Static and type verification
         run: |
           set -euo pipefail
-          for f in sand_one/runtime/part00.js.txt sand_v2/source_parts/part00.js.txt; do
-            grep -Fq 'const AI_TOTAL_BUDGET_MS = 18_000;' "$f"
-            grep -Fq 'nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_1"' "$f"
-            grep -Fq 'nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_3"' "$f"
-          done
+          grep -Fq 'gemini::gemini-3.6-flash", role: "fallback_1' sand_one/runtime/part00.js.txt
+          grep -Fq 'gemini::gemini-3.6-flash", role: "fallback_1' sand_v2/source_parts/part00.js.txt
+          grep -Fq 'Durable personal facts that the user explicitly wants remembered belong in memory.upsert' sand_one/runtime/part06.js.txt
+          grep -Fq 'Durable personal facts that the user explicitly wants remembered belong in memory.upsert' sand_v2/source_parts/part03.js.txt
+          grep -Fq 'allFailureCodes((failureCode) => failureCode === "http_429")' sand_one/runtime/part07.js.txt
+          grep -Fq 'allFailureCodes((failureCode) => failureCode === "http_429")' sand_v2/source_parts/part03.js.txt
+          grep -Fq 'const TURN_PACE_MS = 30_000;' sand_v2/live_gate.mjs
+
           node sand_v2/assemble.mjs
           node --check SAND_CORE_V2.js
-          cat sand_one/runtime/part*.js.txt > SAND_ONE_CHAIN_TEST.js
-          node --check SAND_ONE_CHAIN_TEST.js
-          npm install --no-save typescript@5.8.3 >/dev/null
-          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","SAND_ONE_CHAIN_TEST.js"]}' > tsconfig.model-chain.json
-          npx tsc -p tsconfig.model-chain.json --pretty false
+          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_TEST.js
+          node --check /tmp/SAND_ONE_TEST.js
+          node --check sand_v2/live_gate.mjs
 
-      - name: Commit verified runtime failover fix
+          npm install --no-save typescript@5.8.3 >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","/tmp/SAND_ONE_TEST.js"]}' > /tmp/tsconfig.reliability.json
+          npx tsc -p /tmp/tsconfig.reliability.json --pretty false
+
+      - name: Commit verified reliability fix
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add sand_one/runtime/part00.js.txt sand_v2/source_parts/part00.js.txt
+          git add sand_one/runtime/part00.js.txt sand_one/runtime/part06.js.txt sand_one/runtime/part07.js.txt sand_v2/source_parts/part00.js.txt sand_v2/source_parts/part03.js.txt sand_v2/live_gate.mjs
           git diff --cached --check
-          git commit -m 'SAND Core: make 10-model failover reachable'
+          git commit -m 'SAND Core: harden memory semantics and mixed failover'
           git push origin HEAD:sand-one-1.0
