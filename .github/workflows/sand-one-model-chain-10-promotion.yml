@@ -89,13 +89,13 @@ jobs:
 
           node sand_v2/assemble.mjs
           node --check SAND_CORE_V2.js
-          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_TEST.js
-          node --check /tmp/SAND_ONE_TEST.js
+          cat sand_one/runtime/part*.js.txt > SAND_ONE_TEST.js
+          node --check SAND_ONE_TEST.js
           node --check sand_v2/live_gate.mjs
 
           npm install --no-save typescript@5.8.3 >/dev/null
-          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","/tmp/SAND_ONE_TEST.js"]}' > /tmp/tsconfig.reliability.json
-          npx tsc -p /tmp/tsconfig.reliability.json --pretty false
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","SAND_ONE_TEST.js"]}' > tsconfig.reliability.json
+          npx tsc -p tsconfig.reliability.json --pretty false
 
       - name: Commit verified reliability fix
         run: |
