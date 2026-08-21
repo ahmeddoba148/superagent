@@ -1,0 +1,75 @@
+name: SAND ONE Rate Limit Retry Fix
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - '.github/workflows/sand-one-rate-limit-retry-fix.yml'
+      - 'tools/sand-one-rate-limit-retry-trigger.txt'
+permissions:
+  contents: write
+concurrency:
+  group: sand-one-rate-limit-retry-fix
+  cancel-in-progress: false
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sand-one-1.0
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Apply exact retry policy fix
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          old = '''  if (isTransientError(error) && attempts < INBOX_TRANSIENT_MAX_ATTEMPTS) {
+              const delay = Math.min(60_000, 1200 * 2 ** Math.max(0, attempts - 1));'''
+          new = '''  if (isTransientError(error) && attempts < INBOX_TRANSIENT_MAX_ATTEMPTS) {
+              const rateLimited =
+                (error instanceof SandAiChainError && error.code === "AI_RATE_LIMIT") ||
+                (error instanceof SandHttpError && error.httpStatus === 429);
+              const delay = rateLimited
+                ? Math.min(120_000, 75_000 + Math.max(0, attempts - 1) * 15_000)
+                : Math.min(30_000, 2500 * 2 ** Math.max(0, attempts - 1));'''
+          for name in ['sand_one/runtime/part03.js.txt','sand_v2/source_parts/part02.js.txt']:
+              p=Path(name); s=p.read_text()
+              if s.count(old) != 1: raise SystemExit(f'{name}: expected exact retry block once, got {s.count(old)}')
+              p.write_text(s.replace(old,new))
+          p=Path('sand_v2/live_gate_once.mjs'); s=p.read_text()
+          old_wait='for (let i = 0; i < 55; i++) {'
+          if s.count(old_wait) != 1: raise SystemExit('live_gate_once wait loop anchor mismatch')
+          p.write_text(s.replace(old_wait,'for (let i = 0; i < 220; i++) {'))
+          p=Path('sand_v2/live_gate.mjs'); s=p.read_text()
+          if s.count('const MAX_ATTEMPTS = 3;') != 1: raise SystemExit('wrapper attempts anchor mismatch')
+          p.write_text(s.replace('const MAX_ATTEMPTS = 3;','const MAX_ATTEMPTS = 1;'))
+          PY
+      - name: Verify exact sources
+        run: |
+          set -euo pipefail
+          grep -Fq '75_000 + Math.max(0, attempts - 1) * 15_000' sand_one/runtime/part03.js.txt
+          grep -Fq '75_000 + Math.max(0, attempts - 1) * 15_000' sand_v2/source_parts/part02.js.txt
+          grep -Fq 'for (let i = 0; i < 220; i++) {' sand_v2/live_gate_once.mjs
+          grep -Fq 'const MAX_ATTEMPTS = 1;' sand_v2/live_gate.mjs
+          node sand_v2/assemble.mjs
+          node --check SAND_CORE_V2.js
+          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_1.0.js
+          node --check /tmp/SAND_ONE_1.0.js
+      - name: checkJs zero
+        run: |
+          set -euo pipefail
+          npm install --no-save typescript@5.8.3 >/dev/null
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","/tmp/SAND_ONE_1.0.js"]}' > /tmp/tsconfig.json
+          npx tsc -p /tmp/tsconfig.json --pretty false
+      - name: Commit verified fix
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add sand_one/runtime/part03.js.txt sand_v2/source_parts/part02.js.txt sand_v2/live_gate_once.mjs sand_v2/live_gate.mjs
+          git diff --cached --check
+          git commit -m 'SAND Core reliability: respect provider rate-limit cooldown'
+          git push origin HEAD:sand-one-1.0
