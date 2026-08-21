@@ -1,0 +1,132 @@
+name: SAND ONE Production Deploy V2
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - '.github/workflows/sand-one-production-deploy-v2.yml'
+permissions:
+  contents: write
+concurrency:
+  group: sand-one-production-deploy-v2
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TARGET_ACCOUNT_ID: 8b619c3555c9bd3068c434ec2cd63785
+      WORKER_NAME: superagent
+      PROD_URL: https://superagent.ahmeddoba91.workers.dev
+      CERTIFIED_VERSION: 1.0.0-dev.6
+      CERTIFIED_SHA256: 17204a5592cc4b6e0700dd4d39d6bcfeafb9c11bfef399cdac36637a45604ea6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sand-one-1.0
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Verify certified source and target
+        id: certified
+        run: |
+          set -euo pipefail
+          [ "$CLOUDFLARE_ACCOUNT_ID" = "$TARGET_ACCOUNT_ID" ]
+          actual=$(sha256sum SAND_ONE_1.0.js | awk '{print $1}')
+          [ "$actual" = "$CERTIFIED_SHA256" ]
+          grep -Fq "const APP_VERSION = \"$CERTIFIED_VERSION\"" SAND_ONE_1.0.js
+          node --check SAND_ONE_1.0.js
+      - name: Install Wrangler
+        run: npm install --no-save wrangler@latest >/dev/null
+      - name: Read production bindings safely
+        id: snapshot
+        run: |
+          set -euo pipefail
+          npx wrangler d1 list --json > /tmp/d1.json
+          curl -fsS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/settings" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" > /tmp/settings.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const s=JSON.parse(fs.readFileSync('/tmp/settings.json','utf8'));
+          if(!s.success) throw Error('settings read failed');
+          const b=s.result?.bindings||[];
+          const allowed=new Set(['secret_text','plain_text','d1','service','version_metadata']);
+          const bad=b.filter(x=>!allowed.has(x.type));
+          if(bad.length) throw Error('unexpected bindings: '+bad.map(x=>x.name+':'+x.type).join(','));
+          const db=b.find(x=>x.type==='d1'&&x.name==='DB');
+          if(!db) throw Error('DB binding missing');
+          const id=db.id||db.database_id;
+          const list=JSON.parse(fs.readFileSync('/tmp/d1.json','utf8'));
+          const row=list.find(x=>(x.uuid||x.id)===id);
+          if(!row?.name) throw Error('D1 name unresolved');
+          const services=b.filter(x=>x.type==='service').map(x=>({binding:x.name,service:x.service,...(x.environment?{environment:x.environment}:{})}));
+          if(!services.some(x=>x.binding==='OMNIAI_SERVICE')) services.push({binding:'OMNIAI_SERVICE',service:'omniai-engine'});
+          const secrets=b.filter(x=>x.type==='secret_text').map(x=>x.name);
+          const cfg={name:process.env.WORKER_NAME,main:'SAND_ONE_1.0.js',compatibility_date:'2026-08-20',compatibility_flags:['global_fetch_strictly_public'],keep_vars:true,d1_databases:[{binding:'DB',database_name:row.name,database_id:id}],services,secrets:{required:secrets}};
+          fs.writeFileSync('wrangler.production.jsonc',JSON.stringify(cfg,null,2));
+          fs.writeFileSync('/tmp/before.json',JSON.stringify(b.map(x=>({name:x.name,type:x.type}))));
+          console.log('SAFE_BINDINGS_READY db='+row.name+' services='+services.length+' secrets='+secrets.length);
+          NODE
+      - name: Deploy to superagent production
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --config wrangler.production.jsonc --keep-vars --message "SAND ONE $CERTIFIED_VERSION certified 14/14"
+      - name: Verify bindings after deploy
+        id: bindings
+        run: |
+          set -euo pipefail
+          curl -fsS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/settings" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" > /tmp/after.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const before=JSON.parse(fs.readFileSync('/tmp/before.json','utf8'));
+          const s=JSON.parse(fs.readFileSync('/tmp/after.json','utf8'));
+          if(!s.success) throw Error('post settings read failed');
+          const keys=new Set((s.result?.bindings||[]).map(x=>x.name+':'+x.type));
+          const missing=before.filter(x=>!keys.has(x.name+':'+x.type));
+          if(missing.length) throw Error('lost bindings: '+missing.map(x=>x.name+':'+x.type).join(','));
+          if(!keys.has('DB:d1')||!keys.has('OMNIAI_SERVICE:service')) throw Error('required binding missing');
+          NODE
+      - name: Verify live health
+        id: health
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in {1..30}; do
+            code=$(curl -sS -o /tmp/health -w '%{http_code}' "$PROD_URL/health" || true)
+            if [ "$code" = 200 ] && node - <<'NODE'
+          const fs=require('fs');
+          try{const x=JSON.parse(fs.readFileSync('/tmp/health','utf8'));process.exit(x.ok===true&&x.version===process.env.CERTIFIED_VERSION&&x.semantic_routing===true&&x.keyword_routing===false?0:1)}catch{process.exit(1)}
+          NODE
+            then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" = 1 ]
+          cat /tmp/health
+      - name: Roll back if post-deploy verification fails
+        id: rollback
+        if: failure() && steps.deploy.outcome == 'success'
+        run: npx wrangler rollback --name "$WORKER_NAME" --message "Automatic rollback after failed SAND ONE production verification"
+      - name: Record result
+        if: always()
+        env:
+          CERTIFIED_OUTCOME: ${{ steps.certified.outcome }}
+          SNAPSHOT_OUTCOME: ${{ steps.snapshot.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          BINDINGS_OUTCOME: ${{ steps.bindings.outcome }}
+          HEALTH_OUTCOME: ${{ steps.health.outcome }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git pull --rebase origin sand-one-1.0
+          node - <<'NODE'
+          const fs=require('fs');let h={};try{h=JSON.parse(fs.readFileSync('/tmp/health','utf8'))}catch{}
+          const deployed=process.env.DEPLOY_OUTCOME==='success'&&process.env.BINDINGS_OUTCOME==='success'&&process.env.HEALTH_OUTCOME==='success';
+          const o={checked_at:new Date().toISOString(),run_id:process.env.RUN_ID,target_worker:process.env.WORKER_NAME,target_url:process.env.PROD_URL,expected_version:process.env.CERTIFIED_VERSION,certified_sha256:process.env.CERTIFIED_SHA256,deployed,outcomes:{certified:process.env.CERTIFIED_OUTCOME,snapshot:process.env.SNAPSHOT_OUTCOME,deploy:process.env.DEPLOY_OUTCOME,bindings:process.env.BINDINGS_OUTCOME,health:process.env.HEALTH_OUTCOME,rollback:process.env.ROLLBACK_OUTCOME},observed:{ok:h.ok??null,service:h.service??null,version:h.version??null,semantic_routing:h.semantic_routing??null,keyword_routing:h.keyword_routing??null}};
+          fs.writeFileSync('tools/sand-one-production-deploy-result.json',JSON.stringify(o,null,2)+'\n');
+          NODE
+          git config user.name 'SAND ONE Production Deploy'
+          git config user.email 'actions@users.noreply.github.com'
+          git add tools/sand-one-production-deploy-result.json
+          if ! git diff --cached --quiet; then git commit -m 'SAND ONE: record production deploy result'; git push origin HEAD:sand-one-1.0; fi
