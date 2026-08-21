@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: sand-one-production-deploy
@@ -30,12 +30,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: sand-one-1.0
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Verify exact certified runtime and target account
+        id: certified
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
@@ -49,12 +51,15 @@ jobs:
           echo "CERTIFIED_RUNTIME_OK sha256=$actual"
 
       - name: Install Wrangler
+        id: wrangler
         run: npm install --no-save wrangler@latest >/dev/null
 
-      - name: Snapshot current production deployment and bindings
+      - name: Snapshot production and build exact binding config
+        id: snapshot
         run: |
           set -euo pipefail
           npx wrangler deployments list --name "$WORKER_NAME" --json > /tmp/deployments-before.json
+          npx wrangler d1 list --json > /tmp/d1-list.json
           curl -fsS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/settings" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" > /tmp/settings-before.json
           node - <<'NODE'
@@ -65,11 +70,13 @@ jobs:
           const allowed=new Set(['secret_text','plain_text','d1','service','version_metadata']);
           const unexpected=bindings.filter(b=>!allowed.has(b.type));
           if(unexpected.length) throw new Error('Unexpected production bindings: '+unexpected.map(x=>`${x.name}:${x.type}`).join(','));
-          const d1=bindings.filter(b=>b.type==='d1');
-          const db=d1.find(b=>b.name==='DB');
+          const db=bindings.find(b=>b.type==='d1'&&b.name==='DB');
           if(!db) throw new Error('Production DB binding not found; refusing deploy');
           const dbid=db.id||db.database_id;
           if(!dbid) throw new Error('Production DB id missing; refusing deploy');
+          const d1list=JSON.parse(fs.readFileSync('/tmp/d1-list.json','utf8'));
+          const dbrow=d1list.find(x=>(x.uuid||x.id)===dbid);
+          if(!dbrow?.name) throw new Error('Production D1 database name could not be resolved; refusing deploy');
           const services=bindings.filter(b=>b.type==='service');
           const secrets=bindings.filter(b=>b.type==='secret_text').map(b=>b.name);
           const cfg={
@@ -78,14 +85,14 @@ jobs:
             compatibility_date:'2026-08-20',
             compatibility_flags:['global_fetch_strictly_public'],
             keep_vars:true,
-            d1_databases:[{binding:'DB',database_id:dbid,database_name:db.database_name||db.name||'production'}],
-            services:services.map(b=>({binding:b.name,service:b.service, ...(b.environment?{environment:b.environment}:{})})),
+            d1_databases:[{binding:'DB',database_name:dbrow.name,database_id:dbid}],
+            services:services.map(b=>({binding:b.name,service:b.service,...(b.environment?{environment:b.environment}:{})})),
             secrets:{required:secrets}
           };
           if(!cfg.services.some(x=>x.binding==='OMNIAI_SERVICE')) cfg.services.push({binding:'OMNIAI_SERVICE',service:'omniai-engine'});
           fs.writeFileSync('/tmp/wrangler.production.jsonc',JSON.stringify(cfg,null,2));
           fs.writeFileSync('/tmp/bindings-before.json',JSON.stringify(bindings.map(b=>({name:b.name,type:b.type})).sort((a,b)=>a.name.localeCompare(b.name))));
-          console.log('PRODUCTION_BINDINGS_OK d1='+d1.length+' services='+cfg.services.length+' secrets='+secrets.length);
+          console.log('PRODUCTION_BINDINGS_OK db='+dbrow.name+' services='+cfg.services.length+' secrets='+secrets.length);
           NODE
 
       - name: Deploy certified runtime to superagent production
@@ -95,6 +102,7 @@ jobs:
           npx wrangler deploy --config /tmp/wrangler.production.jsonc --keep-vars --message "SAND ONE $CERTIFIED_VERSION certified 14/14" | tee /tmp/deploy.log
 
       - name: Verify production bindings preserved
+        id: bindings
         run: |
           set -euo pipefail
           curl -fsS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/settings" \
@@ -114,6 +122,7 @@ jobs:
           NODE
 
       - name: Verify live production health
+        id: health
         run: |
           set -euo pipefail
           ok=0
@@ -137,9 +146,49 @@ jobs:
           cat /tmp/health
           echo 'SAND_ONE_PRODUCTION_DEPLOY_GREEN'
 
-      - name: Automatic rollback on failed verification
+      - name: Automatic rollback on failed post-deploy verification
+        id: rollback
         if: failure() && steps.deploy.outcome == 'success'
         run: |
-          set +e
-          echo 'Verification failed after deploy; rolling back to previous production version.'
+          set -euo pipefail
           npx wrangler rollback --name "$WORKER_NAME" --message "Automatic rollback after failed SAND ONE production verification"
+
+      - name: Record production deploy result
+        if: always()
+        env:
+          CERTIFIED_OUTCOME: ${{ steps.certified.outcome }}
+          SNAPSHOT_OUTCOME: ${{ steps.snapshot.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          BINDINGS_OUTCOME: ${{ steps.bindings.outcome }}
+          HEALTH_OUTCOME: ${{ steps.health.outcome }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git pull --rebase origin sand-one-1.0
+          node - <<'NODE'
+          const fs=require('fs');
+          let h={};try{h=JSON.parse(fs.readFileSync('/tmp/health','utf8'))}catch{}
+          const success=process.env.DEPLOY_OUTCOME==='success'&&process.env.BINDINGS_OUTCOME==='success'&&process.env.HEALTH_OUTCOME==='success';
+          const out={
+            checked_at:new Date().toISOString(),
+            run_id:process.env.RUN_ID,
+            run_sha:process.env.RUN_SHA,
+            target_worker:process.env.WORKER_NAME,
+            target_url:process.env.PROD_URL,
+            expected_version:process.env.CERTIFIED_VERSION,
+            certified_sha256:process.env.CERTIFIED_SHA256,
+            deployed:success,
+            outcomes:{certified:process.env.CERTIFIED_OUTCOME,snapshot:process.env.SNAPSHOT_OUTCOME,deploy:process.env.DEPLOY_OUTCOME,bindings:process.env.BINDINGS_OUTCOME,health:process.env.HEALTH_OUTCOME,rollback:process.env.ROLLBACK_OUTCOME},
+            observed:{ok:h.ok??null,service:h.service??null,version:h.version??null,semantic_routing:h.semantic_routing??null,keyword_routing:h.keyword_routing??null}
+          };
+          fs.mkdirSync('tools',{recursive:true});
+          fs.writeFileSync('tools/sand-one-production-deploy-result.json',JSON.stringify(out,null,2)+'\n');
+          NODE
+          git config user.name 'SAND ONE Production Deploy'
+          git config user.email 'actions@users.noreply.github.com'
+          git add tools/sand-one-production-deploy-result.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "SAND ONE: record production deploy result"
+          git push origin HEAD:sand-one-1.0
