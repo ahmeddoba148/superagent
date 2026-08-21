@@ -1,0 +1,25 @@
+{
+  "checked_at": "2026-08-21T02:18:35.551Z",
+  "run_id": "32439377101",
+  "run_sha": "562ef8c92b7500c2534ae82af286a79036889e1e",
+  "target_worker": "superagent",
+  "target_url": "https://superagent.ahmeddoba91.workers.dev",
+  "expected_version": "1.0.0-dev.6",
+  "certified_sha256": "17204a5592cc4b6e0700dd4d39d6bcfeafb9c11bfef399cdac36637a45604ea6",
+  "deployed": false,
+  "outcomes": {
+    "certified": "success",
+    "snapshot": "success",
+    "deploy": "failure",
+    "bindings": "skipped",
+    "health": "skipped",
+    "rollback": "skipped"
+  },
+  "observed": {
+    "ok": null,
+    "service": null,
+    "version": null,
+    "semantic_routing": null,
+    "keyword_routing": null
+  }
+}
