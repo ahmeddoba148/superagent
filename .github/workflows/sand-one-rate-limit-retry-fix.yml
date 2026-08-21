@@ -56,14 +56,15 @@ jobs:
           grep -Fq 'const MAX_ATTEMPTS = 1;' sand_v2/live_gate.mjs
           node sand_v2/assemble.mjs
           node --check SAND_CORE_V2.js
-          cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_1.0.js
-          node --check /tmp/SAND_ONE_1.0.js
+          cat sand_one/runtime/part*.js.txt > SAND_ONE_CHECK.js
+          node --check SAND_ONE_CHECK.js
       - name: checkJs zero
         run: |
           set -euo pipefail
           npm install --no-save typescript@5.8.3 >/dev/null
-          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","/tmp/SAND_ONE_1.0.js"]}' > /tmp/tsconfig.json
-          npx tsc -p /tmp/tsconfig.json --pretty false
+          printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js","SAND_ONE_CHECK.js"]}' > tsconfig.cooldown.json
+          npx tsc -p tsconfig.cooldown.json --pretty false
+          rm -f SAND_ONE_CHECK.js tsconfig.cooldown.json
       - name: Commit verified fix
         run: |
           set -euo pipefail
