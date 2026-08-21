@@ -1,0 +1,198 @@
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .filter((x) => x.type !== "literal")
+      .map((x) => [x.type, x.value]),
+  );
+  const localAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return Math.round((localAsUtc - date.getTime()) / 60000);
+}
+
+function cairoLocalToUtc(localMinute) {
+  const s = normalizeLocalMinute(localMinute);
+  if (!s) return null;
+  const [datePart, timePart] = s.split("T");
+  const [y, mo, d] = datePart.split("-").map(Number);
+  const [h, mi] = timePart.split(":").map(Number);
+  const wallUtc = Date.UTC(y, mo - 1, d, h, mi, 0);
+  let guess = new Date(wallUtc);
+  for (let i = 0; i < 3; i += 1) {
+    const offset = tzOffsetMinutesAt(guess, TZ);
+    guess = new Date(wallUtc - offset * 60000);
+  }
+  const verify = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(guess).replace(", ", "T");
+  if (!verify.startsWith(`${datePart}T${timePart}`)) return null;
+  return guess.toISOString();
+}
+
+async function upsertReminderForObject(env, { chatId, objectId, title, remindAtUtc, mode, sourceUpdateId }) {
+  const existing = await env.DB.prepare(`SELECT id FROM ${TABLES.reminders}
+    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain') LIMIT 1`)
+    .bind(chatId, objectId)
+    .first();
+  const at = nowIso();
+  if (existing?.id) {
+    await env.DB.prepare(`UPDATE ${TABLES.reminders}
+      SET title=?,remind_at_utc=?,timezone=?,mode=?,status='pending',source_update_id=?,telegram_message_id=NULL,updated_at=?,sent_at=NULL
+      WHERE id=?`)
+      .bind(title, remindAtUtc, TZ, mode, sourceUpdateId, at, existing.id)
+      .run();
+    return String(existing.id);
+  }
+  const id = randomId("rem");
+  await env.DB.prepare(`INSERT INTO ${TABLES.reminders}
+    (id,chat_id,object_id,title,remind_at_utc,timezone,mode,status,source_update_id,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,'pending',?,?,?)`)
+    .bind(id, chatId, objectId, title, remindAtUtc, TZ, mode, sourceUpdateId, at, at)
+    .run();
+  return id;
+}
+
+async function cancelReminderForObject(env, chatId, objectId) {
+  await env.DB.prepare(`UPDATE ${TABLES.reminders}
+    SET status='cancelled',updated_at=?
+    WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
+    .bind(nowIso(), chatId, objectId)
+    .run();
+}
+
+async function syncAnchoredReminderForObject(env, chatId, objectId, startLocal, sourceUpdateId) {
+  const local = normalizeLocalMinute(startLocal);
+  if (!local) return;
+  const utc = cairoLocalToUtc(local);
+  if (!utc) throw new Error("Could not resolve updated reminder time");
+  await env.DB.prepare(`UPDATE ${TABLES.reminders}
+    SET remind_at_utc=?,source_update_id=?,status='pending',telegram_message_id=NULL,updated_at=?,sent_at=NULL
+    WHERE chat_id=? AND object_id=? AND mode='at_start' AND status IN ('pending','sending','uncertain')`)
+    .bind(utc, sourceUpdateId, nowIso(), chatId, objectId)
+    .run();
+}
+// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
+
+async function telegramApi(env, method, payload) {
+  requireBinding(env, "TELEGRAM_BOT_TOKEN");
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.ok) {
+    throw new SandHttpError(`Telegram ${method} failed (${response.status}): ${JSON.stringify(data).slice(0, 500)}`, response.status);
+  }
+  return data;
+}
+
+async function deliverTextOnce(env, chatId, sourceKind, sourceId, text) {
+  const content = String(text).slice(0, 3900);
+  const hash = await textHash(content);
+  const existing = await env.DB.prepare(`SELECT id,status,text_hash,telegram_message_id,updated_at FROM ${TABLES.deliveries}
+    WHERE chat_id=? AND source_kind=? AND source_id=? LIMIT 1`)
+    .bind(chatId, sourceKind, sourceId)
+    .first();
+
+  if (existing) {
+    if (String(existing.text_hash) !== hash) throw new Error("Delivery idempotency payload mismatch");
+    const status = String(existing.status);
+    if (status === "sent" || status === "uncertain" || status === "sending") return { skipped: true, status };
+  }
+
+  const id = existing?.id ? String(existing.id) : randomId("delivery");
+  const at = nowIso();
+  if (!existing) {
+    await env.DB.prepare(`INSERT INTO ${TABLES.deliveries}
+      (id,chat_id,source_kind,source_id,text_hash,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,'pending',?,?)`)
+      .bind(id, chatId, sourceKind, sourceId, hash, at, at)
+      .run();
+  }
+
+  const claim = await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+    SET status='sending',updated_at=?,last_error=NULL
+    WHERE id=? AND status IN ('pending','failed') RETURNING id`)
+    .bind(nowIso(), id)
+    .first();
+  if (!claim) return { skipped: true, status: "busy_or_terminal" };
+
+  try {
+    const data = await telegramApi(env, "sendMessage", { chat_id: chatId, text: content });
+    const messageId = Number(data?.result?.message_id ?? 0) || null;
+    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+      SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
+      .bind(messageId, nowIso(), nowIso(), id)
+      .run();
+    return { skipped: false, status: "sent", message_id: messageId };
+  } catch (error) {
+    await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+      SET status='uncertain',last_error=?,updated_at=? WHERE id=?`)
+      .bind(safeError(error), nowIso(), id)
+      .run();
+    throw error;
+  }
+}
+
+function buildVerifiedReply(plan, execution) {
+  if (plan.clarification) return plan.clarification.question;
+  if (!execution.ok) return "حصلت مشكلة وأنا بنفذ آخر خطوة، فمش هأكدلك إن التعديل تم. حاول تاني بعد شوية.";
+  const capabilityReply = [...execution.steps].reverse().map((step) => compactText(step?.reply, AI_MAX_REPLY_CHARS)).find(Boolean);
+  if (capabilityReply) return capabilityReply;
+  const reply = compactText(plan.reply, AI_MAX_REPLY_CHARS);
+  return reply || "تمام، اتعملت ✅";
+}
+
+async function persistWorkspace(env, chatId, { goal, thread_summary, focus_object_id, open_questions }) {
+  const at = nowIso();
+  await env.DB.prepare(`INSERT INTO ${TABLES.workspaces}
+    (chat_id,goal,thread_summary,focus_object_id,open_questions_json,context_version,updated_at)
+    VALUES(?,?,?,?,?,1,?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      goal=excluded.goal,
+      thread_summary=excluded.thread_summary,
+      focus_object_id=excluded.focus_object_id,
+      open_questions_json=excluded.open_questions_json,
+      context_version=${TABLES.workspaces}.context_version+1,
+      updated_at=excluded.updated_at`)
+    .bind(chatId, goal || null, thread_summary || null, focus_object_id || null, JSON.stringify(open_questions ?? []), at)
+    .run();
+}
+
+async function pendingChats(env, limit = 20) {
+  const now = nowMs();
+  const rows = await env.DB.prepare(`SELECT DISTINCT chat_id FROM ${TABLES.inbox}
+    WHERE (status='pending' AND COALESCE(process_lease_until,0) <= ?)
+       OR (status='retry' AND COALESCE(retry_after_ms,0) <= ? AND COALESCE(process_lease_until,0) <= ?)
+       OR (status='processing' AND COALESCE(process_lease_until,0) <= ?)
+    ORDER BY chat_id LIMIT ?`)
+    .bind(now, now, now, now, clampInt(limit, 1, 100, 20))
+    .all();
+  return (rows?.results ?? []).map((row) => String(row.chat_id));
+}
+
+async function deliverDueReminders(env, limit) {
+  const rows = await env.DB.prepare(`SELECT id,chat_id,object_id,title,remind_at_utc,mode,status
+    FROM ${TABLES.reminders}
+    WHERE status='pending' AND remind_at_utc<=?
+    ORDER BY remind_at_utc ASC LIMIT ?`)
+    .bind(nowIso(), clampInt(limit, 1, 100, 30))

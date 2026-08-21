@@ -1,0 +1,90 @@
+  }
+  return {from,to,events:out.sort((a,b)=>a.start_local.localeCompare(b.start_local)).slice(0,SCHEDULE_READ_LIMIT)};
+}
+
+function scheduleDetectConflicts(events) {
+  const intervals=events.filter((e)=>scheduleLocalMinute(e.start_local)&&scheduleLocalMinute(e.end_local)&&e.end_local>e.start_local).sort((a,b)=>a.start_local.localeCompare(b.start_local));
+  const conflicts=[];
+  for(let i=0;i<intervals.length;i+=1){
+    for(let j=i+1;j<intervals.length;j+=1){
+      if(intervals[j].start_local>=intervals[i].end_local) break;
+      if(intervals[i].event_id===intervals[j].event_id && intervals[i].occurrence_local===intervals[j].occurrence_local) continue;
+      if(intervals[i].start_local<intervals[j].end_local && intervals[j].start_local<intervals[i].end_local) conflicts.push({a:intervals[i],b:intervals[j]});
+    }
+  }
+  return conflicts;
+}
+
+function scheduleFreeSlots(events,from,to,minMinutes) {
+  const start=scheduleWallMs(from), end=scheduleWallMs(to);
+  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start) return {slots:[],ignored_without_duration:0};
+  const busy=[]; let ignored=0;
+  for(const e of events){
+    if(!e.end_local){ignored+=1;continue;}
+    const a=Math.max(start,scheduleWallMs(e.start_local)), b=Math.min(end,scheduleWallMs(e.end_local));
+    if(Number.isFinite(a)&&Number.isFinite(b)&&b>a) busy.push([a,b]);
+  }
+  busy.sort((x,y)=>x[0]-y[0]);
+  const merged=[];
+  for(const x of busy){const last=merged[merged.length-1];if(last&&x[0]<=last[1])last[1]=Math.max(last[1],x[1]);else merged.push([...x]);}
+  const slots=[]; let cursor=start;
+  for(const [a,b] of merged){if(a>cursor&&(a-cursor)/60000>=minMinutes)slots.push({from_local:scheduleWallToLocal(cursor),to_local:scheduleWallToLocal(a),minutes:Math.round((a-cursor)/60000)});cursor=Math.max(cursor,b);}
+  if(end>cursor&&(end-cursor)/60000>=minMinutes)slots.push({from_local:scheduleWallToLocal(cursor),to_local:scheduleWallToLocal(end),minutes:Math.round((end-cursor)/60000)});
+  return {slots,ignored_without_duration:ignored};
+}
+
+async function scheduleRuleId(chatId,objectId){const h=await textHash(`schedule-rule:${chatId}:${objectId}`);return `sr_${h.slice(0,28)}`;}
+
+async function scheduleRuleForObject(env,chatId,objectId){const row=await env.DB.prepare(`SELECT * FROM ${TABLES.scheduleRules} WHERE chat_id=? AND object_id=? LIMIT 1`).bind(chatId,objectId).first();return scheduleRuleFromRow(row);}
+
+async function scheduleCancelPendingSignals(env,chatId,objectId,occurrence=null){
+  if(occurrence){const like=occurrence.length===10?`${occurrence}%`:occurrence;await env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='cancelled',updated_at=? WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain') AND occurrence_local LIKE ?`).bind(nowIso(),chatId,objectId,like).run();return;}
+  await env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='cancelled',updated_at=? WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`).bind(nowIso(),chatId,objectId).run();
+}
+
+async function scheduleUpsertRule(env,{chatId,objectId,sourceUpdateId,freq,anchorLocal,interval=1,weekdays=[],monthDays=[],months=[],times=[],startDate=null,endDate=null,maxOccurrences=null,durationMinutes=null,alertOffsets=[],shiftMinutes=0,status="active",pausedUntil=null,skipOccurrences=[]}){
+  const id=await scheduleRuleId(chatId,objectId), at=nowIso();
+  await env.DB.prepare(`INSERT INTO ${TABLES.scheduleRules}
+    (id,chat_id,object_id,freq,interval_n,anchor_local,weekdays_json,month_days_json,months_json,times_json,start_date_local,end_date_local,max_occurrences,duration_minutes,alert_offsets_json,shift_minutes,status,paused_until_local,skip_occurrences_json,source_update_id,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(chat_id,object_id) DO UPDATE SET
+      freq=excluded.freq,interval_n=excluded.interval_n,anchor_local=excluded.anchor_local,weekdays_json=excluded.weekdays_json,month_days_json=excluded.month_days_json,months_json=excluded.months_json,times_json=excluded.times_json,start_date_local=excluded.start_date_local,end_date_local=excluded.end_date_local,max_occurrences=excluded.max_occurrences,duration_minutes=excluded.duration_minutes,alert_offsets_json=excluded.alert_offsets_json,shift_minutes=excluded.shift_minutes,status=excluded.status,paused_until_local=excluded.paused_until_local,skip_occurrences_json=excluded.skip_occurrences_json,source_update_id=excluded.source_update_id,updated_at=excluded.updated_at`)
+    .bind(id,chatId,objectId,freq,interval,anchorLocal,JSON.stringify(weekdays),JSON.stringify(monthDays),JSON.stringify(months),JSON.stringify(times),startDate,endDate,maxOccurrences,durationMinutes,JSON.stringify(alertOffsets),shiftMinutes,status,pausedUntil,JSON.stringify(skipOccurrences),sourceUpdateId,at,at).run();
+  const verify=await scheduleRuleForObject(env,chatId,objectId);if(!verify||verify.freq!==freq||verify.status!==status)throw new Error("Schedule rule verification failed");return verify;
+}
+
+async function scheduleEnsureOnceAlertRule(env,chatId,objectId,sourceUpdateId,offsets){
+  const obj=await objectById(env,chatId,objectId);if(!obj||obj.status!=="active")throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target missing");
+  const start=scheduleLocalMinute(obj.state?.start_local);if(!start)throw new SandPlanError("SCHEDULE_START_REQUIRED","Schedule target has no start time");
+  const existing=await scheduleRuleForObject(env,chatId,objectId);
+  if(existing && existing.status!=="cancelled" && existing.freq!=="once"){
+    await env.DB.prepare(`UPDATE ${TABLES.scheduleRules} SET alert_offsets_json=?,source_update_id=?,updated_at=? WHERE id=?`).bind(JSON.stringify(offsets),sourceUpdateId,nowIso(),existing.id).run();
+    return scheduleRuleForObject(env,chatId,objectId);
+  }
+  return scheduleUpsertRule(env,{chatId,objectId,sourceUpdateId,freq:"once",anchorLocal:start,interval:1,times:[start.slice(11,16)],startDate:start.slice(0,10),durationMinutes:scheduleDurationMinutes(start,obj.state?.end_local),alertOffsets:offsets,status:"active"});
+}
+
+async function scheduleMaterializeRuleSignals(env,chatId,rule,objectTitle,nowLocal=scheduleNowLocalMinute()){
+  if(!rule||rule.status==="cancelled"||!Array.isArray(rule.alert_offsets)||!rule.alert_offsets.length)return 0;
+  if(rule.status==="paused"&&!rule.paused_until_local)return 0;
+  const occurrenceTo=scheduleShiftLocalMinute(nowLocal,SCHEDULE_SIGNAL_HORIZON_MINUTES+10_080);
+  if(!occurrenceTo)return 0;
+  const occurrences=scheduleProjectRule(rule,objectTitle,scheduleShiftLocalMinute(nowLocal,-10_080) || nowLocal,occurrenceTo,1000);
+  const now=nowMs(), future=now+7*24*60*60*1000; let inserted=0;
+  for(const occ of occurrences){
+    for(const offset of rule.alert_offsets){
+      const fireLocal=scheduleShiftLocalMinute(occ.start_local,-Number(offset));
+      const fireUtc=fireLocal?cairoLocalToUtc(fireLocal):null;if(!fireUtc)continue;
+      const fireMs=new Date(fireUtc).getTime();if(fireMs<now-SCHEDULE_SIGNAL_STALE_GRACE_MS||fireMs>future)continue;
+      const h=await textHash(`${rule.id}:${occ.occurrence_local}:${offset}`), id=`ss_${h.slice(0,30)}`, at=nowIso();
+      const res=await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.scheduleSignals}(id,chat_id,rule_id,object_id,occurrence_local,offset_minutes,fire_at_utc,title,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`).bind(id,chatId,rule.id,rule.object_id,occ.occurrence_local,offset,fireUtc,objectTitle,at,at).run();
+      if(Number(res?.meta?.changes??0)>0)inserted+=1;
+    }
+  }
+  return inserted;
+}
+
+async function processDueScheduleSignals(env,limit=40){
+  const nowLocal=scheduleNowLocalMinute();
+  await env.DB.prepare(`UPDATE ${TABLES.scheduleRules} SET status='active',paused_until_local=NULL,updated_at=? WHERE status='paused' AND paused_until_local IS NOT NULL AND paused_until_local<=?`).bind(nowIso(),nowLocal).run();
+  const rulesResult=await env.DB.prepare(`SELECT r.*,o.title,o.status AS object_status FROM ${TABLES.scheduleRules} r JOIN ${TABLES.objects} o ON o.id=r.object_id AND o.chat_id=r.chat_id WHERE r.status IN ('active','paused') AND o.status='active' ORDER BY r.updated_at DESC LIMIT 160`).all();

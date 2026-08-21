@@ -1,0 +1,58 @@
+  for(const row of rulesResult?.results??[]){const rule=scheduleRuleFromRow(row);if(rule)await scheduleMaterializeRuleSignals(env,String(row.chat_id),rule,String(row.title),nowLocal);}
+  const rows=await env.DB.prepare(`SELECT id,chat_id,object_id,title,fire_at_utc FROM ${TABLES.scheduleSignals} WHERE status='pending' AND fire_at_utc<=? ORDER BY fire_at_utc ASC LIMIT ?`).bind(nowIso(),clampInt(limit,1,100,40)).all();
+  for(const row of rows?.results??[]){
+    const id=String(row.id);const claim=await env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='sending',updated_at=? WHERE id=? AND status='pending' RETURNING id`).bind(nowIso(),id).first();if(!claim)continue;
+    try{const data=await telegramApi(env,"sendMessage",{chat_id:String(row.chat_id),text:`⏰ ${String(row.title)}`.slice(0,3900)});await env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`).bind(Number(data?.result?.message_id??0)||null,nowIso(),nowIso(),id).run();}
+    catch(error){await env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='uncertain',updated_at=? WHERE id=?`).bind(nowIso(),id).run();logError("schedule_signal_delivery_uncertain",error,{signalId:id});}
+  }
+}
+
+function scheduleRenderEvents(events,label="📅 المواعيد"){
+  if(!events.length)return `${label}: مفيش مواعيد في الفترة دي.`;
+  return [label,...events.slice(0,20).map((e,i)=>`${i+1}) ${e.title} — ${e.start_local}${e.end_local?` → ${e.end_local}`:""}${e.recurring?" 🔁":""}`)].join("\n").slice(0,AI_MAX_REPLY_CHARS);
+}
+
+async function scheduleShiftObject(env,chatId,objectId,deltaMinutes,updateId){
+  const obj=await objectById(env,chatId,objectId);if(!obj||obj.status!=="active")throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target missing");
+  const oldStart=scheduleLocalMinute(obj.state?.start_local);if(!oldStart)throw new SandPlanError("SCHEDULE_START_REQUIRED","Schedule target has no start time");
+  const newStart=scheduleShiftLocalMinute(oldStart,deltaMinutes);if(!newStart)throw new Error("Schedule shift produced invalid start");
+  const oldEnd=scheduleLocalMinute(obj.state?.end_local), newEnd=oldEnd?scheduleShiftLocalMinute(oldEnd,deltaMinutes):null;
+  const merged=mergeObjectState(obj.state,{start_local:newStart,end_local:newEnd},obj.title);
+  const at=nowIso();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE ${TABLES.objects} SET title=?,state_json=?,updated_by_update=?,updated_at=? WHERE id=? AND chat_id=? AND status='active'`).bind(merged.title,JSON.stringify(merged),updateId,at,objectId,chatId),
+    env.DB.prepare(`UPDATE ${TABLES.scheduleRules} SET shift_minutes=shift_minutes+?,source_update_id=?,updated_at=? WHERE chat_id=? AND object_id=? AND status!='cancelled'`).bind(deltaMinutes,updateId,at,chatId,objectId),
+    env.DB.prepare(`UPDATE ${TABLES.scheduleSignals} SET status='cancelled',updated_at=? WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`).bind(at,chatId,objectId),
+  ]);
+  await syncAnchoredReminderForObject(env,chatId,objectId,newStart,updateId);
+  const verify=await objectById(env,chatId,objectId);if(!verify||scheduleLocalMinute(verify.state?.start_local)!==newStart)throw new Error("Schedule shift verification failed");
+  return verify;
+}
+
+async function executeSchedulePlan(env,{chatId,updateId,operationId,mainStepIndex,plan,refs}){
+  const outputs=[],created=[];let reply="";
+  for(let i=0;i<plan.steps.length;i+=1){
+    const step=plan.steps[i];
+    if(step.op==="schedule.create"){
+      const id=await stableCapabilityId("sched",operationId,mainStepIndex,i+1),state=mergeObjectState({},step.args,step.args.title),at=nowIso();
+      await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.objects}(id,chat_id,kind,title,state_json,status,created_by_update,updated_by_update,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?,?,?)`).bind(id,chatId,"commitment",state.title,JSON.stringify(state),updateId,updateId,at,at).run();
+      const verify=await objectById(env,chatId,id);if(!verify||verify.title!==state.title||scheduleLocalMinute(verify.state?.start_local)!==step.args.start_local)throw new Error("Schedule create verification failed");
+      created[i]=id;outputs.push({op:step.op,object_id:id,start_local:step.args.start_local});reply=`تمام، سجلت ${state.title} يوم ${step.args.start_local}.`;continue;
+    }
+    if(step.op==="schedule.list"||step.op==="schedule.search"||step.op==="schedule.free_time"||step.op==="schedule.conflicts"){
+      const range=step.op==="schedule.free_time"?{from:step.args.from_local,to:step.args.to_local}:scheduleResolveWindow(step.args.from_local,step.args.to_local);
+      const projected=await scheduleOccurrences(env,chatId,range.from,range.to);let events=projected.events;
+      if(step.op==="schedule.search"){const q=step.args.query.toLocaleLowerCase("ar");events=events.filter((e)=>`${e.title}`.toLocaleLowerCase("ar").includes(q));outputs.push({op:step.op,events});reply=scheduleRenderEvents(events,"🔎 نتائج المواعيد");}
+      else if(step.op==="schedule.list"){outputs.push({op:step.op,events});reply=scheduleRenderEvents(events);}
+      else if(step.op==="schedule.free_time"){const free=scheduleFreeSlots(events,range.from,range.to,step.args.min_minutes);outputs.push({op:step.op,...free});reply=free.slots.length?["🕒 الأوقات الفاضية:",...free.slots.slice(0,20).map((x)=>`${x.from_local} → ${x.to_local} (${x.minutes} دقيقة)`),free.ignored_without_duration?`ملحوظة: ${free.ignored_without_duration} موعد بدون مدة ما اتحسبش كفترة مشغولة.`:""].filter(Boolean).join("\n"):"مفيش فترة فاضية بالمُدة المطلوبة.";}
+      else {let conflicts=scheduleDetectConflicts(events);if(step.args.target){const targetId=resolveFamilyRef(step.args.target,refs,created);conflicts=conflicts.filter((c)=>c.a.event_id===targetId||c.b.event_id===targetId);}outputs.push({op:step.op,conflicts});reply=conflicts.length?["⚠️ التعارضات:",...conflicts.slice(0,20).map((c)=>`${c.a.title} (${c.a.start_local}→${c.a.end_local}) مع ${c.b.title} (${c.b.start_local}→${c.b.end_local})`)].join("\n"):"مفيش تعارضات مؤكدة في الفترة دي.";}
+      continue;
+    }
+    if(step.op==="schedule.shift"){
+      const objectId=resolveFamilyRef(step.args.target,refs,created);if(!objectId)throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target unresolved");const obj=await objectById(env,chatId,objectId);if(!obj)throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target missing");
+      const oldStart=scheduleLocalMinute(obj.state?.start_local);if(!oldStart)throw new SandPlanError("SCHEDULE_START_REQUIRED","Schedule target has no start");const delta=step.args.delta_minutes!==null?step.args.delta_minutes:Math.round((scheduleWallMs(step.args.start_local)-scheduleWallMs(oldStart))/60000);if(!Number.isFinite(delta)||!delta)throw new SandPlanError("SCHEDULE_SHIFT_ZERO","Schedule shift is zero or invalid");const verify=await scheduleShiftObject(env,chatId,objectId,delta,updateId);outputs.push({op:step.op,object_id:objectId,start_local:verify.state.start_local});reply=`تمام، اتحرك الموعد لـ ${verify.state.start_local}.`;continue;
+    }
+    if(step.op==="schedule.bulk_shift"){
+      const ids=step.args.targets.map((t)=>resolveFamilyRef(t,refs,created)).filter(Boolean);if(ids.length!==step.args.targets.length)throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Bulk shift target unresolved");const shifted=[];for(const id of ids){const verify=await scheduleShiftObject(env,chatId,id,step.args.delta_minutes,updateId);shifted.push({object_id:id,start_local:verify.state.start_local});}outputs.push({op:step.op,shifted});reply=`تمام، اتحرك ${shifted.length} موعد.`;continue;
+    }
+    const objectId=resolveFamilyRef(step.args.target,refs,created);if(!objectId)throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target unresolved");const obj=await objectById(env,chatId,objectId);if(!obj||obj.status!=="active")throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Schedule target missing");

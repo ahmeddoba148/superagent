@@ -1,0 +1,250 @@
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.inbox} (
+      update_id INTEGER PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','done','retry','failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      process_lease_until INTEGER,
+      retry_after_ms INTEGER,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_inbox_pending
+      ON ${TABLES.inbox}(status, retry_after_ms, process_lease_until, update_id)`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_inbox_chat
+      ON ${TABLES.inbox}(chat_id, status, update_id)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.chatLeases} (
+      chat_id TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      lease_until INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.chatIngress} (
+      chat_id TEXT PRIMARY KEY,
+      settle_until_ms INTEGER NOT NULL,
+      last_seen_update_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.messages} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      update_id INTEGER NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+      content TEXT NOT NULL,
+      model_id TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(chat_id, update_id, role)
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_messages_chat
+      ON ${TABLES.messages}(chat_id, id)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.aiCalls} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      update_id INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_role TEXT NOT NULL,
+      latency_ms INTEGER NOT NULL,
+      ok INTEGER NOT NULL CHECK(ok IN (0,1)),
+      http_status INTEGER,
+      error_code TEXT,
+      created_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_ai_calls_chat
+      ON ${TABLES.aiCalls}(chat_id, id)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.workspaces} (
+      chat_id TEXT PRIMARY KEY,
+      goal TEXT,
+      thread_summary TEXT,
+      focus_object_id TEXT,
+      open_questions_json TEXT NOT NULL DEFAULT '[]',
+      context_version INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.objects} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','done','archived','cancelled')),
+      created_by_update INTEGER NOT NULL,
+      updated_by_update INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_objects_chat
+      ON ${TABLES.objects}(chat_id, status, updated_at)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.memories} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      predicate TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1,
+      sensitivity TEXT NOT NULL DEFAULT 'normal',
+      expires_at TEXT,
+      source_update_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','forgotten','expired')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(chat_id, subject, predicate)
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_memories_chat
+      ON ${TABLES.memories}(chat_id, status, updated_at)`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.reminders} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      object_id TEXT,
+      title TEXT NOT NULL,
+      remind_at_utc TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'absolute' CHECK(mode IN ('absolute','at_start')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','cancelled','failed','uncertain')),
+      source_update_id INTEGER NOT NULL,
+      telegram_message_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sent_at TEXT
+    )`),
+
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sand_v2_reminders_due
+      ON ${TABLES.reminders}(status, remind_at_utc)`),
+
+    env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sand_v2_reminders_object_pending
+      ON ${TABLES.reminders}(chat_id, object_id)
+      WHERE object_id IS NOT NULL AND status IN ('pending','sending','uncertain')`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.operations} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      source_update_id INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','done','partial','failed','clarify')),
+      plan_json TEXT NOT NULL,
+      result_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT,
+      UNIQUE(chat_id, source_update_id)
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.steps} (
+      id TEXT PRIMARY KEY,
+      operation_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      action_type TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      result_json TEXT,
+      status TEXT NOT NULL CHECK(status IN ('running','done','failed','skipped')),
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(operation_id, step_index)
+    )`),
+
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS ${TABLES.deliveries} (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      text_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','sending','sent','uncertain','failed')),
+      telegram_message_id INTEGER,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sent_at TEXT,
+      UNIQUE(chat_id, source_kind, source_id)
+    )`),
+
+    env.DB.prepare(`INSERT INTO ${TABLES.meta}(key,value,updated_at)
+      VALUES('schema_version', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`)
+      .bind(DATA_SCHEMA_VERSION, at),
+  ]);
+}
+
+function telegramChatId(update) {
+  const id = update?.message?.chat?.id;
+  return id === undefined || id === null ? "" : String(id);
+}
+
+function isAllowedChat(env, chatId, update) {
+  const type = String(update?.message?.chat?.type ?? "");
+  if (type && type !== "private") return false;
+  if (truthy(env.PUBLIC_BOT)) return true;
+  const raw = String(env.ALLOWED_CHAT_ID ?? "").trim();
+  if (!raw) return true;
+  const allowed = new Set(raw.split(",").map((x) => x.trim()).filter(Boolean));
+  return allowed.has(String(chatId));
+}
+
+async function telegramWebhook(request, env, ctx) {
+  requireBinding(env, "DB");
+  requireBinding(env, "TELEGRAM_BOT_TOKEN");
+  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
+  requireBinding(env, "OMNIAI_API_KEY");
+  if (!env?.OMNIAI_BASE_URL && !env?.OMNIAI_SERVICE?.fetch) {
+    throw new Error("Missing OmniAI route: OMNIAI_BASE_URL or OMNIAI_SERVICE");
+  }
+
+  const presented = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const update = await request.json().catch((error) => {
+    logError("telegram_json", error);
+    return null;
+  });
+  if (!update || typeof update !== "object") return new Response("Bad request", { status: 400 });
+
+  const updateId = Number(update.update_id);
+  const chatId = telegramChatId(update);
+  if (!Number.isSafeInteger(updateId) || !chatId) return new Response("OK");
+  if (!isAllowedChat(env, chatId, update)) return new Response("OK");
+
+  await ensureSchema(env);
+  await persistUpdate(env, updateId, chatId, update);
+  const origin = new URL(request.url).origin;
+  ctx.waitUntil(drainChat(env, chatId, origin));
+  return new Response("OK");
+}
+
+async function internalDrain(request, env, ctx) {
+  requireBinding(env, "DB");
+  requireBinding(env, "TELEGRAM_WEBHOOK_SECRET");
+  const presented = request.headers.get("X-Sand-Internal") ?? "";
+  if (!(await secretEqual(presented, env.TELEGRAM_WEBHOOK_SECRET))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const body = await request.json().catch(() => null);
+  const chatId = String(body?.chat_id ?? "").trim();
+  if (!chatId || chatId.length > 80) return new Response("Bad request", { status: 400 });
+  await ensureSchema(env);
+  const origin = new URL(request.url).origin;
+  ctx.waitUntil(drainChat(env, chatId, origin));
+  return new Response("ACCEPTED", { status: 202 });
+}
+

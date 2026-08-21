@@ -1,0 +1,180 @@
+      if (pTop > pCurrent || (pTop === pCurrent && !rightAssociative.has(String(op)))) output.push(operators.pop());
+      else break;
+    }
+    operators.push({ type: "op", value: op });
+    previous = "operator";
+  }
+  while (operators.length) {
+    const top = operators.pop();
+    if (top.type === "paren") throw new SandPlanError("BAD_EXPRESSION", "Mismatched parentheses");
+    output.push(top);
+  }
+  /** @type {number[]} */ const stack = [];
+  for (const token of output) {
+    if (token.type === "number") {
+      stack.push(Number(token.value));
+      continue;
+    }
+    const op = String(token.value ?? "");
+    if (op === "u-") {
+      if (stack.length < 1) throw new SandPlanError("BAD_EXPRESSION", "Unary operator is missing an operand");
+      const value = Number(stack.pop());
+      const result = -value;
+      if (!Number.isFinite(result)) throw new SandPlanError("BAD_EXPRESSION", "Expression result is not finite");
+      stack.push(result);
+      continue;
+    }
+    if (stack.length < 2) throw new SandPlanError("BAD_EXPRESSION", "Operator is missing an operand");
+    const right = Number(stack.pop());
+    const left = Number(stack.pop());
+    let result;
+    if (op === "+") result = left + right;
+    else if (op === "-") result = left - right;
+    else if (op === "*") result = left * right;
+    else if (op === "/") {
+      if (right === 0) throw new SandPlanError("DIVISION_BY_ZERO", "Division by zero is not allowed");
+      result = left / right;
+    } else if (op === "%") {
+      if (right === 0) throw new SandPlanError("DIVISION_BY_ZERO", "Modulo by zero is not allowed");
+      result = left % right;
+    } else if (op === "^") result = left ** right;
+    else throw new SandPlanError("BAD_EXPRESSION", "Unsupported arithmetic operator");
+    if (!Number.isFinite(result)) throw new SandPlanError("BAD_EXPRESSION", "Expression result is not finite");
+    stack.push(result);
+  }
+  if (stack.length !== 1 || !Number.isFinite(stack[0])) throw new SandPlanError("BAD_EXPRESSION", "Expression could not be reduced to one result");
+  return stack[0];
+}
+
+function normalizeUtilityNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new SandPlanError("UTILITY_NON_FINITE", "Utility result is not finite");
+  if (Object.is(n, -0)) return 0;
+  return Number.parseFloat(n.toPrecision(12));
+}
+
+function convertTemperature(value, from, to) {
+  const temperatureUnits = new Set(["c", "f", "k"]);
+  if (!temperatureUnits.has(from) || !temperatureUnits.has(to)) throw new SandPlanError("UNIT_DIMENSION_MISMATCH", "Temperature can only be converted to another temperature unit");
+  let celsius;
+  if (from === "c") celsius = value;
+  else if (from === "f") celsius = (value - 32) * 5 / 9;
+  else celsius = value - 273.15;
+  let result;
+  if (to === "c") result = celsius;
+  else if (to === "f") result = celsius * 9 / 5 + 32;
+  else result = celsius + 273.15;
+  if (to === "k" && result < 0) throw new SandPlanError("BAD_TEMPERATURE", "Temperature cannot be below absolute zero");
+  return normalizeUtilityNumber(result);
+}
+
+function convertUtilityUnit(value, from, to) {
+  const temperatureUnits = new Set(["c", "f", "k"]);
+  if (temperatureUnits.has(from) || temperatureUnits.has(to)) return convertTemperature(value, from, to);
+  const units = /** @type {any} */ (UTILITY_UNITS);
+  const source = units[from];
+  const destination = units[to];
+  if (!source || !destination) throw new SandPlanError("UNKNOWN_UNIT", `Unsupported unit conversion: ${from} -> ${to}`);
+  if (source.dimension !== destination.dimension) throw new SandPlanError("UNIT_DIMENSION_MISMATCH", "Source and destination units measure different dimensions");
+  return normalizeUtilityNumber((value * Number(source.factor)) / Number(destination.factor));
+}
+
+function utilityZonedNow(timeZone) {
+  const zone = compactText(timeZone, 120) || TZ;
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    });
+  } catch {
+    throw new SandPlanError("BAD_TIMEZONE", "Unknown IANA timezone");
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(new Date()).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return {
+    timezone: zone,
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday ?? ""),
+    utc: nowIso(),
+  };
+}
+
+function utilityDateDiff(fromValue, toValue, unit) {
+  const fromMs = Date.parse(String(fromValue));
+  const toMs = Date.parse(String(toValue));
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw new SandPlanError("BAD_DATETIME_DIFF", "Both datetime values must be valid ISO datetimes");
+  const divisors = { seconds: 1000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 };
+  const divisor = /** @type {any} */ (divisors)[unit];
+  if (!divisor) throw new SandPlanError("BAD_DATETIME_DIFF", "Unsupported datetime difference unit");
+  return normalizeUtilityNumber((toMs - fromMs) / divisor);
+}
+
+function renderUtilityResult(step, result) {
+  if (step.op === "calculator.evaluate") return `🧮 النتيجة: ${result.value}`;
+  if (step.op === "unit.convert") return `🔢 ${result.input} ${result.from} = ${result.value} ${result.to}`;
+  if (step.op === "datetime.now") return `🕒 ${result.date} ${result.time} — ${result.timezone}`;
+  if (step.op === "datetime.diff") return `⏱️ الفرق: ${result.value} ${result.unit}`;
+  return "";
+}
+
+async function executeUtilityPlan(_env, { plan }) {
+  const outputs = [];
+  let reply = "";
+  for (const step of plan.steps) {
+    let result;
+    if (step.op === "calculator.evaluate") {
+      result = { expression: step.args.expression, value: normalizeUtilityNumber(evaluateArithmetic(step.args.expression)) };
+    } else if (step.op === "unit.convert") {
+      result = { input: step.args.value, from: step.args.from, to: step.args.to, value: convertUtilityUnit(step.args.value, step.args.from, step.args.to) };
+    } else if (step.op === "datetime.now") {
+      result = utilityZonedNow(step.args.timezone);
+    } else if (step.op === "datetime.diff") {
+      result = { from: step.args.from, to: step.args.to, unit: step.args.unit, value: utilityDateDiff(step.args.from, step.args.to, step.args.unit) };
+    } else {
+      throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Utility operation: ${step.op}`);
+    }
+    outputs.push({ op: step.op, result });
+    reply = renderUtilityResult(step, result) || reply;
+  }
+  return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) || "تمام." };
+}
+// Certified Core V2 foundation recovery — exact functions from dev2 gated source.
+
+function omniChatUrl(env) {
+  const configured = String(env?.OMNIAI_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!configured) {
+    if (env?.OMNIAI_SERVICE?.fetch) return "https://omniai.internal/v1/chat/completions";
+    throw new Error("Missing binding: OMNIAI_BASE_URL");
+  }
+  if (!/^https:\/\//i.test(configured)) throw new Error("OMNIAI_BASE_URL must use https");
+  if (/\/v1\/chat\/completions$/i.test(configured)) return configured;
+  if (/\/v1$/i.test(configured)) return `${configured}/chat/completions`;
+  return `${configured}/v1/chat/completions`;
+}
+
+function aiContent(data) {
+  const direct = data?.choices?.[0]?.message?.content;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const output = data?.output_text ?? data?.text;
+  if (typeof output === "string" && output.trim()) return output.trim();
+  return "";
+}
+
+function aiErrorCode(error) {
+  if (error?.name === "AbortError") return "timeout";
+  const message = safeError(error).toLowerCase();
+  if (message.includes("timeout") || message.includes("aborted")) return "timeout";
+  if (message.includes("empty")) return "empty_response";
+  return "network_or_runtime";
+}
+
+async function callAiChain(env, { chatId, updateId, phase, messages, temperature = 0.2, maxTokens = 1200 }) {
+  requireBinding(env, "OMNIAI_API_KEY");

@@ -1,0 +1,162 @@
+      VALUES(?,?,?,?,?,'active',?,?,?,?)`)
+      .bind(objectId, chatId, action.args.kind, state.title, JSON.stringify(state), updateId, updateId, at, at)
+      .run();
+    const verify = await objectById(env, chatId, objectId);
+    if (!verify) throw new Error("Object create verification failed");
+    return { ok: true, object_id: objectId, focus_object_id: objectId, object: verify };
+  }
+
+  if (action.type === "object.patch") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object to patch");
+    const current = await objectById(env, chatId, objectId);
+    if (!current) throw new Error("Target object no longer exists");
+    const merged = mergeObjectState(current.state, action.args.fields ?? {}, current.title);
+    await env.DB.prepare(`UPDATE ${TABLES.objects}
+      SET title=?, state_json=?, updated_by_update=?, updated_at=?
+      WHERE id=? AND chat_id=? AND status='active'`)
+      .bind(merged.title, JSON.stringify(merged), updateId, nowIso(), objectId, chatId)
+      .run();
+    const verify = await objectById(env, chatId, objectId);
+    if (!verify || JSON.stringify(verify.state) !== JSON.stringify(merged)) throw new Error("Object patch verification failed");
+    await syncAnchoredReminderForObject(env, chatId, objectId, merged.start_local, updateId);
+    return { ok: true, object_id: objectId, focus_object_id: objectId, object: verify };
+  }
+
+  if (action.type === "object.archive") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object to archive");
+    await env.DB.prepare(`UPDATE ${TABLES.objects} SET status='archived',updated_by_update=?,updated_at=?
+      WHERE id=? AND chat_id=? AND status='active'`)
+      .bind(updateId, nowIso(), objectId, chatId)
+      .run();
+    await cancelReminderForObject(env, chatId, objectId);
+    const verify = await env.DB.prepare(`SELECT status FROM ${TABLES.objects} WHERE id=? AND chat_id=? LIMIT 1`)
+      .bind(objectId, chatId)
+      .first();
+    if (String(verify?.status ?? "") !== "archived") throw new Error("Archive verification failed");
+    return { ok: true, object_id: objectId, archived: true, focus_object_id: runtimeFocusId === objectId ? null : runtimeFocusId };
+  }
+
+  if (action.type === "focus.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for focus");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Focus target missing");
+    return { ok: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "focus.clear") return { ok: true, focus_object_id: null };
+
+  if (action.type === "reminder.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Reminder target missing");
+    const remindLocal = action.args.mode === "at_start" ? normalizeLocalMinute(obj.state?.start_local) : action.args.remind_local;
+    if (!remindLocal) throw new Error("Target has no start time for reminder");
+    const remindAtUtc = cairoLocalToUtc(remindLocal);
+    if (!remindAtUtc) throw new Error("Could not resolve Cairo reminder time");
+    if (new Date(remindAtUtc).getTime() <= nowMs() - 30_000) throw new Error("Reminder time is already in the past");
+    const title = action.args.title || obj.title || "تذكير";
+    const reminderId = await upsertReminderForObject(env, {
+      chatId,
+      objectId,
+      title,
+      remindAtUtc,
+      mode: action.args.mode,
+      sourceUpdateId: updateId,
+    });
+    const verify = await env.DB.prepare(`SELECT id,remind_at_utc,status FROM ${TABLES.reminders} WHERE id=? LIMIT 1`)
+      .bind(reminderId)
+      .first();
+    if (!verify || String(verify.remind_at_utc) !== remindAtUtc || String(verify.status) !== "pending") {
+      throw new Error("Reminder verification failed");
+    }
+    return { ok: true, reminder_id: reminderId, object_id: objectId, remind_at_utc: remindAtUtc, remind_local: remindLocal, focus_object_id: objectId };
+  }
+
+  if (action.type === "reminder.cancel") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder cancel");
+    await cancelReminderForObject(env, chatId, objectId);
+    const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.reminders}
+      WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
+      .bind(chatId, objectId)
+      .first();
+    if (Number(left?.n ?? 0) !== 0) throw new Error("Reminder cancel verification failed");
+    return { ok: true, object_id: objectId, reminder_cancelled: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "memory.upsert") {
+    const at = nowIso();
+    const id = randomId("mem");
+    await env.DB.prepare(`INSERT INTO ${TABLES.memories}
+      (id,chat_id,subject,predicate,value_json,confidence,sensitivity,expires_at,source_update_id,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)
+      ON CONFLICT(chat_id,subject,predicate) DO UPDATE SET
+        value_json=excluded.value_json,
+        confidence=excluded.confidence,
+        sensitivity=excluded.sensitivity,
+        expires_at=excluded.expires_at,
+        source_update_id=excluded.source_update_id,
+        status='active',
+        updated_at=excluded.updated_at`)
+      .bind(
+        id,
+        chatId,
+        action.args.subject,
+        action.args.predicate,
+        JSON.stringify(action.args.value),
+        action.args.confidence,
+        action.args.sensitivity,
+        action.args.expires_at,
+        updateId,
+        at,
+        at,
+      )
+      .run();
+    const verify = await env.DB.prepare(`SELECT value_json,status FROM ${TABLES.memories}
+      WHERE chat_id=? AND subject=? AND predicate=? LIMIT 1`)
+      .bind(chatId, action.args.subject, action.args.predicate)
+      .first();
+    if (!verify || String(verify.status) !== "active") throw new Error("Memory verification failed");
+    return { ok: true, memory: { subject: action.args.subject, predicate: action.args.predicate, value: safeJsonParse(verify.value_json, null) } };
+  }
+
+  if (action.type === "memory.forget") {
+    await env.DB.prepare(`UPDATE ${TABLES.memories} SET status='forgotten',updated_at=?
+      WHERE chat_id=? AND subject=? AND predicate=? AND status='active'`)
+      .bind(nowIso(), chatId, action.args.subject, action.args.predicate)
+      .run();
+    return { ok: true, forgotten: true };
+  }
+
+  throw new Error(`Unsupported executor action: ${action.type}`);
+}
+
+async function currentUserMessage(env, chatId, updateId) {
+  const row = await env.DB.prepare(`SELECT content FROM ${TABLES.messages} WHERE chat_id=? AND update_id=? AND role='user' LIMIT 1`)
+    .bind(chatId, updateId)
+    .first();
+  return compactText(row?.content, 12_000);
+}
+
+async function capabilitySnapshot(env, chatId, family) {
+  if (family === "schedule") return scheduleCapabilitySnapshot(env, chatId);
+  if (family === "shopping") {
+    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
+      WHERE chat_id=? AND kind IN ('shopping_item','shopping_session') AND status!='archived'
+      ORDER BY updated_at DESC LIMIT 80`)
+      .bind(chatId).all();
+    let itemNo = 0;
+    return (rows?.results ?? []).map((row) => {
+      const kind = String(row.kind);
+      const ref = kind === "shopping_item" ? `s${++itemNo}` : `session`;
+      return { ref, id: String(row.id), kind, title: String(row.title), status: String(row.status), state: safeJsonParse(row.state_json, {}), updated_at: String(row.updated_at) };
+    });
+  }
+  if (family === "work") {
+    const rows = await env.DB.prepare(`SELECT id,kind,parent_id,title,state_json,status,created_at,updated_at FROM ${TABLES.lifeItems}
+      WHERE chat_id=? AND kind IN ('project','task','waiting','inbox') AND status!='archived'
+      ORDER BY updated_at DESC LIMIT 100`)

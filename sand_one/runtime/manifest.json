@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0-dev.6",
+  "parts": 30,
+  "required_family_states": {
+    "schedule": "active",
+    "work": "active",
+    "shopping": "active",
+    "memory_people": "active",
+    "web_live": "active",
+    "files_media": "input_adapter",
+    "utility": "active",
+    "local_life": "active"
+  },
+  "required_selftests": [
+    "voice_adapter_contract",
+    "capability_family_contract",
+    "schedule_conflict_contract",
+    "schedule_recurrence_contract",
+    "schedule_family_verified_write"
+  ],
+  "required_functions": [
+    "normalizeLocalMinute",
+    "health",
+    "callOneAiModel",
+    "executeSchedulePlan",
+    "processDueScheduleSignals",
+    "validateLocalLifeStep",
+    "executeLocalLifePlan",
+    "localLifePrayerTimes",
+    "localLifeHijriDate",
+    "egyptPublicHolidays"
+  ]
+}

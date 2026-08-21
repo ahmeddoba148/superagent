@@ -1,0 +1,215 @@
+      } else {
+        response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+          method: "POST",
+          headers: { authorization: `Bearer ${env.GROQ_API_KEY}` },
+          body: form,
+          signal: controller.signal,
+        });
+      }
+      const data = await response.json().catch(() => null);
+      const text = compactText(data?.text ?? data?.transcript, 12_000);
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        phase: "voice_stt",
+        modelId: `${attempt.provider}::${attempt.id}`,
+        modelRole: attempt.provider === "omniai" ? "primary" : "fallback_1",
+        latencyMs: nowMs() - started,
+        ok: Boolean(response.ok && text),
+        httpStatus: response.status,
+        errorCode: response.ok && text ? null : `http_${response.status}`,
+      });
+      if (response.ok && text) return text;
+      failures.push(`${attempt.provider}:${response.status}`);
+      if (response.status === 401 || response.status === 403) break;
+    } catch (error) {
+      const code = aiErrorCode(error);
+      failures.push(`${attempt.provider}:${code}`);
+      await recordAiCallSafe(env, {
+        chatId,
+        updateId,
+        phase: "voice_stt",
+        modelId: `${attempt.provider}::${attempt.id}`,
+        modelRole: attempt.provider === "omniai" ? "primary" : "fallback_1",
+        latencyMs: nowMs() - started,
+        ok: false,
+        httpStatus: error instanceof SandHttpError ? error.httpStatus : null,
+        errorCode: code,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new SandAiChainError(nowMs() >= deadline ? "AI_TIMEOUT" : "AI_UNAVAILABLE", failures.length ? failures : ["voice_transcription_unavailable"]);
+}
+
+async function saveMessage(env, chatId, updateId, role, content, modelId) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.messages}
+    (chat_id, update_id, role, content, model_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(chatId, updateId, role, String(content).slice(0, 12000), modelId, nowIso())
+    .run();
+}
+
+async function recentMessages(env, chatId, limit = AI_HISTORY_MESSAGES) {
+  const rows = await env.DB.prepare(`SELECT update_id, role, content, model_id, created_at
+    FROM ${TABLES.messages}
+    WHERE chat_id=?
+    ORDER BY id DESC
+    LIMIT ?`)
+    .bind(chatId, clampInt(limit, 4, 40, AI_HISTORY_MESSAGES))
+    .all();
+  return (rows?.results ?? []).reverse();
+}
+
+async function loadConversationSnapshot(env, chatId) {
+  const [workspace, messages, objectsResult, memoriesResult, remindersResult] = await Promise.all([
+    env.DB.prepare(`SELECT chat_id, goal, thread_summary, focus_object_id, open_questions_json, context_version, updated_at
+      FROM ${TABLES.workspaces} WHERE chat_id=? LIMIT 1`)
+      .bind(chatId)
+      .first(),
+    recentMessages(env, chatId, AI_HISTORY_MESSAGES),
+    env.DB.prepare(`SELECT id, kind, title, state_json, status, updated_at
+      FROM ${TABLES.objects}
+      WHERE chat_id=? AND status='active'
+      ORDER BY updated_at DESC
+      LIMIT 16`)
+      .bind(chatId)
+      .all(),
+    env.DB.prepare(`SELECT id, subject, predicate, value_json, confidence, sensitivity, expires_at, updated_at
+      FROM ${TABLES.memories}
+      WHERE chat_id=? AND status='active' AND (expires_at IS NULL OR expires_at>?)
+      ORDER BY updated_at DESC LIMIT 20`)
+      .bind(chatId, nowIso())
+      .all(),
+    env.DB.prepare(`SELECT id, object_id, title, remind_at_utc, timezone, mode, status
+      FROM ${TABLES.reminders}
+      WHERE chat_id=? AND status IN ('pending','sending','uncertain')
+      ORDER BY remind_at_utc ASC LIMIT 12`)
+      .bind(chatId)
+      .all(),
+  ]);
+
+  const objects = (objectsResult?.results ?? []).map((row) => ({
+    id: String(row.id),
+    kind: String(row.kind),
+    title: String(row.title),
+    state: safeJsonParse(row.state_json, {}),
+    status: String(row.status),
+    updated_at: String(row.updated_at),
+  }));
+
+  const memories = (memoriesResult?.results ?? []).map((row) => ({
+    id: String(row.id),
+    subject: String(row.subject),
+    predicate: String(row.predicate),
+    value: safeJsonParse(row.value_json, row.value_json),
+    confidence: Number(row.confidence ?? 1),
+    sensitivity: String(row.sensitivity),
+    expires_at: row.expires_at ?? null,
+    updated_at: String(row.updated_at),
+  }));
+
+  const focusId = String(workspace?.focus_object_id ?? "");
+  const focus = focusId ? objects.find((x) => x.id === focusId) ?? null : null;
+
+  return {
+    workspace: {
+      goal: String(workspace?.goal ?? ""),
+      thread_summary: String(workspace?.thread_summary ?? ""),
+      focus_object_id: focusId || null,
+      open_questions: safeJsonParse(workspace?.open_questions_json, []),
+      context_version: Number(workspace?.context_version ?? 0),
+    },
+    focus,
+    objects,
+    memories,
+    reminders: remindersResult?.results ?? [],
+    messages,
+  };
+}
+
+function cairoNowParts(date = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      weekday: "long",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday ?? ""),
+  };
+}
+
+function plannerSnapshotView(snapshot) {
+  const refById = new Map();
+  const activeObjects = snapshot.objects.map((object, index) => {
+    const ref = `o${index + 1}`;
+    refById.set(object.id, ref);
+    return {
+      ref,
+      kind: object.kind,
+      title: object.title,
+      state: object.state,
+      status: object.status,
+      updated_at: object.updated_at,
+    };
+  });
+  const focusRef = snapshot.workspace.focus_object_id
+    ? refById.get(snapshot.workspace.focus_object_id) ?? null
+    : null;
+  const focus = focusRef
+    ? activeObjects.find((object) => object.ref === focusRef) ?? null
+    : null;
+  return {
+    workspace: {
+      goal: snapshot.workspace.goal,
+      thread_summary: snapshot.workspace.thread_summary,
+      focus_ref: focusRef,
+      open_questions: snapshot.workspace.open_questions,
+      context_version: snapshot.workspace.context_version,
+    },
+    focus,
+    active_objects: activeObjects,
+    memories: snapshot.memories.map((memory) => ({
+      subject: memory.subject,
+      predicate: memory.predicate,
+      value: memory.value,
+      confidence: memory.confidence,
+      sensitivity: memory.sensitivity,
+      expires_at: memory.expires_at,
+      updated_at: memory.updated_at,
+    })),
+    pending_reminders: snapshot.reminders.map((reminder) => ({
+      object_ref: refById.get(String(reminder.object_id ?? "")) ?? null,
+      title: reminder.title ?? null,
+      remind_at_utc: reminder.remind_at_utc ?? null,
+      timezone: reminder.timezone ?? null,
+      mode: reminder.mode ?? null,
+      status: reminder.status ?? null,
+    })),
+  };
+}
+
+function plannerSystemPrompt(snapshot) {
+  const local = cairoNowParts();
+  return [
+    "You are the semantic conversation brain for SAND, an Egyptian personal secretary agent.",
+    "Return exactly ONE strict JSON object. Use double quotes for every JSON key and string. No markdown, comments, trailing commas, or prose outside JSON.",
+    "Interpret meaning and conversational reference from the whole workspace. Never route by literal phrases or keyword matching.",
+    "The application owns state and execution. You may only request actions from the declared action contract.",
+    "Treat the current focus object as the default referent only when the new turn semantically continues it. If the user clearly changes subject, do not force the old focus.",
+    "When more than one active object exists, every object-targeting mutation must use the exposed ref of the intended object (such as o1 or o2), even when that object is currently focused. Resolve explicit semantic references by object identity and meaning, never by recency alone.",
+    "A user correction or refinement should update the existing intended object rather than create a duplicate when continuity is clear.",

@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-08-21T02:21:37.489Z",
+  "run_id": "32439554251",
+  "target_worker": "superagent",
+  "target_url": "https://superagent.ahmeddoba91.workers.dev",
+  "expected_version": "1.0.0-dev.6",
+  "certified_sha256": "17204a5592cc4b6e0700dd4d39d6bcfeafb9c11bfef399cdac36637a45604ea6",
+  "deployed": true,
+  "outcomes": {
+    "certified": "success",
+    "snapshot": "success",
+    "deploy": "success",
+    "bindings": "success",
+    "health": "success",
+    "rollback": "skipped"
+  },
+  "observed": {
+    "ok": true,
+    "service": "SAND ONE",
+    "version": "1.0.0-dev.6",
+    "semantic_routing": true,
+    "keyword_routing": false
+  }
+}

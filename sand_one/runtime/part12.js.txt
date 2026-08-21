@@ -1,0 +1,138 @@
+    }
+    if (op === "relations.list") {
+      const person = compactText(a.person, 120) || null;
+      if (person && (!refs.has(person) || !person.startsWith("p"))) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Unknown person filter");
+      return { op, args: { person } };
+    }
+  }
+  if (family === "utility") {
+    if (op === "calculator.evaluate") {
+      const expression = compactText(a.expression, 500);
+      if (!expression) throw new SandPlanError("EXPRESSION_REQUIRED", "Calculator expression required");
+      return { op, args: { expression } };
+    }
+    if (op === "unit.convert") {
+      const value = Number(a.value);
+      if (!Number.isFinite(value)) throw new SandPlanError("BAD_UNIT_VALUE", "Unit value must be finite");
+      const from = compactText(a.from, 40).toLowerCase(), to = compactText(a.to, 40).toLowerCase();
+      if (!from || !to) throw new SandPlanError("UNIT_REQUIRED", "Both source and destination units are required");
+      return { op, args: { value, from, to } };
+    }
+    if (op === "datetime.now") return { op, args: { timezone: compactText(a.timezone, 120) || TZ } };
+    if (op === "datetime.diff") {
+      const from = compactText(a.from, 120), to = compactText(a.to, 120), unit = compactText(a.unit, 40) || "hours";
+      if (!from || !to || !["seconds", "minutes", "hours", "days"].includes(unit)) throw new SandPlanError("BAD_DATETIME_DIFF", "Invalid datetime diff args");
+      return { op, args: { from, to, unit } };
+    }
+  }
+  if (family === "web_live") {
+    if (op === "web.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Web search query required");
+      return { op, args: { query, limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar", country: compactText(a.country, 8) || "eg" } };
+    }
+    if (op === "web.read") {
+      const url = normalizePublicHttpsUrl(a.url).toString();
+      return { op, args: { url, max_chars: clampInt(a.max_chars, 1000, 12_000, 7000) } };
+    }
+    if (op === "news.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "News query required");
+      return { op, args: { query, limit: clampInt(a.limit, 1, 12, 8) } };
+    }
+    if (op === "weather.read") {
+      const city = compactText(a.city, 240) || null;
+      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+      if (!city && latitude === null) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
+      return { op, args: { city, latitude, longitude, forecast_days: clampInt(a.forecast_days, 1, 7, 7) } };
+    }
+    if (op === "places.search") {
+      const query = compactText(a.query, 700);
+      if (!query) throw new SandPlanError("QUERY_REQUIRED", "Places query required");
+      const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+      const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+      if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+      if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+      return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
+    }
+  }
+  if (family === "local_life") return validateLocalLifeStep(op, a);
+  throw new SandPlanError("BAD_CAPABILITY_STEP", `Unhandled family operation: ${op}`);
+}
+
+async function stableCapabilityId(prefix, operationId, stepIndex, itemIndex = 0) {
+  const h = await textHash(`${operationId}:${stepIndex}:${itemIndex}:${prefix}`);
+  return `${prefix}_${h.slice(0, 28)}`;
+}
+
+async function loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest }) {
+  const existing = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex).first();
+  if (existing) return { plan: safeJsonParse(existing.plan_json, { steps: [] }), modelId: existing.model_id ? String(existing.model_id) : null };
+  const [currentText, familyState] = await Promise.all([currentUserMessage(env, chatId, updateId), capabilitySnapshot(env, chatId, family)]);
+  const planned = await planCapabilityFamily(env, { chatId, updateId, family, currentText, semanticRequest, familyState });
+  const at = nowIso();
+  await env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.capabilityPlans}
+    (operation_id,step_index,family,request_text,plan_json,model_id,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,'planned',?,?)`)
+    .bind(operationId, stepIndex, family, semanticRequest, JSON.stringify(planned.plan), planned.modelId, at, at).run();
+  const stored = await env.DB.prepare(`SELECT plan_json,model_id FROM ${TABLES.capabilityPlans} WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex).first();
+  return { plan: safeJsonParse(stored?.plan_json, planned.plan), modelId: stored?.model_id ? String(stored.model_id) : planned.modelId };
+}
+
+function renderShoppingList(rows) {
+  if (!rows.length) return "قائمة المشتريات فاضية حاليًا.";
+  return ["🛒 المشتريات:", ...rows.map((r, i) => `${i + 1}) ${r.title}${r.state.quantity ? ` — ${r.state.quantity}` : ""} [${r.status}]`)].join("\n");
+}
+
+function renderWorkList(rows, label) {
+  if (!rows.length) return `${label} مفيهاش عناصر حاليًا.`;
+  return [label, ...rows.map((r, i) => `${i + 1}) ${r.title} [${r.status}]`)].join("\n");
+}
+
+async function executeCapabilityRequest(env, { chatId, updateId, operationId, stepIndex, request }) {
+  if (!operationId) throw new Error("Capability execution requires operation id");
+  const family = request.family;
+  const familyState = await capabilitySnapshot(env, chatId, family);
+  const refs = familyRefMap(familyState);
+  const planned = await loadOrPlanCapability(env, { chatId, updateId, operationId, stepIndex, family, semanticRequest: request.request });
+  const plan = validateFamilyPlan(family, planned.plan, familyState);
+  const result = await executeFamilyPlan(env, { chatId, updateId, operationId, mainStepIndex: stepIndex, family, plan, refs });
+  await env.DB.prepare(`UPDATE ${TABLES.capabilityPlans} SET status='done',result_json=?,updated_at=? WHERE operation_id=? AND step_index=?`)
+    .bind(JSON.stringify(result), nowIso(), operationId, stepIndex).run();
+  return { ok: true, family, ...result };
+}
+
+const EXTERNAL_ADAPTER_BREAKERS = new Map();
+const EXTERNAL_ADAPTER_FAILURE_THRESHOLD = 3;
+const EXTERNAL_ADAPTER_OPEN_MS = 60_000;
+const EXTERNAL_FETCH_TIMEOUT_MS = 8_000;
+
+function externalBreakerState(name) {
+  const key = compactText(name, 80);
+  let state = EXTERNAL_ADAPTER_BREAKERS.get(key);
+  if (!state) {
+    state = { failures: 0, open_until: 0 };
+    EXTERNAL_ADAPTER_BREAKERS.set(key, state);
+  }
+  return state;
+}
+
+function recordExternalSuccess(name) {
+  const state = externalBreakerState(name);
+  state.failures = 0;
+  state.open_until = 0;
+}
+
+function recordExternalFailure(name) {
+  const state = externalBreakerState(name);
+  state.failures += 1;
+  if (state.failures >= EXTERNAL_ADAPTER_FAILURE_THRESHOLD) state.open_until = nowMs() + EXTERNAL_ADAPTER_OPEN_MS;
+}
+
+function assertExternalCircuitClosed(name) {
+  const state = externalBreakerState(name);

@@ -1,0 +1,358 @@
+        const preview = mergeObjectState(current.state, fields, current.title);
+        if (JSON.stringify(preview) === JSON.stringify(current.state)) {
+          throw new SandPlanError("NOOP_PATCH", "Object patch would not change the target state");
+        }
+      }
+      return { type, args: { target, fields } };    }
+
+    if (type === "object.archive" || type === "reminder.cancel") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.set") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.clear") return { type, args: {} };
+
+    if (type === "reminder.set") {
+      const mode = String(args.mode ?? "");
+      if (!new Set(["at_start", "absolute"]).has(mode)) throw new SandPlanError("BAD_REMINDER_MODE", `Bad reminder mode: ${mode}`);
+      const target = validateTarget(args.target, snapshot);
+      const remindLocal = mode === "absolute" ? normalizeLocalMinute(args.remind_local) : null;
+      if (mode === "absolute" && !remindLocal) throw new SandPlanError("REMINDER_TIME_REQUIRED", "Absolute reminder requires remind_local");
+      return { type, args: { target, mode, remind_local: remindLocal, title: compactText(args.title, 240) || null } };
+    }
+
+    if (type === "capability.request") {
+      const family = compactText(args.family, 80);
+      const request = compactText(args.request, 1200);
+      if (!family || !CAPABILITY_FAMILIES[family]) throw new SandPlanError("BAD_CAPABILITY_FAMILY", `Unknown capability family: ${family}`);
+      if (!request) throw new SandPlanError("BAD_CAPABILITY_REQUEST", "Capability request requires semantic request text");
+      if (!CAPABILITY_FAMILY_CONTRACTS[family]) throw new SandPlanError("CAPABILITY_NOT_READY", `Capability family is not enabled yet: ${family}`);
+      const target = args.target === undefined || args.target === null ? null : validateTarget(args.target, snapshot);
+      return { type, args: { family, request, target } };
+    }
+
+    if (type === "memory.upsert") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory requires subject and predicate");
+      return {
+        type,
+        args: {
+          subject,
+          predicate,
+          value: args.value ?? null,
+          confidence: Math.max(0, Math.min(1, Number(args.confidence ?? 1))),
+          sensitivity: compactText(args.sensitivity, 40) || "normal",
+          expires_at: args.expires_at ? compactText(args.expires_at, 40) : null,
+        },
+      };
+    }
+
+    if (type === "memory.forget") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory forget requires subject and predicate");
+      return { type, args: { subject, predicate } };
+    }
+
+    throw new SandPlanError("BAD_ACTION", `Unhandled action: ${type}`);
+  });
+
+  const domainMutationTypes = new Set([
+    "object.create", "object.patch", "object.archive",
+    "reminder.set", "reminder.cancel", "memory.upsert", "memory.forget", "capability.request",
+  ]);
+  if (effect === "mutate" && !actions.some((action) => domainMutationTypes.has(action.type))) {
+    throw new SandPlanError("EMPTY_MUTATION", "Mutation intent requires a real domain mutation action");
+  }
+
+  let focus = { mode: "keep" };
+  if (input.focus && typeof input.focus === "object") {
+    const mode = String(input.focus.mode ?? "keep");
+    if (mode === "set") focus = { mode: "set", target: validateTarget(input.focus.target, snapshot) };
+    else if (mode === "clear") focus = { mode: "clear" };
+    else focus = { mode: "keep" };
+  }
+
+  const clarification = input.clarification && typeof input.clarification === "object"
+    ? {
+        question: compactText(input.clarification.question, 800),
+        reason: compactText(input.clarification.reason, 400),
+      }
+    : null;
+
+  return {
+    effect,
+    intent: compactText(input.intent, 120) || "conversation",
+    continuation: Boolean(input.continuation),
+    goal: compactText(input.goal, 800),
+    thread_summary: compactText(input.thread_summary, 1800),
+    focus,
+    actions,
+    clarification: clarification?.question ? clarification : null,
+    reply: compactText(input.reply, AI_MAX_REPLY_CHARS),
+    confidence: Math.max(0, Math.min(1, Number(input.confidence ?? 0.5))),
+  };
+}
+
+function sanitizeObjectFields(fields) {
+  const src = fields && typeof fields === "object" && !Array.isArray(fields) ? fields : {};
+  const out = {};
+  const textFields = ["title", "description", "start_local", "start_date_local", "start_time_local", "end_local", "location", "status"];
+  for (const key of textFields) {
+    if (Object.hasOwn(src, key)) out[key] = src[key] === null ? null : compactText(src[key], key === "description" ? 3000 : 300);
+  }
+  if (Object.hasOwn(src, "people")) out.people = Array.isArray(src.people) ? src.people.slice(0, 20).map((x) => compactText(x, 160)).filter(Boolean) : [];
+  if (Object.hasOwn(src, "details")) out.details = sanitizeJsonValue(src.details, 4);
+  return out;
+}
+
+function sanitizeJsonValue(value, depth = 4) {
+  if (depth <= 0) return null;
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") return value.slice(0, 1500);
+  if (Array.isArray(value)) return value.slice(0, 30).map((x) => sanitizeJsonValue(x, depth - 1));
+  if (typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value).slice(0, 40)) out[String(k).slice(0, 100)] = sanitizeJsonValue(v, depth - 1);
+    return out;
+  }
+  return null;
+}
+
+async function operationForUpdate(env, chatId, updateId) {
+  return env.DB.prepare(`SELECT id,status,plan_json,result_json,error FROM ${TABLES.operations}
+    WHERE chat_id=? AND source_update_id=? LIMIT 1`)
+    .bind(chatId, updateId)
+    .first();
+}
+
+async function startOrLoadOperation(env, chatId, updateId, plan, modelId) {
+  const existing = await operationForUpdate(env, chatId, updateId);
+  if (existing) return existing;
+  const id = randomId("op");
+  const at = nowIso();
+  const storedPlan = { ...plan, planner_model: modelId };
+  await env.DB.prepare(`INSERT INTO ${TABLES.operations}
+    (id,chat_id,source_update_id,status,plan_json,created_at,updated_at)
+    VALUES(?,?,?,'running',?,?,?)`)
+    .bind(id, chatId, updateId, JSON.stringify(storedPlan), at, at)
+    .run();
+  return { id, status: "running", plan_json: JSON.stringify(storedPlan) };
+}
+
+async function finishOperation(env, operationId, status, result, error) {
+  const at = nowIso();
+  await env.DB.prepare(`UPDATE ${TABLES.operations}
+    SET status=?, result_json=?, error=?, updated_at=?, finished_at=?
+    WHERE id=?`)
+    .bind(status, JSON.stringify(result ?? null), error ? compactText(error, 1200) : null, at, at, operationId)
+    .run();
+}
+
+async function existingStep(env, operationId, stepIndex) {
+  return env.DB.prepare(`SELECT id,status,result_json,error FROM ${TABLES.steps}
+    WHERE operation_id=? AND step_index=? LIMIT 1`)
+    .bind(operationId, stepIndex)
+    .first();
+}
+
+async function beginStep(env, operationId, stepIndex, action) {
+  const existing = await existingStep(env, operationId, stepIndex);
+  if (existing) return existing;
+  const id = randomId("step");
+  const at = nowIso();
+  await env.DB.prepare(`INSERT INTO ${TABLES.steps}
+    (id,operation_id,step_index,action_type,args_json,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,'running',?,?)`)
+    .bind(id, operationId, stepIndex, action.type, JSON.stringify(action.args ?? {}), at, at)
+    .run();
+  return { id, status: "running", result_json: null, error: null };
+}
+
+async function finishStep(env, stepId, status, result, error) {
+  await env.DB.prepare(`UPDATE ${TABLES.steps}
+    SET status=?, result_json=?, error=?, updated_at=? WHERE id=?`)
+    .bind(status, JSON.stringify(result ?? null), error ? compactText(error, 1200) : null, nowIso(), stepId)
+    .run();
+}
+
+function resolveTargetId(target, snapshot, runtimeFocusId) {
+  if (target.mode === "id") return target.id;
+  if (target.mode === "focus") return runtimeFocusId || snapshot.focus?.id || snapshot.workspace.focus_object_id || "";
+  return "";
+}
+
+async function executeSemanticPlan(env, { chatId, updateId, operationId, plan, snapshot }) {
+  if (plan.clarification) {
+    await persistWorkspace(env, chatId, {
+      goal: plan.goal,
+      thread_summary: plan.thread_summary,
+      focus_object_id: snapshot.workspace.focus_object_id,
+      open_questions: [plan.clarification],
+    });
+    return { ok: true, clarification: true, steps: [], focus_object_id: snapshot.workspace.focus_object_id };
+  }
+
+  const results = [];
+  let runtimeFocusId = snapshot.workspace.focus_object_id || null;
+
+  for (let i = 0; i < plan.actions.length; i += 1) {
+    const action = plan.actions[i];
+    const prior = await beginStep(env, operationId, i, action);
+    if (prior.status === "done") {
+      const parsed = safeJsonParse(prior.result_json, {});
+      results.push(parsed);
+      if (parsed?.focus_object_id) runtimeFocusId = parsed.focus_object_id;
+      if (parsed?.object_id && action.type === "object.create") runtimeFocusId = parsed.object_id;
+      continue;
+    }
+
+    try {
+      const result = await executeAction(env, {
+        chatId,
+        updateId,
+        operationId,
+        stepIndex: i,
+        action,
+        snapshot,
+        runtimeFocusId,
+      });
+      await finishStep(env, prior.id, "done", result, null);
+      results.push(result);
+      const resultAny = /** @type {any} */ (result);
+      if (resultAny?.focus_object_id) runtimeFocusId = resultAny.focus_object_id;
+      if (resultAny?.object_id && action.type === "object.create") runtimeFocusId = resultAny.object_id;
+    } catch (error) {
+      await finishStep(env, prior.id, "failed", null, safeError(error));
+      return { ok: false, error: safeError(error), failed_step: i, steps: results, focus_object_id: runtimeFocusId };
+    }
+  }
+
+  if (plan.focus.mode === "set") {
+    const id = resolveTargetId(plan.focus.target, snapshot, runtimeFocusId);
+    if (id) runtimeFocusId = id;
+  } else if (plan.focus.mode === "clear") {
+    runtimeFocusId = null;
+  }
+
+  await persistWorkspace(env, chatId, {
+    goal: plan.goal,
+    thread_summary: plan.thread_summary,
+    focus_object_id: runtimeFocusId,
+    open_questions: [],
+  });
+
+  return { ok: true, steps: results, focus_object_id: runtimeFocusId };
+}
+
+async function executeAction(env, { chatId, updateId, operationId = "", stepIndex = 0, action, snapshot, runtimeFocusId }) {
+  if (action.type === "capability.request") {
+    return executeCapabilityRequest(env, { chatId, updateId, operationId, stepIndex, request: action.args });
+  }
+
+  if (action.type === "object.create") {
+    const objectId = randomId("obj");
+    const state = mergeObjectState({}, action.args.fields ?? {}, action.args.title);
+    const at = nowIso();
+    await env.DB.prepare(`INSERT INTO ${TABLES.objects}
+      (id,chat_id,kind,title,state_json,status,created_by_update,updated_by_update,created_at,updated_at)
+      VALUES(?,?,?,?,?,'active',?,?,?,?)`)
+      .bind(objectId, chatId, action.args.kind, state.title, JSON.stringify(state), updateId, updateId, at, at)
+      .run();
+    const verify = await objectById(env, chatId, objectId);
+    if (!verify) throw new Error("Object create verification failed");
+    return { ok: true, object_id: objectId, focus_object_id: objectId, object: verify };
+  }
+
+  if (action.type === "object.patch") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object to patch");
+    const current = await objectById(env, chatId, objectId);
+    if (!current) throw new Error("Target object no longer exists");
+    const merged = mergeObjectState(current.state, action.args.fields ?? {}, current.title);
+    await env.DB.prepare(`UPDATE ${TABLES.objects}
+      SET title=?, state_json=?, updated_by_update=?, updated_at=?
+      WHERE id=? AND chat_id=? AND status='active'`)
+      .bind(merged.title, JSON.stringify(merged), updateId, nowIso(), objectId, chatId)
+      .run();
+    const verify = await objectById(env, chatId, objectId);
+    if (!verify || JSON.stringify(verify.state) !== JSON.stringify(merged)) throw new Error("Object patch verification failed");
+    await syncAnchoredReminderForObject(env, chatId, objectId, merged.start_local, updateId);
+    return { ok: true, object_id: objectId, focus_object_id: objectId, object: verify };
+  }
+
+  if (action.type === "object.archive") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object to archive");
+    await env.DB.prepare(`UPDATE ${TABLES.objects} SET status='archived',updated_by_update=?,updated_at=?
+      WHERE id=? AND chat_id=? AND status='active'`)
+      .bind(updateId, nowIso(), objectId, chatId)
+      .run();
+    await cancelReminderForObject(env, chatId, objectId);
+    const verify = await env.DB.prepare(`SELECT status FROM ${TABLES.objects} WHERE id=? AND chat_id=? LIMIT 1`)
+      .bind(objectId, chatId)
+      .first();
+    if (String(verify?.status ?? "") !== "archived") throw new Error("Archive verification failed");
+    return { ok: true, object_id: objectId, archived: true, focus_object_id: runtimeFocusId === objectId ? null : runtimeFocusId };
+  }
+
+  if (action.type === "focus.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for focus");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Focus target missing");
+    return { ok: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "focus.clear") return { ok: true, focus_object_id: null };
+
+  if (action.type === "reminder.set") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder");
+    const obj = await objectById(env, chatId, objectId);
+    if (!obj) throw new Error("Reminder target missing");
+    const remindLocal = action.args.mode === "at_start" ? normalizeLocalMinute(obj.state?.start_local) : action.args.remind_local;
+    if (!remindLocal) throw new Error("Target has no start time for reminder");
+    const remindAtUtc = cairoLocalToUtc(remindLocal);
+    if (!remindAtUtc) throw new Error("Could not resolve Cairo reminder time");
+    if (new Date(remindAtUtc).getTime() <= nowMs() - 30_000) throw new Error("Reminder time is already in the past");
+    const title = action.args.title || obj.title || "تذكير";
+    const reminderId = await upsertReminderForObject(env, {
+      chatId,
+      objectId,
+      title,
+      remindAtUtc,
+      mode: action.args.mode,
+      sourceUpdateId: updateId,
+    });
+    const verify = await env.DB.prepare(`SELECT id,remind_at_utc,status FROM ${TABLES.reminders} WHERE id=? LIMIT 1`)
+      .bind(reminderId)
+      .first();
+    if (!verify || String(verify.remind_at_utc) !== remindAtUtc || String(verify.status) !== "pending") {
+      throw new Error("Reminder verification failed");
+    }
+    return { ok: true, reminder_id: reminderId, object_id: objectId, remind_at_utc: remindAtUtc, remind_local: remindLocal, focus_object_id: objectId };
+  }
+
+  if (action.type === "reminder.cancel") {
+    const objectId = resolveTargetId(action.args.target, snapshot, runtimeFocusId);
+    if (!objectId) throw new Error("No target object for reminder cancel");
+    await cancelReminderForObject(env, chatId, objectId);
+    const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${TABLES.reminders}
+      WHERE chat_id=? AND object_id=? AND status IN ('pending','sending','uncertain')`)
+      .bind(chatId, objectId)
+      .first();
+    if (Number(left?.n ?? 0) !== 0) throw new Error("Reminder cancel verification failed");
+    return { ok: true, object_id: objectId, reminder_cancelled: true, focus_object_id: objectId };
+  }
+
+  if (action.type === "memory.upsert") {
+    const at = nowIso();
+    const id = randomId("mem");
+    await env.DB.prepare(`INSERT INTO ${TABLES.memories}
+      (id,chat_id,subject,predicate,value_json,confidence,sensitivity,expires_at,source_update_id,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)

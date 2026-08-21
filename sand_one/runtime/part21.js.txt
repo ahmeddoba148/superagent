@@ -1,0 +1,197 @@
+    .all();
+
+  for (const row of rows?.results ?? []) {
+    const id = String(row.id);
+    const claim = await env.DB.prepare(`UPDATE ${TABLES.reminders}
+      SET status='sending',updated_at=? WHERE id=? AND status='pending' RETURNING id`)
+      .bind(nowIso(), id)
+      .first();
+    if (!claim) continue;
+    try {
+      const data = await telegramApi(env, "sendMessage", {
+        chat_id: String(row.chat_id),
+        text: `⏰ ${String(row.title)}`.slice(0, 3900),
+      });
+      await env.DB.prepare(`UPDATE ${TABLES.reminders}
+        SET status='sent',telegram_message_id=?,updated_at=?,sent_at=? WHERE id=?`)
+        .bind(Number(data?.result?.message_id ?? 0) || null, nowIso(), nowIso(), id)
+        .run();
+    } catch (error) {
+      await env.DB.prepare(`UPDATE ${TABLES.reminders} SET status='uncertain',updated_at=? WHERE id=?`)
+        .bind(nowIso(), id)
+        .run();
+      logError("reminder_delivery_uncertain", error, { reminderId: id });
+    }
+  }
+}
+
+async function markStaleDeliveriesUncertain(env) {
+  const cutoff = new Date(nowMs() - DELIVERY_UNCERTAIN_AFTER_MS).toISOString();
+  await env.DB.prepare(`UPDATE ${TABLES.deliveries}
+    SET status='uncertain',updated_at=?
+    WHERE status='sending' AND updated_at<?`)
+    .bind(nowIso(), cutoff)
+    .run();
+}
+// SAND ONE Schedule capability family — advanced scheduling without changing Core V2 semantics.
+
+const SCHEDULE_WEEKDAY_CODES = Object.freeze(["SUN","MON","TUE","WED","THU","FRI","SAT"]);
+const SCHEDULE_READ_LIMIT = 500;
+const SCHEDULE_SIGNAL_HORIZON_MINUTES = 15 * 24 * 60;
+const SCHEDULE_SIGNAL_STALE_GRACE_MS = 15 * 60 * 1000;
+
+function scheduleDate(value) {
+  const raw = compactText(value, 20);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (y < 2020 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const check = new Date(Date.UTC(y, mo - 1, d));
+  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) return null;
+  return raw;
+}
+
+function scheduleTime(value) {
+  const raw = compactText(value, 10);
+  const m = /^(\d{2}):(\d{2})$/.exec(raw);
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  return h >= 0 && h <= 23 && mi >= 0 && mi <= 59 ? raw : null;
+}
+
+function scheduleLocalMinute(value) {
+  const raw = normalizeLocalMinute(value);
+  if (!raw) return null;
+  const date = scheduleDate(raw.slice(0, 10));
+  const time = scheduleTime(raw.slice(11, 16));
+  return date && time ? `${date}T${time}` : null;
+}
+
+function scheduleWallMs(localMinute) {
+  const s = scheduleLocalMinute(localMinute);
+  if (!s) return NaN;
+  const y = Number(s.slice(0,4)), mo = Number(s.slice(5,7)), d = Number(s.slice(8,10));
+  const h = Number(s.slice(11,13)), mi = Number(s.slice(14,16));
+  return Date.UTC(y, mo - 1, d, h, mi, 0, 0);
+}
+
+function scheduleWallToLocal(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  const y = String(d.getUTCFullYear()).padStart(4, "0");
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  return scheduleLocalMinute(`${y}-${mo}-${day}T${h}:${mi}`);
+}
+
+function scheduleShiftLocalMinute(localMinute, deltaMinutes) {
+  const ms = scheduleWallMs(localMinute);
+  if (!Number.isFinite(ms)) return null;
+  return scheduleWallToLocal(ms + Math.trunc(Number(deltaMinutes) || 0) * 60_000);
+}
+
+function scheduleNowLocalMinute() {
+  const p = cairoNowParts();
+  return `${p.date}T${p.time.slice(0,5)}`;
+}
+
+function scheduleAddDays(dateValue, days) {
+  const date = scheduleDate(dateValue);
+  if (!date) return null;
+  const ms = Date.UTC(Number(date.slice(0,4)), Number(date.slice(5,7)) - 1, Number(date.slice(8,10)));
+  return scheduleWallToLocal(ms + Math.trunc(days) * 86_400_000)?.slice(0,10) ?? null;
+}
+
+function scheduleDaysDiff(fromDate, toDate) {
+  const a = scheduleDate(fromDate), b = scheduleDate(toDate);
+  if (!a || !b) return NaN;
+  const am = Date.UTC(Number(a.slice(0,4)), Number(a.slice(5,7)) - 1, Number(a.slice(8,10)));
+  const bm = Date.UTC(Number(b.slice(0,4)), Number(b.slice(5,7)) - 1, Number(b.slice(8,10)));
+  return Math.round((bm - am) / 86_400_000);
+}
+
+function scheduleMonthsDiff(fromDate, toDate) {
+  const a = scheduleDate(fromDate), b = scheduleDate(toDate);
+  if (!a || !b) return NaN;
+  return (Number(b.slice(0,4)) - Number(a.slice(0,4))) * 12 + (Number(b.slice(5,7)) - Number(a.slice(5,7)));
+}
+
+function scheduleWeekday(dateValue) {
+  const d = scheduleDate(dateValue);
+  if (!d) return null;
+  const ms = Date.UTC(Number(d.slice(0,4)), Number(d.slice(5,7)) - 1, Number(d.slice(8,10)));
+  return SCHEDULE_WEEKDAY_CODES[new Date(ms).getUTCDay()] ?? null;
+}
+
+function scheduleDurationMinutes(startLocal, endLocal) {
+  const a = scheduleWallMs(startLocal), b = scheduleWallMs(endLocal);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+  return Math.round((b - a) / 60_000);
+}
+
+function scheduleUniqueInts(value, min, max, maxItems = 31) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value.slice(0, maxItems)) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) throw new SandPlanError("BAD_SCHEDULE_NUMBER", `Schedule number must be ${min}..${max}`);
+    if (!out.includes(n)) out.push(n);
+  }
+  return out.sort((a,b) => a-b);
+}
+
+function scheduleWeekdays(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value.slice(0,7)) {
+    const day = compactText(raw, 10).toUpperCase();
+    if (!SCHEDULE_WEEKDAY_CODES.includes(day)) throw new SandPlanError("BAD_WEEKDAY", `Bad weekday: ${day}`);
+    if (!out.includes(day)) out.push(day);
+  }
+  return out;
+}
+
+function scheduleTimes(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value.slice(0,12)) {
+    const time = scheduleTime(raw);
+    if (!time) throw new SandPlanError("BAD_SCHEDULE_TIME", `Bad time: ${compactText(raw,20)}`);
+    if (!out.includes(time)) out.push(time);
+  }
+  return out.sort();
+}
+
+function scheduleOffsets(value) {
+  if (!Array.isArray(value)) throw new SandPlanError("ALERT_OFFSETS_REQUIRED", "Alert offsets must be an array");
+  return scheduleUniqueInts(value, 0, 10_080, 12);
+}
+
+function scheduleTargetValid(value, refs, allowCreated = true) {
+  const raw = compactText(value, 120);
+  if (!raw) return false;
+  return refs.has(raw) || (allowCreated && /^created:[1-9][0-9]*$/.test(raw));
+}
+
+function scheduleOptionalRange(a) {
+  const from = a.from_local === undefined || a.from_local === null || a.from_local === "" ? null : scheduleLocalMinute(a.from_local);
+  const to = a.to_local === undefined || a.to_local === null || a.to_local === "" ? null : scheduleLocalMinute(a.to_local);
+  if ((a.from_local && !from) || (a.to_local && !to)) throw new SandPlanError("BAD_SCHEDULE_RANGE", "Invalid schedule range");
+  if (from && to && to <= from) throw new SandPlanError("BAD_SCHEDULE_RANGE", "Schedule range end must be after start");
+  return { from, to };
+}
+
+function validateScheduleStep(op, a, refs) {
+  if (op === "schedule.create") {
+    const title = compactText(a.title, 240), start_local = scheduleLocalMinute(a.start_local);
+    const end_local = a.end_local === undefined || a.end_local === null || a.end_local === "" ? null : scheduleLocalMinute(a.end_local);
+    if (!title || !start_local) throw new SandPlanError("SCHEDULE_CREATE_REQUIRED", "Schedule create needs title and start_local");
+    if (a.end_local && !end_local) throw new SandPlanError("BAD_SCHEDULE_END", "Invalid schedule end");
+    if (end_local && end_local < start_local) throw new SandPlanError("BAD_SCHEDULE_END", "Schedule end cannot be before start");
+    return { op, args: { title, start_local, end_local, location: compactText(a.location,300) || null, description: compactText(a.description,3000) || null } };
+  }
+  if (op === "schedule.list") return { op, args: scheduleOptionalRange(a) };
+  if (op === "schedule.search") {
+    const query = compactText(a.query, 300); if (!query) throw new SandPlanError("QUERY_REQUIRED", "Schedule search query required");

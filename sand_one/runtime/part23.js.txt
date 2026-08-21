@@ -1,0 +1,126 @@
+  ]);
+  const rules = new Map((rulesResult?.results ?? []).map((row) => [String(row.object_id), scheduleRuleFromRow(row)]));
+  const coreReminder = new Map();
+  for (const row of remindersResult?.results ?? []) if (row.object_id && !coreReminder.has(String(row.object_id))) coreReminder.set(String(row.object_id), { remind_at_utc: String(row.remind_at_utc), mode: String(row.mode), status: String(row.status) });
+  const signalCounts = new Map();
+  for (const row of signalsResult?.results ?? []) signalCounts.set(String(row.object_id), (signalCounts.get(String(row.object_id)) ?? 0) + 1);
+  const objects = (objectsResult?.results ?? []).map((row) => ({ id: String(row.id), kind: String(row.kind), title: String(row.title), status: String(row.status), state: safeJsonParse(row.state_json,{}), updated_at: String(row.updated_at) }))
+    .filter((row) => scheduleLocalMinute(row.state.start_local))
+    .sort((a,b) => String(a.state.start_local).localeCompare(String(b.state.start_local)));
+  return objects.map((row,index) => {
+    const rule = rules.get(row.id);
+    return {
+      ref: `e${index+1}`, id: row.id, kind: "event", object_kind: row.kind, title: row.title, status: row.status,
+      state: {
+        start_local: scheduleLocalMinute(row.state.start_local), end_local: scheduleLocalMinute(row.state.end_local), location: row.state.location ?? null, description: row.state.description ?? null,
+        recurrence: rule ? { freq: rule.freq, interval: rule.interval_n, weekdays: rule.weekdays, month_days: rule.month_days, months: rule.months, times: rule.times, start_date: rule.start_date_local, end_date: rule.end_date_local, max_occurrences: rule.max_occurrences, duration_minutes: rule.duration_minutes, status: rule.status, paused_until_local: rule.paused_until_local, alert_offsets_minutes: rule.alert_offsets, shift_minutes: rule.shift_minutes } : null,
+        core_reminder: coreReminder.get(row.id) ?? null, pending_schedule_alerts: signalCounts.get(row.id) ?? 0,
+      }, updated_at: row.updated_at,
+    };
+  });
+}
+
+function scheduleRuleMatchesDate(rule, date, anchorDate) {
+  const days = scheduleDaysDiff(anchorDate,date);
+  if (!Number.isFinite(days) || days < 0) return false;
+  const interval = Math.max(1, Number(rule.interval_n) || 1);
+  if (rule.freq === "once") return date === anchorDate;
+  if (rule.freq === "daily") return days % interval === 0;
+  if (rule.freq === "weekly") {
+    const weeks = Math.floor(days / 7);
+    const weekdays = Array.isArray(rule.weekdays) && rule.weekdays.length ? rule.weekdays : [scheduleWeekday(anchorDate)];
+    return weeks % interval === 0 && weekdays.includes(scheduleWeekday(date));
+  }
+  if (rule.freq === "monthly") {
+    const months = scheduleMonthsDiff(anchorDate,date);
+    const monthDays = Array.isArray(rule.month_days) && rule.month_days.length ? rule.month_days : [Number(anchorDate.slice(8,10))];
+    return months >= 0 && months % interval === 0 && monthDays.includes(Number(date.slice(8,10)));
+  }
+  if (rule.freq === "yearly") {
+    const yearDiff = Number(date.slice(0,4)) - Number(anchorDate.slice(0,4));
+    const months = Array.isArray(rule.months) && rule.months.length ? rule.months : [Number(anchorDate.slice(5,7))];
+    const monthDays = Array.isArray(rule.month_days) && rule.month_days.length ? rule.month_days : [Number(anchorDate.slice(8,10))];
+    return yearDiff >= 0 && yearDiff % interval === 0 && months.includes(Number(date.slice(5,7))) && monthDays.includes(Number(date.slice(8,10)));
+  }
+  return false;
+}
+
+function scheduleRuleIsSkipped(rule, local) {
+  const skips = Array.isArray(rule.skip_occurrences) ? rule.skip_occurrences : [];
+  return skips.includes(local) || skips.includes(local.slice(0,10));
+}
+
+function scheduleProjectRule(rule, title, fromLocal, toLocal, limit = SCHEDULE_READ_LIMIT) {
+  const from = scheduleLocalMinute(fromLocal), to = scheduleLocalMinute(toLocal), anchor = scheduleLocalMinute(rule.anchor_local);
+  if (!from || !to || !anchor || to <= from || rule.status === "cancelled") return [];
+  if (rule.status === "paused" && !rule.paused_until_local) return [];
+  const anchorDate = scheduleDate(rule.start_date_local || anchor.slice(0,10)) || anchor.slice(0,10);
+  const endDate = rule.end_date_local ? scheduleDate(rule.end_date_local) : null;
+  const times = Array.isArray(rule.times) && rule.times.length ? rule.times.filter(scheduleTime) : [anchor.slice(11,16)];
+  const shift = Number(rule.shift_minutes) || 0;
+  const duration = Number.isInteger(rule.duration_minutes) && rule.duration_minutes > 0 ? rule.duration_minutes : null;
+  const maxOccurrences = Number.isInteger(rule.max_occurrences) && rule.max_occurrences > 0 ? rule.max_occurrences : null;
+  const hardStart = anchorDate;
+  const hardEnd = endDate && endDate < to.slice(0,10) ? endDate : to.slice(0,10);
+  let date = hardStart, ordinal = 0;
+  const out = [];
+  let guard = 0;
+  while (date && date <= hardEnd && guard < 40_000 && out.length < Math.max(1,limit)) {
+    guard += 1;
+    if (scheduleRuleMatchesDate(rule,date,anchorDate)) {
+      for (const time of times) {
+        const rawLocal = scheduleLocalMinute(`${date}T${time}`);
+        if (!rawLocal) continue;
+        ordinal += 1;
+        if (maxOccurrences && ordinal > maxOccurrences) return out;
+        const shifted = scheduleShiftLocalMinute(rawLocal,shift);
+        if (!shifted || scheduleRuleIsSkipped(rule,shifted) || scheduleRuleIsSkipped(rule,rawLocal)) continue;
+        if (rule.status === "paused" && rule.paused_until_local && shifted < rule.paused_until_local) continue;
+        if (shifted >= from && shifted < to) {
+          out.push({ event_id: String(rule.object_id), rule_id: String(rule.id), recurring: rule.freq !== "once", title, start_local: shifted, end_local: duration ? scheduleShiftLocalMinute(shifted,duration) : null, occurrence_local: shifted });
+          if (out.length >= limit) return out;
+        }
+      }
+    }
+    date = scheduleAddDays(date,1);
+  }
+  return out;
+}
+
+function scheduleDirectOccurrence(object) {
+  const start = scheduleLocalMinute(object.state?.start_local);
+  if (!start) return null;
+  const end = scheduleLocalMinute(object.state?.end_local);
+  return { event_id: object.id, rule_id: null, recurring: false, title: object.title, start_local: start, end_local: end, occurrence_local: start };
+}
+
+async function scheduleDomain(env, chatId) {
+  const [objectsResult,rulesResult] = await Promise.all([
+    env.DB.prepare(`SELECT id,kind,title,state_json,status,updated_at FROM ${TABLES.objects} WHERE chat_id=? AND status='active' ORDER BY updated_at DESC LIMIT 200`).bind(chatId).all(),
+    env.DB.prepare(`SELECT * FROM ${TABLES.scheduleRules} WHERE chat_id=? ORDER BY updated_at DESC LIMIT 200`).bind(chatId).all(),
+  ]);
+  const objects=(objectsResult?.results??[]).map((row)=>({id:String(row.id),kind:String(row.kind),title:String(row.title),state:safeJsonParse(row.state_json,{}),status:String(row.status),updated_at:String(row.updated_at)})).filter((o)=>scheduleLocalMinute(o.state.start_local));
+  const rules=(rulesResult?.results??[]).map(scheduleRuleFromRow).filter(Boolean);
+  return { objects, rules, ruleByObject:new Map(rules.map((r)=>[r.object_id,r])) };
+}
+
+function scheduleResolveWindow(fromLocal,toLocal) {
+  const now=scheduleNowLocalMinute();
+  const from=scheduleLocalMinute(fromLocal)||now;
+  const to=scheduleLocalMinute(toLocal)||scheduleShiftLocalMinute(from,7*24*60);
+  if (!from||!to||to<=from) throw new SandPlanError("BAD_SCHEDULE_RANGE","Invalid schedule window");
+  return {from,to};
+}
+
+async function scheduleOccurrences(env,chatId,fromLocal,toLocal) {
+  const {from,to}=scheduleResolveWindow(fromLocal,toLocal);
+  const domain=await scheduleDomain(env,chatId);
+  const out=[];
+  for(const obj of domain.objects){
+    const rule=domain.ruleByObject.get(obj.id);
+    if(rule && rule.status!=="cancelled" && rule.freq!=="once") out.push(...scheduleProjectRule(rule,obj.title,from,to,SCHEDULE_READ_LIMIT-out.length));
+    else {
+      const occ=scheduleDirectOccurrence(obj);
+      if(occ && occ.start_local>=from && occ.start_local<to) out.push(occ);
+    }
+    if(out.length>=SCHEDULE_READ_LIMIT) break;

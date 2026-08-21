@@ -1,0 +1,73 @@
+  if (!hasMutation) {
+    let reply = ""; const outputs = [];
+    for (const step of plan.steps) {
+      if (step.op === "shopping.list") {
+        const all = await capabilitySnapshot(env, chatId, "shopping");
+        const rows = all.filter((x) => x.kind === "shopping_item" && (step.args.status === "all" || x.status === step.args.status));
+        outputs.push({ op: step.op, rows: rows.map(({ id, ...x }) => x) }); reply = renderShoppingList(rows);
+      } else if (step.op === "shopping.progress") {
+        const all = (await capabilitySnapshot(env, chatId, "shopping")).filter((x) => x.kind === "shopping_item");
+        const counts = Object.fromEntries(["pending","bought","unavailable","skipped"].map((status) => [status, all.filter((x) => x.status === status).length]));
+        outputs.push({ op: step.op, counts, total: all.length }); reply = `🛒 الإجمالي ${all.length} — باقي ${counts.pending} — اتجاب ${counts.bought} — مش متاح ${counts.unavailable} — متخطّي ${counts.skipped}`;
+      }
+    }
+    return { steps: outputs, reply: reply || compactText(plan.reply_hint,800) };
+  }
+  if (plan.steps.some((s) => ["shopping.list","shopping.progress"].includes(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN", "Do not mix shopping reads and mutations in one family plan");
+  const stmts = [], created = [], expected = [];
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const step = plan.steps[i], at = nowIso();
+    if (step.op === "shopping.add") {
+      for (let j = 0; j < step.args.items.length; j += 1) {
+        const item = step.args.items[j], id = await stableCapabilityId("shop", operationId, mainStepIndex * 100 + i, j);
+        created[i] = created[i] || id;
+        const state = { quantity: item.quantity, category: item.category, priority: item.priority };
+        stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_item',NULL,?,?,'pending',?,?,?)`).bind(id,chatId,item.title,JSON.stringify(state),updateId,at,at));
+        expected.push({ id, status: "pending", title: item.title });
+      }
+    } else if (step.op === "shopping.mark") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(step.args.status,updateId,at,id,chatId)); expected.push({ id, status: step.args.status });
+    } else if (step.op === "shopping.remove") {
+      const id = refs.get(step.args.target); if (!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET", "Shopping target disappeared");
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='archived',source_update_id=?,updated_at=? WHERE id=? AND chat_id=? AND kind='shopping_item'`).bind(updateId,at,id,chatId)); expected.push({ id, status: "archived" });
+    } else if (step.op === "shopping.session.start") {
+      const id = await stableCapabilityId("shopsession", operationId, mainStepIndex * 100 + i, 0); created[i] = id;
+      stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',updated_at=? WHERE chat_id=? AND kind='shopping_session' AND status='active'`).bind(at,chatId));
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'shopping_session',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.place_name || "جلسة تسوق",JSON.stringify({ place_name: step.args.place_name, started_at: at }),updateId,at,at)); expected.push({ id, status: "active" });
+    } else if (step.op === "shopping.session.finish") {
+      const row = await env.DB.prepare(`SELECT id FROM ${TABLES.lifeItems} WHERE chat_id=? AND kind='shopping_session' AND status='active' ORDER BY updated_at DESC LIMIT 1`).bind(chatId).first();
+      if (row?.id) { const id=String(row.id); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET status='done',source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(updateId,at,id,chatId)); expected.push({ id, status: "done" }); }
+    }
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  for (const exp of expected) {
+    const row = await env.DB.prepare(`SELECT title,status FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? LIMIT 1`).bind(exp.id,chatId).first();
+    if (!row || String(row.status)!==exp.status || (exp.title && String(row.title)!==exp.title)) throw new Error("Shopping capability verification failed");
+  }
+  return { steps: plan.steps.map((step,i)=>({ op:step.op, created_id:created[i]||null })), reply: compactText(plan.reply_hint,800) || "تمام، حدّثت المشتريات واتأكدت من النتيجة ✅" };
+}
+
+
+async function executeWorkPlan(env, { chatId, updateId, operationId, mainStepIndex, plan, refs }) {
+  const readOps = new Set(["project.list","task.list","waiting.list","inbox.list"]);
+  const hasMutation = plan.steps.some((s)=>!readOps.has(s.op));
+  if (!hasMutation) {
+    let reply=""; const outputs=[]; const all=await capabilitySnapshot(env,chatId,"work");
+    for (const step of plan.steps) {
+      if (step.op === "project.list") { const rows=all.filter(x=>x.kind==="project"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"🎯 المشاريع:"); }
+      if (step.op === "task.list") { const projectId=step.args.project?refs.get(step.args.project):null; const rows=all.filter(x=>x.kind==="task"&&(!projectId||x.parent_id===projectId)&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"✅ المهام:"); }
+      if (step.op === "waiting.list") { const rows=all.filter(x=>x.kind==="waiting"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"⏳ المتابعات:"); }
+      if (step.op === "inbox.list") { const rows=all.filter(x=>x.kind==="inbox"&&(step.args.status==="all"||x.status===step.args.status)); outputs.push({op:step.op,rows:rows.map(({id,...x})=>x)}); reply=renderWorkList(rows,"📥 الوارد:"); }
+    }
+    return {steps:outputs,reply:reply||compactText(plan.reply_hint,800)};
+  }
+  if (plan.steps.some((s)=>readOps.has(s.op))) throw new SandPlanError("MIXED_FAMILY_PLAN","Do not mix work reads and mutations in one family plan");
+  const stmts=[], created=[], expected=[];
+  for (let i=0;i<plan.steps.length;i+=1) {
+    const step=plan.steps[i], at=nowIso();
+    if (step.op === "project.create") {
+      const id=await stableCapabilityId("project",operationId,mainStepIndex*100+i); created[i]=id; const state={priority:step.args.priority,deadline:step.args.deadline,notes:step.args.notes,progress:0};
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${TABLES.lifeItems}(id,chat_id,kind,parent_id,title,state_json,status,source_update_id,created_at,updated_at) VALUES(?,?,'project',NULL,?,?,'active',?,?,?)`).bind(id,chatId,step.args.title,JSON.stringify(state),updateId,at,at)); expected.push({id,status:"active",title:step.args.title});
+    } else if (step.op === "project.update") {
+      const id=refs.get(step.args.target); if(!id) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target disappeared"); const row=await env.DB.prepare(`SELECT state_json,status,title FROM ${TABLES.lifeItems} WHERE id=? AND chat_id=? AND kind='project' LIMIT 1`).bind(id,chatId).first(); if(!row) throw new SandPlanError("UNKNOWN_FAMILY_TARGET","Project target missing"); const state=safeJsonParse(row.state_json,{}); for(const k of ["progress","priority","deadline","notes"]) if(step.args[k]!==null) state[k]=step.args[k]; const status=step.args.status||String(row.status); stmts.push(env.DB.prepare(`UPDATE ${TABLES.lifeItems} SET state_json=?,status=?,source_update_id=?,updated_at=? WHERE id=? AND chat_id=?`).bind(JSON.stringify(state),status,updateId,at,id,chatId)); expected.push({id,status});

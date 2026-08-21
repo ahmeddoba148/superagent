@@ -1,0 +1,198 @@
+async function googleWebSearch(env, args) {
+  const key = compactText(env?.GOOGLE_SEARCH_API_KEY, 500);
+  const cx = compactText(env?.GOOGLE_SEARCH_CX, 500);
+  if (!key || !cx) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Search is not configured");
+  const params = new URLSearchParams({ key, cx, q: args.query, num: String(args.limit), safe: "active" });
+  if (args.language) params.set("hl", args.language);
+  if (args.country) params.set("gl", args.country);
+  const response = await externalFetch("google_search", `https://www.googleapis.com/customsearch/v1?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Google Search HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  const items = (Array.isArray(data?.items) ? data.items : []).slice(0, args.limit).map((item) => ({
+    title: compactText(item?.title, 500),
+    url: compactText(item?.link, 2000),
+    snippet: compactText(item?.snippet, 1200),
+    domain: compactText(item?.displayLink, 300),
+  })).filter((item) => item.url);
+  return { query: args.query, items };
+}
+
+async function liveNewsSearch(args) {
+  const params = new URLSearchParams({ query: args.query, mode: "ArtList", maxrecords: String(Math.min(20, args.limit)), format: "json", sort: "HybridRel" });
+  const response = await externalFetch("gdelt_news", `https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`News HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  const items = (Array.isArray(data?.articles) ? data.articles : []).slice(0, args.limit).map((item) => ({
+    title: compactText(item?.title, 700), url: compactText(item?.url, 2000), domain: compactText(item?.domain, 300),
+    seen_at: compactText(item?.seendate, 80), language: compactText(item?.language, 80),
+  })).filter((item) => item.url);
+  return { query: args.query, items };
+}
+
+async function openMeteoWeather(args) {
+  let latitude = args.latitude, longitude = args.longitude, city = args.city;
+  if (latitude === null || longitude === null) {
+    if (!city) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
+    const params = new URLSearchParams({ name: city, count: "1", language: "ar", format: "json" });
+    const geo = await externalFetch("open_meteo_geocoding", `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`);
+    if (!geo.ok) throw new SandHttpError(`Weather geocoding HTTP ${geo.status}`, geo.status);
+    const data = await geo.json().catch(() => ({}));
+    const first = Array.isArray(data?.results) ? data.results[0] : null;
+    if (!first) throw new SandPlanError("WEATHER_LOCATION_NOT_FOUND", "Weather location was not found");
+    latitude = Number(first.latitude); longitude = Number(first.longitude); city = compactText(first.name, 240) || city;
+  }
+  const params = new URLSearchParams({
+    latitude: String(latitude), longitude: String(longitude),
+    current: "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+    daily: "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+    timezone: "auto", forecast_days: String(args.forecast_days),
+  });
+  const response = await externalFetch("open_meteo_weather", `https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+  if (!response.ok) throw new SandHttpError(`Weather HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  return { city: city || null, latitude, longitude, timezone: data?.timezone ?? null, current: data?.current ?? null, daily: data?.daily ?? null };
+}
+
+async function googlePlacesSearch(env, args) {
+  const key = compactText(env?.GOOGLE_MAPS_API_KEY, 500);
+  if (!key) throw new SandPlanError("CAPABILITY_BINDING_MISSING", "Google Places is not configured");
+  const body = { textQuery: args.query, languageCode: args.language || "ar", maxResultCount: args.limit };
+  if (args.latitude !== null && args.longitude !== null) {
+    body.locationBias = { circle: { center: { latitude: args.latitude, longitude: args.longitude }, radius: args.radius_m } };
+  }
+  const response = await externalFetch("google_places", "https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Goog-Api-Key": key,
+      "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryTypeDisplayName",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new SandHttpError(`Google Places HTTP ${response.status}`, response.status);
+  const data = await response.json().catch(() => ({}));
+  const items = (Array.isArray(data?.places) ? data.places : []).slice(0, args.limit).map((place) => ({
+    id: compactText(place?.id, 300), name: compactText(place?.displayName?.text, 500),
+    address: compactText(place?.formattedAddress, 800), category: compactText(place?.primaryTypeDisplayName?.text, 300),
+    latitude: Number.isFinite(Number(place?.location?.latitude)) ? Number(place.location.latitude) : null,
+    longitude: Number.isFinite(Number(place?.location?.longitude)) ? Number(place.location.longitude) : null,
+    rating: Number.isFinite(Number(place?.rating)) ? Number(place.rating) : null,
+    user_rating_count: Number.isFinite(Number(place?.userRatingCount)) ? Number(place.userRatingCount) : null,
+    maps_url: compactText(place?.googleMapsUri, 2000),
+  }));
+  return { query: args.query, items };
+}
+
+function validateWebLiveStep(op, a) {
+  if (op === "web.search") {
+    const query = compactText(a.query, 700); if (!query) throw new SandPlanError("QUERY_REQUIRED", "Web search query required");
+    return { op, args: { query, limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar", country: compactText(a.country, 8) || "eg" } };
+  }
+  if (op === "web.read") {
+    const url = normalizePublicHttpsUrl(a.url).toString();
+    return { op, args: { url, max_chars: clampInt(a.max_chars, 1000, 12_000, 7000) } };
+  }
+  if (op === "news.search") {
+    const query = compactText(a.query, 700); if (!query) throw new SandPlanError("QUERY_REQUIRED", "News query required");
+    return { op, args: { query, limit: clampInt(a.limit, 1, 12, 8) } };
+  }
+  if (op === "weather.read") {
+    const city = compactText(a.city, 240) || null;
+    const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+    const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+    if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+    if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+    if (!city && latitude === null) throw new SandPlanError("WEATHER_LOCATION_REQUIRED", "Weather needs a city or coordinates");
+    return { op, args: { city, latitude, longitude, forecast_days: clampInt(a.forecast_days, 1, 7, 7) } };
+  }
+  if (op === "places.search") {
+    const query = compactText(a.query, 700); if (!query) throw new SandPlanError("QUERY_REQUIRED", "Places query required");
+    const latitude = a.latitude === undefined || a.latitude === null || a.latitude === "" ? null : Number(a.latitude);
+    const longitude = a.longitude === undefined || a.longitude === null || a.longitude === "" ? null : Number(a.longitude);
+    if ((latitude === null) !== (longitude === null)) throw new SandPlanError("BAD_COORDINATES", "Latitude and longitude must be provided together");
+    if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) throw new SandPlanError("BAD_COORDINATES", "Invalid coordinates");
+    return { op, args: { query, latitude, longitude, radius_m: clampInt(a.radius_m, 100, 50_000, 5000), limit: clampInt(a.limit, 1, 10, 6), language: compactText(a.language, 20) || "ar" } };
+  }
+  return null;
+}
+
+function renderWebLiveResult(step, result) {
+  if (step.op === "web.search") {
+    const items = result.items ?? [];
+    if (!items.length) return "ملقتش نتائج مناسبة في Google Search.";
+    return ["🔎 نتائج البحث:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || item.domain || "نتيجة"}\n${item.url}${item.snippet ? `\n${item.snippet}` : ""}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  if (step.op === "web.read") return `📄 قرأت الصفحة:\n${result.text || "مفيش نص قابل للقراءة."}`.slice(0, AI_MAX_REPLY_CHARS);
+  if (step.op === "news.search") {
+    const items = result.items ?? []; if (!items.length) return "ملقتش أخبار حديثة مناسبة للبحث.";
+    return ["📰 الأخبار:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.title || "خبر"}\n${item.url}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  if (step.op === "weather.read") {
+    const c = result.current ?? {};
+    return `🌤️ ${result.city || "الطقس"}: ${c.temperature_2m ?? "-"}° — المحسوسة ${c.apparent_temperature ?? "-"}° — رياح ${c.wind_speed_10m ?? "-"}`;
+  }
+  if (step.op === "places.search") {
+    const items = result.items ?? []; if (!items.length) return "ملقتش أماكن مناسبة للبحث.";
+    return ["📍 الأماكن:", ...items.slice(0, 8).map((item, i) => `${i + 1}) ${item.name || "مكان"}${item.rating !== null ? ` ⭐ ${item.rating}` : ""}\n${item.address || ""}${item.maps_url ? `\n${item.maps_url}` : ""}`)].join("\n\n").slice(0, AI_MAX_REPLY_CHARS);
+  }
+  return "";
+}
+
+async function executeWebLivePlan(env, { plan }) {
+  const outputs = []; let reply = "";
+  for (const step of plan.steps) {
+    try {
+      let result;
+      if (step.op === "web.search") result = await googleWebSearch(env, step.args);
+      else if (step.op === "web.read") result = await webReader(step.args.url, step.args.max_chars);
+      else if (step.op === "news.search") result = await liveNewsSearch(step.args);
+      else if (step.op === "weather.read") result = await openMeteoWeather(step.args);
+      else if (step.op === "places.search") result = await googlePlacesSearch(env, step.args);
+      else throw new SandPlanError("CAPABILITY_OP_NOT_ALLOWED", `Unhandled Web & Live operation: ${step.op}`);
+      outputs.push({ op: step.op, result });
+      reply = renderWebLiveResult(step, result) || reply;
+    } catch (error) {
+      if (error instanceof SandPlanError && error.code === "CAPABILITY_BINDING_MISSING") {
+        const unavailable = step.op === "web.search" ? "Google Search" : step.op === "places.search" ? "Google Places" : "الخدمة المطلوبة";
+        outputs.push({ op: step.op, unavailable: true, error: error.code });
+        reply = `${unavailable} مش متوصل بمفتاح API في البيئة الحالية، فمش هخمن نتيجة بدل الخدمة الحية.`;
+        continue;
+      }
+      throw error;
+    }
+  }
+  return { steps: outputs, reply: reply || compactText(plan.reply_hint, 800) };
+}
+
+registerCapabilityExtension("web_live", {
+  state: "active",
+  contract: {
+    max_steps: 5,
+    operations: {
+      "web.search": "Google web search. args.query required; limit/language/country optional",
+      "web.read": "Read a public HTTPS web page. args.url required; max_chars optional",
+      "news.search": "Live news search. args.query required; limit optional",
+      "weather.read": "Current weather + 1..7 day forecast. city or latitude+longitude required",
+      "places.search": "Google Places text search. args.query required; optional coordinates/radius/limit/language",
+    },
+  },
+  validateStep: validateWebLiveStep,
+  execute: executeWebLivePlan,
+  bindings: (env) => ({
+    google_search: Boolean(env?.GOOGLE_SEARCH_API_KEY && env?.GOOGLE_SEARCH_CX),
+    google_places: Boolean(env?.GOOGLE_MAPS_API_KEY),
+    weather: true,
+    news: true,
+    web_reader: true,
+  }),
+  selftest: async () => {
+    const search = validateWebLiveStep("web.search", { query: "اختبار", limit: 999 });
+    const weather = validateWebLiveStep("weather.read", { city: "Cairo", forecast_days: 30 });
+    let blocked = false; try { normalizePublicHttpsUrl("https://127.0.0.1/private"); } catch { blocked = true; }
+    return [
+      { name: "contract", ok: search?.args?.limit === 10 && weather?.args?.forecast_days === 7, detail: { search: search?.args, weather: weather?.args } },
+      { name: "ssrf_guard", ok: blocked, detail: blocked ? "private literal blocked" : "private literal allowed" },
+      { name: "circuit_breaker", ok: EXTERNAL_ADAPTER_FAILURE_THRESHOLD === 3 && EXTERNAL_ADAPTER_OPEN_MS === 60_000, detail: { threshold: EXTERNAL_ADAPTER_FAILURE_THRESHOLD, open_ms: EXTERNAL_ADAPTER_OPEN_MS } },
+    ];
+  },
+});

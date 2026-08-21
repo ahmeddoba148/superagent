@@ -1,0 +1,175 @@
+        modelId: model.id,
+        modelRole: model.role,
+        latencyMs: nowMs() - started,
+        ok: false,
+        httpStatus,
+        errorCode: code,
+      });
+      failures.push(`${model.id}:${code}`);
+      if (httpStatus === 401 || httpStatus === 403) break;
+    }
+  }
+
+  const joined = failures.join(" | ");
+  if (
+    failures.length > 0 &&
+    failures.every(
+      (failure) => failure.endsWith(":invalid_structured_output") || failure.endsWith(":invalid_plan_contract"),
+    )
+  ) {
+    throw new SandPlanError("BAD_PLAN", `No model returned a valid executable plan: ${joined}`);
+  }
+  const failureCodes = failures.map((failure) => failure.slice(failure.lastIndexOf(":") + 1));
+  const hasFailureCode = (predicate) => failureCodes.some(predicate);
+  const allFailureCodes = (predicate) => failureCodes.length > 0 && failureCodes.every(predicate);
+  let code = "AI_UNAVAILABLE";
+  if (hasFailureCode((failureCode) => failureCode === "http_401" || failureCode === "http_403")) code = "AI_AUTH";
+  else if (allFailureCodes((failureCode) => failureCode === "http_429")) code = "AI_RATE_LIMIT";
+  else if (hasFailureCode((failureCode) => failureCode === "timeout")) code = "AI_TIMEOUT";
+  else if (hasFailureCode((failureCode) => /^http_5\d\d$/.test(failureCode))) code = "AI_UPSTREAM";
+  throw new SandAiChainError(code, failures.length ? failures : ["planner_budget_exhausted"]);
+}
+
+async function planSemanticTurn(env, { chatId, updateId, text, snapshot }) {
+  const history = snapshot.messages.map((row) => ({ role: String(row.role), content: String(row.content) }));
+  const messages = [
+    { role: "system", content: plannerSystemPrompt(snapshot) },
+    ...history,
+  ];
+  return callStructuredPlannerChain(env, { chatId, updateId, messages, snapshot });
+}
+
+function validateTarget(target, snapshot) {
+  if (typeof target === "string") {
+    const ref = target.trim();
+    if (ref === "focus") {
+      if (snapshot.objects.length > 1) throw new SandPlanError("EXPLICIT_TARGET_REQUIRED", "Multiple active objects require an explicit exposed object ref");
+      return { mode: "focus" };
+    }
+    if (ref === "created") return { mode: "focus" };
+    const match = /^o([1-9][0-9]*)$/.exec(ref);
+    const index = match ? Number(match[1]) - 1 : -1;
+    const object = index >= 0 ? snapshot.objects[index] : null;
+    if (!object) throw new SandPlanError("UNKNOWN_TARGET", "Target ref is not in the active workspace");
+    return { mode: "id", id: object.id };
+  }
+
+  if (!target || typeof target !== "object") throw new SandPlanError("BAD_TARGET", "Missing target");
+  const mode = String(target.mode ?? "");
+  if (mode === "focus") {
+    if (snapshot.objects.length > 1) throw new SandPlanError("EXPLICIT_TARGET_REQUIRED", "Multiple active objects require an explicit exposed object ref");
+    return { mode: "focus" };
+  }
+  if (mode === "created") return { mode: "focus" };
+  if (mode === "ref") {
+    const match = /^o([1-9][0-9]*)$/.exec(String(target.ref ?? ""));
+    const index = match ? Number(match[1]) - 1 : -1;
+    const object = index >= 0 ? snapshot.objects[index] : null;
+    if (!object) throw new SandPlanError("UNKNOWN_TARGET", "Target ref is not in the active workspace");
+    return { mode: "id", id: object.id };
+  }
+  if (mode === "id") {
+    const id = String(target.id ?? "");
+    if (!id || !snapshot.objects.some((x) => x.id === id)) {
+      throw new SandPlanError("UNKNOWN_TARGET", "Target object is not in the active workspace");
+    }
+    return { mode: "id", id };
+  }
+  if (!mode && typeof target.ref === "string") return validateTarget(String(target.ref), snapshot);
+  throw new SandPlanError("BAD_TARGET", `Unsupported target mode: ${mode}`);
+}
+
+function validateSemanticPlan(input, snapshot) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new SandPlanError("BAD_PLAN", "Plan must be an object");
+  }
+
+  const effect = String(input.effect ?? "");
+  if (!new Set(["answer", "mutate", "clarify"]).has(effect)) {
+    throw new SandPlanError("BAD_EFFECT", "Plan effect must be answer, mutate, or clarify");
+  }
+
+  const actionsRaw = Array.isArray(input.actions) ? input.actions : [];
+  if (actionsRaw.length > PLANNER_MAX_ACTIONS) throw new SandPlanError("TOO_MANY_ACTIONS", "Planner exceeded action budget");
+
+  const actions = actionsRaw.map((action, index) => {
+    if (!action || typeof action !== "object") throw new SandPlanError("BAD_ACTION", `Action ${index} invalid`);
+    const type = String(action.type ?? "");
+    if (!ALLOWED_ACTIONS.has(type)) throw new SandPlanError("ACTION_NOT_ALLOWED", `Action not allowed: ${type}`);
+    const args = action.args && typeof action.args === "object" && !Array.isArray(action.args) ? action.args : {};
+
+    if (type === "object.create") {
+      const kind = String(args.kind ?? "generic");
+      if (!ALLOWED_OBJECT_KINDS.has(kind)) throw new SandPlanError("BAD_KIND", `Unsupported object kind: ${kind}`);
+      const title = compactText(args.title, 240);
+      if (!title) throw new SandPlanError("TITLE_REQUIRED", "Created object needs a title");
+      return { type, args: { kind, title, fields: sanitizeObjectFields(args.fields) } };
+    }
+
+    if (type === "object.patch") {
+      const target = validateTarget(args.target, snapshot);
+      const fields = sanitizeObjectFields(args.fields);
+      if (Object.keys(fields).length === 0) throw new SandPlanError("EMPTY_PATCH", "Object patch has no fields");
+      const current = target.mode === "id"
+        ? snapshot.objects.find((object) => object.id === target.id) ?? null
+        : snapshot.focus ?? (snapshot.workspace.focus_object_id
+          ? snapshot.objects.find((object) => object.id === snapshot.workspace.focus_object_id) ?? null
+          : null);
+      if (current) {
+        const preview = mergeObjectState(current.state, fields, current.title);
+        if (JSON.stringify(preview) === JSON.stringify(current.state)) {
+          throw new SandPlanError("NOOP_PATCH", "Object patch would not change the target state");
+        }
+      }
+      return { type, args: { target, fields } };    }
+
+    if (type === "object.archive" || type === "reminder.cancel") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.set") {
+      return { type, args: { target: validateTarget(args.target, snapshot) } };
+    }
+
+    if (type === "focus.clear") return { type, args: {} };
+
+    if (type === "reminder.set") {
+      const mode = String(args.mode ?? "");
+      if (!new Set(["at_start", "absolute"]).has(mode)) throw new SandPlanError("BAD_REMINDER_MODE", `Bad reminder mode: ${mode}`);
+      const target = validateTarget(args.target, snapshot);
+      const remindLocal = mode === "absolute" ? normalizeLocalMinute(args.remind_local) : null;
+      if (mode === "absolute" && !remindLocal) throw new SandPlanError("REMINDER_TIME_REQUIRED", "Absolute reminder requires remind_local");
+      return { type, args: { target, mode, remind_local: remindLocal, title: compactText(args.title, 240) || null } };
+    }
+
+    if (type === "capability.request") {
+      const family = compactText(args.family, 80);
+      const request = compactText(args.request, 1200);
+      if (!family || !CAPABILITY_FAMILIES[family]) throw new SandPlanError("BAD_CAPABILITY_FAMILY", `Unknown capability family: ${family}`);
+      if (!request) throw new SandPlanError("BAD_CAPABILITY_REQUEST", "Capability request requires semantic request text");
+      if (!CAPABILITY_FAMILY_CONTRACTS[family]) throw new SandPlanError("CAPABILITY_NOT_READY", `Capability family is not enabled yet: ${family}`);
+      const target = args.target === undefined || args.target === null ? null : validateTarget(args.target, snapshot);
+      return { type, args: { family, request, target } };
+    }
+
+    if (type === "memory.upsert") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory requires subject and predicate");
+      return {
+        type,
+        args: {
+          subject,
+          predicate,
+          value: args.value ?? null,
+          confidence: Math.max(0, Math.min(1, Number(args.confidence ?? 1))),
+          sensitivity: compactText(args.sensitivity, 40) || "normal",
+          expires_at: args.expires_at ? compactText(args.expires_at, 40) : null,
+        },
+      };
+    }
+
+    if (type === "memory.forget") {
+      const subject = compactText(args.subject, 160);
+      const predicate = compactText(args.predicate, 160);
+      if (!subject || !predicate) throw new SandPlanError("BAD_MEMORY", "Memory forget requires subject and predicate");
