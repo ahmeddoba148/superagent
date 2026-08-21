@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 1;
 const BACKOFF_MS = [0, 35_000, 70_000];
 const TURN_PACE_MS = 65_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

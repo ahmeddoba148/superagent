@@ -53,7 +53,7 @@ async function post(id, text) {
   if (!r.ok) throw new Error(`webhook ${r.status}: ${await r.text()}`);
 }
 async function waitDone(id, textForSafeRetrigger = null) {
-  for (let i = 0; i < 55; i++) {
+  for (let i = 0; i < 220; i++) {
     await sleep(1000);
     const row = q(`SELECT status,attempts,last_error,retry_after_ms FROM sand_v2_inbox WHERE update_id=${id} LIMIT 1`)[0];
     if (row?.status === 'done') return row;

@@ -115,7 +115,12 @@ function isTransientError(error) {
 async function markUpdateRetryOrFailed(env, updateId, attempts, error) {
   const at = nowIso();
   if (isTransientError(error) && attempts < INBOX_TRANSIENT_MAX_ATTEMPTS) {
-    const delay = Math.min(60_000, 1200 * 2 ** Math.max(0, attempts - 1));
+    const rateLimited =
+      (error instanceof SandAiChainError && error.code === "AI_RATE_LIMIT") ||
+      (error instanceof SandHttpError && error.httpStatus === 429);
+    const delay = rateLimited
+      ? Math.min(120_000, 75_000 + Math.max(0, attempts - 1) * 15_000)
+      : Math.min(30_000, 2500 * 2 ** Math.max(0, attempts - 1));
     await env.DB.prepare(`UPDATE ${TABLES.inbox}
       SET status='retry', process_lease_until=NULL, retry_after_ms=?, last_error=?, updated_at=?
       WHERE update_id=?`)
