@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      OKEY: ${{ secrets.OMNIAI_API_KEY }}
+      OKEY: ${{ secrets.STAGING_OMNIAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +44,6 @@ jobs:
             'nvidia::openai/gpt-oss-120b',
           ];
           const selected = [];
-          const rows = [];
           for (const model of candidates) {
             const started = Date.now();
             try {
@@ -57,22 +56,18 @@ jobs:
               const ms = Date.now() - started;
               if (r.ok) {
                 selected.push(model);
-                rows.push(`LIVE\t${r.status}\t${ms}\t${model}`);
                 console.log(`SELECT_CANDIDATE_LIVE model=${model} latency_ms=${ms}`);
               } else {
                 const body=(await r.text().catch(()=>'' )).replace(/\s+/g,' ').slice(0,180);
-                rows.push(`FAIL\t${r.status}\t${ms}\t${model}\t${body}`);
-                console.log(`SELECT_CANDIDATE_FAIL model=${model} status=${r.status} latency_ms=${ms}`);
+                console.log(`SELECT_CANDIDATE_FAIL model=${model} status=${r.status} latency_ms=${ms} body=${body}`);
               }
             } catch (e) {
-              const ms=Date.now()-started;
-              rows.push(`FAIL\tnetwork\t${ms}\t${model}\t${String(e?.message||e).slice(0,160)}`);
+              console.log(`SELECT_CANDIDATE_FAIL model=${model} status=network latency_ms=${Date.now()-started} body=${String(e?.message||e).slice(0,160)}`);
             }
             if (selected.length >= 5) break;
           }
           if (selected.length < 5) throw new Error(`NEED_5_LIVE_FALLBACKS got=${selected.length}`);
           fs.writeFileSync('/tmp/selected-models.json', JSON.stringify(selected, null, 2));
-          fs.writeFileSync('/tmp/model-probe.txt', rows.join('\n')+'\n');
           console.log('SELECTED_FALLBACKS='+JSON.stringify(selected));
           NODE
       - name: Patch exact ten-model chain
@@ -101,7 +96,6 @@ jobs:
             ns,n=pat.subn(block,s,count=1)
             if n!=1: raise SystemExit(f'{name}: AI_MODELS block mismatch')
             p.write_text(ns)
-          Path('/tmp/final-models.txt').write_text('\n'.join(models)+'\n')
           PY
       - name: Harden canonical model probe
         run: |
@@ -139,7 +133,6 @@ jobs:
           node --check SAND_CORE_V2.js
           cat sand_one/runtime/part*.js.txt > /tmp/SAND_ONE_1.0.js
           node --check /tmp/SAND_ONE_1.0.js
-          grep -Fq 'nvidia::nvidia/nemotron-3-super-120b-a12b' /tmp/SAND_ONE_1.0.js || true
           npm install --no-save typescript@5.8.3 >/dev/null
           printf '%s' '{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM"],"skipLibCheck":true,"strict":false},"files":["SAND_CORE_V2.js"]}' > tsconfig.json
           npx tsc -p tsconfig.json --pretty false
