@@ -1,15 +1,19 @@
+import fs from 'node:fs';
+
 const key = String(process.env.OKEY || '');
 if (!key) throw new Error('missing OKEY');
 
 const endpoint = 'https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
-const models = [
-  'groq::openai/gpt-oss-120b',
-  'groq::qwen/qwen3.6-27b',
-  'gemini::gemini-3.5-flash-lite',
-];
+const source = fs.readFileSync('sand_one/runtime/part00.js.txt', 'utf8');
+const block = source.match(/const AI_MODELS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+const models = [...String(block?.[1] ?? '').matchAll(/id:\s*"([^"]+)"/g)].map((match) => match[1]);
+if (models.length !== 10) throw new Error(`MODEL_CHAIN_EXPECTED_10 got=${models.length}`);
 
 let live = 0;
+const liveProviders = new Set();
 const transient = [];
+const MIN_LIVE = 3;
+const MIN_PROVIDERS = 3;
 
 for (const model of models) {
   try {
@@ -19,19 +23,17 @@ for (const model of models) {
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'رد OK فقط' }],
-        max_tokens: 32,
+        max_tokens: 16,
         stream: false,
       }),
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(10_000),
     });
-
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(`SHARED_AUTH_${response.status} ${model}`);
-    }
 
     if (response.ok) {
       live += 1;
+      liveProviders.add(String(model).split('::', 1)[0]);
       console.log(`${model} LIVE ${response.status}`);
+      if (live >= MIN_LIVE && liveProviders.size >= MIN_PROVIDERS) break;
       continue;
     }
 
@@ -40,15 +42,13 @@ for (const model of models) {
     console.log(`${model} TRANSIENT ${response.status} ${body}`);
   } catch (error) {
     const message = String(error?.message || error);
-    if (message.startsWith('SHARED_AUTH_')) throw error;
     transient.push(`${model}:${message}`);
     console.log(`${model} TRANSIENT ${message}`);
   }
 }
 
-if (live < 1) {
-  throw new Error(`MODEL_CHAIN_NO_LIVE_MODEL: ${transient.join(' | ')}`);
+if (live < MIN_LIVE || liveProviders.size < MIN_PROVIDERS) {
+  throw new Error(`MODEL_CHAIN_DIVERSITY_FAILED live=${live} providers=${liveProviders.size}: ${transient.join(' | ')}`);
 }
 
-console.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK live=${live} transient=${transient.length}`);
-// Re-certification trigger: root sync must follow a fresh green canonical gate.
+console.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK configured=${models.length} live=${live} providers=${liveProviders.size} transient=${transient.length}`);

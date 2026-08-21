@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 
 const MAX_ATTEMPTS = 1;
 const BACKOFF_MS = [0, 35_000, 70_000];
@@ -29,11 +30,10 @@ function isIsolatedTransientModelChainOutage(output) {
   const at = text.lastIndexOf(marker);
   if (at < 0) return false;
   const line = text.slice(at).split(/\r?\n/, 1)[0];
-  const models = [
-    'groq::openai/gpt-oss-120b',
-    'groq::qwen/qwen3.6-27b',
-    'gemini::gemini-3.5-flash-lite',
-  ];
+  const source = fs.readFileSync('sand_v2/source_parts/part00.js.txt', 'utf8');
+  const block = source.match(/const AI_MODELS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+  const models = [...String(block?.[1] ?? '').matchAll(/id:\s*"([^"]+)"/g)].map((match) => match[1]);
+  if (models.length < 3) return false;
   return models.every((model) => {
     const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = line.match(new RegExp(`${escaped}:([^ |]+)`));
