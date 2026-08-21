@@ -24,7 +24,7 @@ const DRAIN_BUDGET_MS = 27_000;
 const MAX_DRAIN_BATCH = 4;
 const CHAT_SETTLE_MS = 900;
 const CHAT_SETTLE_MAX_WAIT_MS = 6_000;
-const AI_TOTAL_BUDGET_MS = 12_000;
+const AI_TOTAL_BUDGET_MS = 18_000;
 const AI_MODEL_TIMEOUT_MS = 4_000;
 const AI_HISTORY_MESSAGES = 20;
 const AI_MAX_REPLY_CHARS = 3900;
@@ -34,14 +34,14 @@ const PLANNER_MAX_ACTIONS = 8;
 
 const AI_MODELS = Object.freeze([
   Object.freeze({ id: "groq::openai/gpt-oss-120b", role: "primary" }),
-  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_1" }),
-  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_2" }),
-  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_3" }),
-  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_4" }),
-  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_5" }),
-  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_6" }),
-  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_7" }),
-  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_8" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-super-120b-a12b", role: "fallback_1" }),
+  Object.freeze({ id: "mistral::mistral-medium-latest", role: "fallback_2" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-nano-30b-a3b", role: "fallback_3" }),
+  Object.freeze({ id: "mistral::mistral-large-latest", role: "fallback_4" }),
+  Object.freeze({ id: "openrouter::nvidia/nemotron-3-super-120b-a12b:free", role: "fallback_5" }),
+  Object.freeze({ id: "gemini::gemini-3.6-flash", role: "fallback_6" }),
+  Object.freeze({ id: "groq::qwen/qwen3.6-27b", role: "fallback_7" }),
+  Object.freeze({ id: "nvidia::nvidia/nemotron-3-ultra-550b-a55b", role: "fallback_8" }),
   Object.freeze({ id: "openrouter::google/gemma-4-31b-it:free", role: "fallback_9" }),
 ]);
 
