@@ -1,0 +1,65 @@
+name: SAND Model Candidate Probe
+on:
+  push:
+    branches: [sand-one-1.0]
+    paths:
+      - '.github/workflows/sand-model-candidate-probe.yml'
+      - 'tools/sand-one-ci/model-candidate-probe-trigger.txt'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OKEY: ${{ secrets.OMNIAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Probe replacement candidates
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const key = String(process.env.OKEY || '');
+          if (!key) throw new Error('missing OKEY');
+          const endpoint = 'https://omniai-engine.ahmeddoba91.workers.dev/v1/chat/completions';
+          const models = [
+            'nvidia::openai/gpt-oss-120b',
+            'nvidia::nvidia/nemotron-3-super-120b-a12b',
+            'nvidia::z-ai/glm-5.2',
+            'nvidia::deepseek-ai/deepseek-v4-flash',
+            'nvidia::stepfun-ai/step-3.7-flash',
+            'nvidia::mistralai/mistral-large-3-675b-instruct-2512',
+            'openrouter::nvidia/nemotron-3-super-120b-a12b:free',
+            'openrouter::nvidia/nemotron-3-ultra-550b-a55b:free',
+            'openrouter::google/gemma-4-31b-it:free',
+            'openrouter::openai/gpt-oss-20b:free',
+            'gemini::gemini-3.5-flash',
+            'mistral::mistral-small-latest',
+          ];
+          let live = 0;
+          for (const model of models) {
+            const started = Date.now();
+            try {
+              const r = await fetch(endpoint, {
+                method: 'POST',
+                headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ model, messages: [{role:'user',content:'رد بكلمة OK فقط'}], max_tokens: 16, stream: false }),
+                signal: AbortSignal.timeout(15000),
+              });
+              const ms = Date.now() - started;
+              if (r.ok) {
+                live += 1;
+                console.log(`CANDIDATE LIVE model=${model} status=${r.status} latency_ms=${ms}`);
+              } else {
+                const body = (await r.text().catch(()=>'' )).replace(/\s+/g,' ').slice(0,260);
+                console.log(`CANDIDATE FAIL model=${model} status=${r.status} latency_ms=${ms} body=${body}`);
+              }
+            } catch (e) {
+              console.log(`CANDIDATE FAIL model=${model} status=network latency_ms=${Date.now()-started} body=${String(e?.message||e).slice(0,200)}`);
+            }
+          }
+          if (live < 3) throw new Error(`ONLY_${live}_LIVE_CANDIDATES`);
+          console.log(`CANDIDATE_PROBE_OK live=${live}/${models.length}`);
+          NODE
