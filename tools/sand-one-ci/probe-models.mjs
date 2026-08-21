@@ -12,10 +12,13 @@ if (models.length !== 10) throw new Error(`MODEL_CHAIN_EXPECTED_10 got=${models.
 let live = 0;
 const liveProviders = new Set();
 const transient = [];
-const MIN_LIVE = 3;
+const permanent = [];
+const MIN_LIVE = 5;
 const MIN_PROVIDERS = 3;
+const permanentStatuses = new Set([400, 401, 402, 403, 404, 405, 409, 410, 422]);
 
 for (const model of models) {
+  const started = Date.now();
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -28,18 +31,24 @@ for (const model of models) {
       }),
       signal: AbortSignal.timeout(10_000),
     });
+    const latency = Date.now() - started;
 
     if (response.ok) {
       live += 1;
       liveProviders.add(String(model).split('::', 1)[0]);
-      console.log(`${model} LIVE ${response.status}`);
-      if (live >= MIN_LIVE && liveProviders.size >= MIN_PROVIDERS) break;
+      console.log(`${model} LIVE ${response.status} ${latency}ms`);
       continue;
     }
 
-    const body = (await response.text().catch(() => '')).slice(0, 200);
-    transient.push(`${model}:HTTP_${response.status}`);
-    console.log(`${model} TRANSIENT ${response.status} ${body}`);
+    const body = (await response.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 220);
+    const item = `${model}:HTTP_${response.status}`;
+    if (permanentStatuses.has(response.status)) {
+      permanent.push(item);
+      console.log(`${model} PERMANENT ${response.status} ${latency}ms ${body}`);
+    } else {
+      transient.push(item);
+      console.log(`${model} TRANSIENT ${response.status} ${latency}ms ${body}`);
+    }
   } catch (error) {
     const message = String(error?.message || error);
     transient.push(`${model}:${message}`);
@@ -47,8 +56,11 @@ for (const model of models) {
   }
 }
 
+if (permanent.length) {
+  throw new Error(`MODEL_CHAIN_PERMANENT_FAILURE: ${permanent.join(' | ')}`);
+}
 if (live < MIN_LIVE || liveProviders.size < MIN_PROVIDERS) {
   throw new Error(`MODEL_CHAIN_DIVERSITY_FAILED live=${live} providers=${liveProviders.size}: ${transient.join(' | ')}`);
 }
 
-console.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK configured=${models.length} live=${live} providers=${liveProviders.size} transient=${transient.length}`);
+console.log(`SAND_MODEL_CHAIN_FAILOVER_PROBE_OK configured=${models.length} live=${live} providers=${liveProviders.size} transient=${transient.length} permanent=0`);
